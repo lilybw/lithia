@@ -17,7 +17,7 @@ async fn main() {
 }
 ```
 
-The design is specified in [`docs/spec`](docs/spec/LITHIA_design_spec_v0.2.4.pdf); implementation status
+The design is specified in [`docs/spec`](docs/spec/LITHIA_design_spec_v0.2.5.md) (v0.2.5, also as PDF); implementation status
 and decisions are tracked in [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 ## Crates

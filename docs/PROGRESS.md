@@ -1,6 +1,7 @@
 # lithia implementation progress
 
-Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.2.4.pdf` (text copy alongside).
+Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.2.5.md` (PDF alongside), which folds in
+everything implementation taught; v0.2.4, the spec the implementation started from, is kept for reference.
 
 ## Layout
 
@@ -70,6 +71,7 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 - Run tasks drop every strong reference to their node before closing epoch tokens, so a settled scope never sees a node kept alive by lithia (found by stress-testing Case J).
 
 - Reflow of a source node re-emits its value to its children but sends nothing to `changes()`, since the value did not change.
+- Diagnostics raised while a scheduling lock is held are gathered and emitted after it is released (spec §11.4 step 1).
 - `lithia-test` holds 53 edge-case tests across values, propagation, async/generators, lifetime, capture, diagnostics and runtimes.
 
 ## Model checking (loom)
@@ -95,6 +97,15 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
   `claudia <lilybwanscher@gmail.com>`.
 - Stress loop used before every sync: run each test binary 100–400 times in debug and release, and once
   pinned to a single core with `taskset -c 0`.
+
+## Spec v0.2.5
+
+- Written after the v0 implementation, from the code itself: every section re-checked against the source,
+  the compile-fail messages and the tests. Its "Changes since v0.2.4" table lists each update and what found it.
+- Kept as a Claude doc (editable, commentable) and exported to `docs/spec/` as Markdown and PDF; the
+  write-routing diagram of §7.4 is `docs/spec/write-routing.png`.
+- Code conventions applied in the same pass: every named binding and closure parameter is typed, and doc
+  comments are at most two lines, with longer rationale moved into the spec.
 
 ## Next steps
 
