@@ -417,7 +417,8 @@ pub(crate) fn deliver_into(batch: Batch, targets: &[(Arc<Epoch>, WriterSet)], wr
             seed(node, epoch, &seed_writers, Seed::First, &mut work);
         }
         for node in &reruns {
-            seed(node, epoch, &chain, Seed::Rerun, &mut work);
+            // Disposal is no write: survivors rerun unattributed, so nothing can cut them.
+            seed(node, epoch, &WriterSet::new(), Seed::Rerun, &mut work);
         }
         for (node, _) in &writes {
             frame(node, epoch, &mut work);

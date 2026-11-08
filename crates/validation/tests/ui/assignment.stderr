@@ -1,0 +1,5 @@
+error: an assignment is not a value; write `effect!(3)`, or put options after a comma
+ --> tests/ui/assignment.rs:5:21
+  |
+5 |     let _ = effect!(a = 3);
+  |                     ^^^^^

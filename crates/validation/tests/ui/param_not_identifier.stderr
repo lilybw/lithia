@@ -1,0 +1,5 @@
+error: dependencies are named by plain identifiers, each once
+ --> tests/ui/param_not_identifier.rs:5:43
+  |
+5 |     let _sum: DerivedNode<i32> = effect!(|(a, b)| a + b);
+  |                                           ^^^^^^

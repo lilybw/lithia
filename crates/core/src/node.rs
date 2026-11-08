@@ -224,12 +224,6 @@ pub(crate) struct RunSlot {
     pub(crate) restart: bool,
 }
 
-impl RunSlot {
-    pub(crate) fn all_released(&self) -> bool {
-        self.served.iter().all(|s: &Served| s.released)
-    }
-}
-
 /// Merges `incoming` into `list`, keeping one record per epoch.
 pub(crate) fn merge_served(list: &mut Vec<Served>, incoming: Served) {
     match list.iter_mut().find(|s: &&mut Served| s.epoch.id == incoming.epoch.id) {

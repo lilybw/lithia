@@ -1,0 +1,5 @@
+error: `init` applies to derived nodes and async source nodes; a source node starts with its value
+ --> tests/ui/init_on_source.rs:4:24
+  |
+4 |     let _ = effect!(0, init = 1);
+  |                        ^^^^

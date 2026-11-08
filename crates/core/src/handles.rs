@@ -26,6 +26,11 @@ mod sealed {
 
 /// Read access, required of every dependency; implemented by `SourceNode`, `DerivedNode` and `Accessor`.
 /// `fn show(n: &impl Readable<Value = u32>) { println!("{}", n.get()); }`
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be read, so it cannot be a dependency",
+    label = "not `Readable`",
+    note = "dependencies are nodes or `Accessor`s; a `Setter` is write-only, and being notified of changes would read it"
+)]
 pub trait Readable: sealed::Sealed {
     /// The node's value type.
     type Value: NodeValue;
@@ -197,6 +202,7 @@ macro_rules! readable {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.debug_struct(stringify!($ty))
                     .field("id", &self.node.header.id)
+                    .field("creator", &self.node.header.creator)
                     .field("status", &self.node.header.status())
                     .field("site", &format_args!("{}", self.node.header.site))
                     .finish()
@@ -354,9 +360,5 @@ capability!(Dispose, __lithia_dispose_node, SourceNode, DerivedNode);
 impl NodeHandle {
     pub(crate) fn status(&self) -> Status {
         self.0.header().status()
-    }
-
-    pub(crate) fn is_ghost(&self) -> bool {
-        self.0.header().phase() & phase::GHOST != 0
     }
 }

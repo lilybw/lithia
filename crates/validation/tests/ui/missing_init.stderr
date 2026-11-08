@@ -1,0 +1,15 @@
+error[E0277]: `NoDefault` has no `Default`, so this node needs an initial value
+ --> tests/ui/missing_init.rs:7:44
+  |
+7 |     let _wrapped: DerivedNode<NoDefault> = effect!(|n| NoDefault(*n.get()));
+  |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ add `init = …` to the effect! options
+  |
+  = help: the trait `Default` is not implemented for `NoDefault`
+  = note: derived nodes and async source nodes start with `init`, or `K::default()` when it is left out
+  = note: required for `NoDefault` to implement `lithia::__private::InitDefault`
+  = note: this error originates in the macro `effect` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider annotating `NoDefault` with `#[derive(Default)]`
+  |
+3 + #[derive(Default)]
+4 | struct NoDefault(u32);
+  |

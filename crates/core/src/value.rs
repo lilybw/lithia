@@ -28,18 +28,33 @@ impl<T: Default> InitDefault for T {
     }
 }
 
-/// Clones a value captured by an `effect!` body (spec §4.2).
+/// Bound on values an `effect!` body captures by cloning (spec §4.2).
 #[doc(hidden)]
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is captured by an effect! body but is not `Clone`",
+    label = "captured here",
     note = "wrap the value in `Arc`, or write `move` and manage the capture yourself"
 )]
-pub trait Capture: Clone {
-    /// Clones the value for the body.
+pub trait Capture: Clone {}
+
+impl<T: Clone> Capture for T {}
+
+/// Clones a captured value; method syntax looks through one reference, so a capture of a
+/// capture clones the value rather than the reference.
+#[doc(hidden)]
+pub trait CaptureAny {
+    /// Clones the value for the body; requires `Capture`.
+    fn __lithia_capture(&self) -> Self
+    where
+        Self: Capture;
+}
+
+impl<T> CaptureAny for T {
     #[inline]
-    fn __lithia_capture(&self) -> Self {
+    fn __lithia_capture(&self) -> Self
+    where
+        Self: Capture,
+    {
         self.clone()
     }
 }
-
-impl<T: Clone> Capture for T {}

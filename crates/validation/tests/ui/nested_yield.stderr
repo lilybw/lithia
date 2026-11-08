@@ -1,0 +1,5 @@
+error: `yield` publishes the enclosing effect! body's items and only works directly in that body
+ --> tests/ui/nested_yield.rs:7:13
+  |
+7 |             yield *n.get();
+  |             ^^^^^

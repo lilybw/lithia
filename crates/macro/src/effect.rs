@@ -288,7 +288,7 @@ fn capture_clone(ident: &Ident) -> TokenStream {
         #[allow(unused_variables)]
         let #ident = {
             #[allow(unused_imports)]
-            use ::lithia::__private::Capture as _;
+            use ::lithia::__private::CaptureAny as _;
             (#ident).__lithia_capture()
         };
     }
@@ -299,7 +299,7 @@ fn self_clone() -> TokenStream {
         #[allow(unused_variables)]
         let __self = {
             #[allow(unused_imports)]
-            use ::lithia::__private::Capture as _;
+            use ::lithia::__private::CaptureAny as _;
             (self).__lithia_capture()
         };
     }

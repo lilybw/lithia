@@ -49,20 +49,6 @@ pub fn fn_path(type_name: &'static str) -> &'static str {
     trimmed.strip_suffix("::").unwrap_or(trimmed)
 }
 
-/// A site for nodes created without `effect!`, such as in lithia's own tests.
-pub(crate) static UNKNOWN_SITE: Site = Site {
-    file: "<unknown>",
-    line: 0,
-    column: 0,
-    module: "<unknown>",
-    function: unknown_function,
-    tokens: "",
-};
-
-fn unknown_function() -> &'static str {
-    "<unknown>"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

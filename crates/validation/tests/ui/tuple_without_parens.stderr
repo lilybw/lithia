@@ -1,0 +1,5 @@
+error: expected `name = value`; wrap tuple values in parentheses
+ --> tests/ui/tuple_without_parens.rs:4:24
+  |
+4 |     let _ = effect!(1, 2);
+  |                        ^

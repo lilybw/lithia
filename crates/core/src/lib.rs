@@ -46,7 +46,7 @@ pub mod __private {
     pub use crate::options::Options;
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
     pub use crate::site::fn_path;
-    pub use crate::value::{Capture, InitDefault};
+    pub use crate::value::{Capture, CaptureAny, InitDefault};
 
     /// Option constants, glob-imported around option values so they need no import.
     pub mod consts {
