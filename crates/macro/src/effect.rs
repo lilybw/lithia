@@ -224,7 +224,10 @@ fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Result<Resolved
             return Err(syn::Error::new_spanned(&option.name, format!("option `{name}` is given twice")));
         }
         let value: &Expr = &option.value;
-        let consts: TokenStream = quote!(#[allow(unused_imports)] use ::lithia::__private::consts::*;);
+        let consts: TokenStream = quote!(
+            #[allow(unused_imports)]
+            use ::lithia::__private::consts::*;
+        );
         match name.as_str() {
             "init" => {
                 if let Form::Source(_) = form {
@@ -349,7 +352,12 @@ pub(crate) fn expand(input: EffectInput) -> syn::Result<TokenStream> {
     Ok(expansion)
 }
 
-fn expand_async_source(block: &ExprAsync, site: &TokenStream, init: &TokenStream, options: &TokenStream) -> syn::Result<TokenStream> {
+fn expand_async_source(
+    block: &ExprAsync,
+    site: &TokenStream,
+    init: &TokenStream,
+    options: &TokenStream,
+) -> syn::Result<TokenStream> {
     let generator: bool = scan_block_yields(&block.block)?;
     let moved: bool = block.capture.is_some();
     let mut body: syn::Block = block.block.clone();
@@ -385,7 +393,12 @@ fn expand_async_source(block: &ExprAsync, site: &TokenStream, init: &TokenStream
     }})
 }
 
-fn expand_derived(closure: &ExprClosure, site: &TokenStream, init: &TokenStream, options: &TokenStream) -> syn::Result<TokenStream> {
+fn expand_derived(
+    closure: &ExprClosure,
+    site: &TokenStream,
+    init: &TokenStream,
+    options: &TokenStream,
+) -> syn::Result<TokenStream> {
     // Dependencies: plain identifiers, each once (spec §4.1).
     let mut params: Vec<Ident> = Vec::new();
     let mut checks: Vec<TokenStream> = Vec::new();

@@ -15,8 +15,8 @@ use crate::epoch::{Epoch, Scope};
 use crate::handles::NodeHandle;
 use crate::ids::{self, NodeId};
 use crate::node::{NodeRef, Served};
+use crate::protocol::ServedEpochs;
 use crate::run::{self, RunShared};
-use crate::sets::WriterSet;
 use crate::{Dispose, Ghosted, Readable, Reflow, Status, dispose as disposal, protocol, settle_wait};
 
 /// What a flush waits for once its batch is delivered.
@@ -47,9 +47,9 @@ enum FrameTarget {
 }
 
 /// The epochs a run serves, with their writer sets, if `run` is still in flight.
-fn served_by(run: &Arc<RunShared>) -> Option<(NodeRef, Vec<(Arc<Epoch>, WriterSet)>)> {
+fn served_by(run: &Arc<RunShared>) -> Option<(NodeRef, ServedEpochs)> {
     let node: NodeRef = run.node.upgrade()?;
-    let served: Option<Vec<(Arc<Epoch>, WriterSet)>> = {
+    let served: Option<ServedEpochs> = {
         let guard = node.header().sched.lock();
         match &guard.run {
             Some(slot) if slot.id == run.id() && !run.is_cancelled() => {

@@ -1,5 +1,7 @@
 //! Propagation, batching, scopes and termination (spec §6.2, §7, §11.3).
 
+#![allow(clippy::type_complexity)]
+
 use std::time::Duration;
 
 use lithia::{Accessor, DerivedNode, SourceNode, effect};

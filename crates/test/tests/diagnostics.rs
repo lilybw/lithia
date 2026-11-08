@@ -79,17 +79,18 @@ fn site_of(status: Status) -> Option<Site> {
 async fn a_site_records_where_the_node_was_created() {
     let n: SourceNode<u32> = effect!(1);
     let line: u32 = line!() + 1;
-    let failing: DerivedNode<u32> = effect!(|n| { if *n.get() > 0 { panic!("site probe") } 0 });
+    let failing: DerivedNode<u32> = effect!(|n| {
+        if *n.get() > 0 {
+            panic!("site probe")
+        }
+        0
+    });
     lithia::flush().await;
     let site: Site = site_of(lithia::status(&failing)).expect("the body panicked");
     assert!(site.file.ends_with("diagnostics.rs"), "{}", site.file);
     assert_eq!(site.line, line);
     assert!(site.module.ends_with("diagnostics"), "{}", site.module);
-    assert!(
-        (site.function)().contains("a_site_records_where_the_node_was_created"),
-        "{}",
-        (site.function)()
-    );
+    assert!((site.function)().contains("a_site_records_where_the_node_was_created"), "{}", (site.function)());
     assert!(site.tokens.contains("site probe"), "{}", site.tokens);
 }
 
@@ -101,7 +102,8 @@ async fn a_panicking_run_warns_with_its_site_and_message() {
     lithia::flush().await;
     n.set(1);
     lithia::flush().await;
-    let event: Option<Captured> = find(Level::WARN, &["run panicked", "warn-probe-7781", "diagnostics.rs"], Duration::from_secs(2)).await;
+    let event: Option<Captured> =
+        find(Level::WARN, &["run panicked", "warn-probe-7781", "diagnostics.rs"], Duration::from_secs(2)).await;
     assert!(event.is_some());
 }
 
@@ -112,7 +114,8 @@ async fn a_node_freed_before_its_first_run_warns() {
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
     let _ = effect!(|marker_7782| *marker_7782.get());
     lithia::flush().await;
-    let event: Option<Captured> = find(Level::WARN, &["freed before its first run", &line], Duration::from_secs(2)).await;
+    let event: Option<Captured> =
+        find(Level::WARN, &["freed before its first run", &line], Duration::from_secs(2)).await;
     assert!(event.is_some());
 }
 
@@ -121,17 +124,26 @@ async fn cuts_warn_for_value_holders_and_trace_for_effects() {
     let _ = events();
     let x: SourceNode<i32> = effect!(0);
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let clamp: DerivedNode<bool> = effect!(|x| { let over: bool = *x.get() > 10; if over { x.set(10); } over });
+    let clamp: DerivedNode<bool> = effect!(|x| {
+        let over: bool = *x.get() > 10;
+        if over {
+            x.set(10);
+        }
+        over
+    });
     x.set(15);
     lithia::flush().await;
     assert_eq!(*x.get(), 10);
-    let event: Option<Captured> = find(Level::WARN, &["cut a writer that holds a value", &line], Duration::from_secs(2)).await;
+    let event: Option<Captured> =
+        find(Level::WARN, &["cut a writer that holds a value", &line], Duration::from_secs(2)).await;
     assert!(event.is_some());
     drop(clamp);
 
     let y: SourceNode<i32> = effect!(0);
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let _effect: DerivedNode<()> = effect!(|y| if *y.get() > 10 { y.set(10); });
+    let _effect: DerivedNode<()> = effect!(|y| if *y.get() > 10 {
+        y.set(10);
+    });
     y.set(15);
     lithia::flush().await;
     let event: Option<Captured> = find(Level::TRACE, &["cut an effect", &line], Duration::from_secs(2)).await;
@@ -145,7 +157,8 @@ async fn an_unattributed_loop_triggers_the_rerun_rate_warning() {
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
     let holder: DerivedNode<Option<DerivedNode<()>>> = effect!(|n| Some(effect!(|n| n.update(|v: &u32| v + 1))));
     let _ = tokio::time::timeout(Duration::from_millis(100), lithia::flush()).await;
-    let event: Option<Captured> = find(Level::WARN, &["reran faster than the configured rate", &line], Duration::from_secs(5)).await;
+    let event: Option<Captured> =
+        find(Level::WARN, &["reran faster than the configured rate", &line], Duration::from_secs(5)).await;
     lithia::dispose(&holder);
     assert!(event.is_some(), "loop count {}", *n.get());
 }

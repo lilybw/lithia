@@ -15,7 +15,7 @@ Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.2.4.pd
 
 ## Validation cases (spec §13)
 
-All of A–AG pass; stress: 400/400 release runs, 300/300 debug runs, 150/150 single-core runs.
+All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 single-core runs of A–AG.
 
 | Case | Status | Case | Status |
 |---|---|---|---|
@@ -35,7 +35,7 @@ All of A–AG pass; stress: 400/400 release runs, 300/300 debug runs, 150/150 si
 | N mid-propagation creation | pass | AE panic propagates writes | pass |
 | O yield nothing | pass | AF live_nodes | pass |
 | P unconditional write-back | pass | AG two runtimes | pass |
-| Q cut scoped to item | pass | AH must_use (trybuild) | pending |
+| Q cut scoped to item | pass | AH must_use (trybuild) | pass |
 
 ## Spec sections
 
@@ -43,7 +43,7 @@ All of A–AG pass; stress: 400/400 release runs, 300/300 debug runs, 150/150 si
 |---|---|---|
 | §3 Public API | done | all handles, views, traits, free functions, `lithia::test` |
 | §4.1–4.5 effect! expansion | done | deps, capture, site, init, generator lowering |
-| §4.6 compile errors | pending tests | messages implemented; trybuild coverage pending |
+| §4.6 compile errors | done | every message covered by `tests/ui` (trybuild) |
 | §5 Node model | done | |
 | §6 Writes, batching, defer, equals | done | |
 | §7 Propagation | done | see protocol notes below |
@@ -53,7 +53,7 @@ All of A–AG pass; stress: 400/400 release runs, 300/300 debug runs, 150/150 si
 | §11 Concurrency, scopes | done | fast path (§11.2) left out, as v0 allows |
 | §11.4 step 8 loom + TLA+ | pending | open question in §17 |
 | §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 1000/s) |
-| §15 Benchmarks | pending | |
+| §15 Benchmarks | done | results and observations in `docs/BENCHMARKS.md` |
 
 ## Decisions and interpretations
 
@@ -68,9 +68,20 @@ All of A–AG pass; stress: 400/400 release runs, 300/300 debug runs, 150/150 si
 - `move` async closures and generators move their captures into the shared `Arc<Captures>` instead of cloning.
 - Run tasks drop every strong reference to their node before closing epoch tokens, so a settled scope never sees a node kept alive by lithia (found by stress-testing Case J).
 
+- Reflow of a source node re-emits its value to its children but sends nothing to `changes()`, since the value did not change.
+- `lithia-test` holds 53 edge-case tests across values, propagation, async/generators, lifetime, capture, diagnostics and runtimes.
+
+## Working notes
+
+- Builds and tests run in a cloud container; the user's repo `E:\GitHub\lithia` is synced by sending a
+  git bundle with a unique file name per sync (the transfer reuses content for a repeated path), then a
+  fast-forward merge there. GitHub `origin` is `lilybw/lithia` (private). Commits are authored as
+  `claudia <lilybwanscher@gmail.com>`.
+- Stress loop used before every sync: run each test binary 100–400 times in debug and release, and once
+  pinned to a single core with `taskset -c 0`.
+
 ## Next steps
 
-1. trybuild compile tests: Case AH and every §4.6 message.
-2. Edge-case tests in `lithia-test`.
-3. Benchmarks (§15), best effort.
-4. loom model of the protocol (§11.4 step 8).
+1. loom model of the protocol (§11.4 step 8) and a TLA+ specification (§17).
+2. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
+3. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.

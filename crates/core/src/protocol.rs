@@ -9,8 +9,8 @@
 //!   count never reaches zero while work remains.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
@@ -22,6 +22,9 @@ use crate::options::{Fragility, GhostPolicy};
 use crate::run::{RunShared, TaskFuture};
 use crate::sets::WriterSet;
 use crate::{Failure, Site, diag, settle_wait};
+
+/// Epochs a run serves, each with the writer set its entry carried.
+pub(crate) type ServedEpochs = Vec<(Arc<Epoch>, WriterSet)>;
 
 /// A parent telling its waiting children that it settled an epoch.
 pub(crate) struct Release {
@@ -134,20 +137,20 @@ fn release_children(
             let header = child.header();
             let mut guard = header.sched.lock();
             let sched: &mut Sched = &mut guard;
-            if let (Some(index), Some(entry)) = (header.parent_index(from_id), sched.entries.get_mut(&epoch.id)) {
-                if entry.waiting.get(index) {
-                    entry.waiting.clear(index);
-                    entry.writers.union(writers);
-                    entry.newest = entry.newest.max(carry);
-                    if origin.is_some() {
-                        entry.origin = origin;
-                    }
-                    if entry.writers.contains(header.id) {
-                        entry.cut = true;
-                    }
-                    if entry.waiting.is_empty() {
-                        decide(&child, sched, epoch.id, work);
-                    }
+            if let (Some(index), Some(entry)) = (header.parent_index(from_id), sched.entries.get_mut(&epoch.id))
+                && entry.waiting.get(index)
+            {
+                entry.waiting.clear(index);
+                entry.writers.union(writers);
+                entry.newest = entry.newest.max(carry);
+                if origin.is_some() {
+                    entry.origin = origin;
+                }
+                if entry.writers.contains(header.id) {
+                    entry.cut = true;
+                }
+                if entry.waiting.is_empty() {
+                    decide(&child, sched, epoch.id, work);
                 }
             }
         }
@@ -208,7 +211,8 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     if let Some(fragility) = header.fragility {
         match fragility_causes(node, fragility) {
             Some(causes) => {
-                let parent: String = causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
+                let parent: String =
+                    causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
                 header.fail(Failure { message: "parent failed".to_string(), site: *header.site, causes });
                 sched.failed_by_fragility = true;
                 diag::fragility_failed(header.site, &parent);
@@ -401,7 +405,12 @@ fn upgrade_nodes(list: Vec<crate::node::WeakNodeRef>) -> Vec<NodeRef> {
 ///
 /// `writer` is the node whose run made the batch; its writes are routed against the base
 /// set plus itself, and its creations start with the base set minus itself.
-pub(crate) fn deliver_into(batch: Batch, targets: &[(Arc<Epoch>, WriterSet)], writer: Option<NodeId>, own: Option<OwnItem<'_>>) {
+pub(crate) fn deliver_into(
+    batch: Batch,
+    targets: &[(Arc<Epoch>, WriterSet)],
+    writer: Option<NodeId>,
+    own: Option<OwnItem<'_>>,
+) {
     let Batch { writes, reflows, creations, reruns, defers } = batch;
     let writes: Vec<(NodeRef, u64)> = upgrade_sorted(writes);
     let reflows: Vec<(NodeRef, u64)> = upgrade_sorted(reflows);
@@ -459,7 +468,8 @@ pub(crate) fn deliver_into(batch: Batch, targets: &[(Arc<Epoch>, WriterSet)], wr
         }
     }
     if !defers.is_empty() {
-        let epochs: Vec<Arc<Epoch>> = targets.iter().map(|(epoch, _): &(Arc<Epoch>, WriterSet)| epoch.clone()).collect();
+        let epochs: Vec<Arc<Epoch>> =
+            targets.iter().map(|(epoch, _): &(Arc<Epoch>, WriterSet)| epoch.clone()).collect();
         attach_defers(epochs, defers);
     }
     work.keep.extend(writes.into_iter().map(|(node, _)| node));
@@ -572,7 +582,9 @@ pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) {
             if let Some(slot) = &parent_sched.run {
                 list.extend(slot.served.iter().filter(|s: &&Served| !s.released).map(|s: &Served| s.epoch.clone()));
             }
-            list.extend(parent_sched.inherited.iter().filter(|s: &&Served| !s.released).map(|s: &Served| s.epoch.clone()));
+            list.extend(
+                parent_sched.inherited.iter().filter(|s: &&Served| !s.released).map(|s: &Served| s.epoch.clone()),
+            );
             list
         };
         let Some(index) = header.parent_index(parent_header.id) else {
@@ -613,11 +625,18 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 if let Some(entry) = sched.entries.remove(&epoch) {
                     merge_served(
                         &mut served,
-                        Served { epoch: entry.epoch, writers: entry.writers, tokens: 1, released: false, carry: entry.carry },
+                        Served {
+                            epoch: entry.epoch,
+                            writers: entry.writers,
+                            tokens: 1,
+                            released: false,
+                            carry: entry.carry,
+                        },
                     );
                 }
             }
-            let killed: bool = header.kind == Kind::AsyncSource && header.runs.load(Ordering::SeqCst) != shared.expected();
+            let killed: bool =
+                header.kind == Kind::AsyncSource && header.runs.load(Ordering::SeqCst) != shared.expected();
             if served.is_empty() {
                 false
             } else if header.is_ghost() || killed {
@@ -692,7 +711,7 @@ pub(crate) fn after_poll(
         diag::run_panicked(header.site, message);
         header.fail(Failure { message: message.clone(), site: *header.site, causes: Vec::new() });
     }
-    let snapshot: Option<(Vec<(Arc<Epoch>, WriterSet)>, bool)> = {
+    let snapshot: Option<(ServedEpochs, bool)> = {
         let guard = header.sched.lock();
         match &guard.run {
             Some(slot) if slot.id == shared.id() => Some((
@@ -819,7 +838,8 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
                 }
             }
             header.clear_bits(phase::PENDING);
-            let follow_up: bool = sched.entries.values().any(|entry: &Entry| entry.runnable && entry.waiting.is_empty());
+            let follow_up: bool =
+                sched.entries.values().any(|entry: &Entry| entry.runnable && entry.waiting.is_empty());
             if end == End::Finished && follow_up && !sched.queued && !header.is_ghost() {
                 sched.queued = true;
                 work.spawns.push(node.clone());

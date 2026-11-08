@@ -17,8 +17,8 @@
 pub use lithia_core::{
     ALWAYS_PROPAGATE, Accessor, Changes, DerivedNode, Dispose, FRAGILE, Failure, Flags, Fragility, GhostPolicy,
     Ghosted, NodeValue, ON_GHOST_CAUSE_FAILURE, ON_GHOST_EMIT_LATEST, ON_GHOST_SET_AS_PENDING, Readable, Reflow,
-    SEMI_FRAGILE, Setter, Site, SourceNode, Status, Writable, defer, dispose, eq, flush, reflow, spawn,
-    spawn_blocking, status, try_reflow,
+    SEMI_FRAGILE, Setter, Site, SourceNode, Status, Writable, defer, dispose, eq, flush, reflow, spawn, spawn_blocking,
+    status, try_reflow,
 };
 pub use lithia_macro::{effect, main, test};
 

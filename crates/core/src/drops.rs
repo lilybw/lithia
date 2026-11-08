@@ -3,9 +3,9 @@
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::mpsc;
-use std::sync::Arc;
 
 use tokio::runtime::Handle;
 
@@ -116,10 +116,8 @@ pub(crate) fn release_parents(parents: Vec<NodeRef>) {
     }
     let _reset: Reset = Reset;
     loop {
-        let next: Option<NodeRef> = PENDING_PARENTS
-            .try_with(|pending: &RefCell<Vec<NodeRef>>| pending.borrow_mut().pop())
-            .ok()
-            .flatten();
+        let next: Option<NodeRef> =
+            PENDING_PARENTS.try_with(|pending: &RefCell<Vec<NodeRef>>| pending.borrow_mut().pop()).ok().flatten();
         match next {
             Some(node) => drop(node),
             None => break,

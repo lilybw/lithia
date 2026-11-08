@@ -10,12 +10,12 @@ use std::task::{Context, Poll, Waker};
 
 use parking_lot::Mutex;
 
+use crate::NodeValue;
 use crate::context::{self, Batch, Frame, FrameKind};
 use crate::epoch::{Epoch, Scope};
 use crate::ids::{self, NodeId};
 use crate::node::{Body, BoxFut, Node, NodeRef, WeakNodeRef};
 use crate::protocol::{self, End, Outcome};
-use crate::NodeValue;
 
 /// State of one run shared between its task, its yielder and the scheduler.
 pub(crate) struct RunShared {
@@ -148,8 +148,7 @@ impl<K: NodeValue> RunFuture<K> {
         let (node_id, scope, expected): (NodeId, Arc<Scope>, u64) = match &strong {
             Some(strong) => {
                 let header = &strong.header;
-                let expected: u64 =
-                    if header.kind == crate::node::Kind::AsyncSource { 1 } else { 0 };
+                let expected: u64 = if header.kind == crate::node::Kind::AsyncSource { 1 } else { 0 };
                 (header.id, header.scope.clone(), expected)
             }
             None => (0, Scope::new(), 0),
@@ -269,12 +268,11 @@ impl<K: NodeValue> RunFuture<K> {
         let outcome: Outcome = {
             let _entered = context::enter(&frame);
             let state: &mut RunState<K> = &mut self.state;
-            let polled: Result<Poll<Option<K>>, Box<dyn Any + Send>> =
-                catch_unwind(AssertUnwindSafe(|| match state {
-                    RunState::Sync(f) => Poll::Ready(Some(f())),
-                    RunState::Future(future) => future.as_mut().poll(cx),
-                    RunState::Init | RunState::Done => Poll::Ready(None),
-                }));
+            let polled: Result<Poll<Option<K>>, Box<dyn Any + Send>> = catch_unwind(AssertUnwindSafe(|| match state {
+                RunState::Sync(f) => Poll::Ready(Some(f())),
+                RunState::Future(future) => future.as_mut().poll(cx),
+                RunState::Init | RunState::Done => Poll::Ready(None),
+            }));
             match polled {
                 Ok(Poll::Ready(Some(value))) => {
                     let shared: &RunShared = &self.shared;

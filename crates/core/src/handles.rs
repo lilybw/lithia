@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use crate::changes::Changes;
 use crate::context::{self, ClosureCreations, ClosureGuard};
 use crate::node::{Node, NodeRef, phase};
-use crate::{Ghosted, GhostPolicy, NodeValue, Status, diag, ids, protocol};
+use crate::{GhostPolicy, Ghosted, NodeValue, Status, diag, ids, protocol};
 
 /// Type-erased reference to a node, used by `effect!` and the free functions.
 #[doc(hidden)]
@@ -83,10 +83,9 @@ impl<K: NodeValue> Node<K> {
     pub(crate) fn read_or_panic(&self) -> Arc<K> {
         match self.read() {
             Ok(value) => value,
-            Err(Ghosted) => panic!(
-                "lithia: read of a disposed node under ON_GHOST_CAUSE_FAILURE ({})",
-                self.header.site
-            ),
+            Err(Ghosted) => {
+                panic!("lithia: read of a disposed node under ON_GHOST_CAUSE_FAILURE ({})", self.header.site)
+            }
         }
     }
 

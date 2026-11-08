@@ -18,7 +18,10 @@ fn parse_args(args: TokenStream) -> syn::Result<RuntimeArgs> {
     let metas: Punctuated<Meta, Token![,]> = Punctuated::<Meta, Token![,]>::parse_terminated.parse2(args)?;
     for meta in metas {
         let Meta::NameValue(pair) = &meta else {
-            return Err(syn::Error::new_spanned(meta, "expected `flavor = \"…\"`, `worker_threads = N` or `start_paused = bool`"));
+            return Err(syn::Error::new_spanned(
+                meta,
+                "expected `flavor = \"…\"`, `worker_threads = N` or `start_paused = bool`",
+            ));
         };
         let name: String = pair.path.get_ident().map(|i| i.to_string()).unwrap_or_default();
         match name.as_str() {
@@ -26,9 +29,19 @@ fn parse_args(args: TokenStream) -> syn::Result<RuntimeArgs> {
                 Expr::Lit(lit) => match &lit.lit {
                     Lit::Str(text) if text.value() == "multi_thread" => parsed.current_thread = false,
                     Lit::Str(text) if text.value() == "current_thread" => parsed.current_thread = true,
-                    _ => return Err(syn::Error::new_spanned(&pair.value, "flavor is \"multi_thread\" or \"current_thread\"")),
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            &pair.value,
+                            "flavor is \"multi_thread\" or \"current_thread\"",
+                        ));
+                    }
                 },
-                _ => return Err(syn::Error::new_spanned(&pair.value, "flavor is \"multi_thread\" or \"current_thread\"")),
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &pair.value,
+                        "flavor is \"multi_thread\" or \"current_thread\"",
+                    ));
+                }
             },
             "worker_threads" => parsed.worker_threads = Some(pair.value.clone()),
             "start_paused" => match &pair.value {

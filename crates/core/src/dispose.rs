@@ -58,9 +58,7 @@ pub(crate) fn dispose(root: &NodeRef) {
     }
     let reruns: Vec<WeakNodeRef> = survivors
         .iter()
-        .filter(|node: &&NodeRef| {
-            node.header().parent_ids.iter().any(|parent: &NodeId| freed_ids.contains(parent))
-        })
+        .filter(|node: &&NodeRef| node.header().parent_ids.iter().any(|parent: &NodeId| freed_ids.contains(parent)))
         .map(Arc::downgrade)
         .collect();
     drop(closure);

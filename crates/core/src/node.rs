@@ -141,10 +141,10 @@ impl Sched {
 
     /// The unreleased record a run, or the handover to the next run, holds for `epoch`.
     pub(crate) fn owed_mut(&mut self, epoch: EpochId) -> Option<&mut Served> {
-        if let Some(slot) = self.run.as_mut() {
-            if let Some(served) = slot.served.iter_mut().find(|s: &&mut Served| s.epoch.id == epoch && !s.released) {
-                return Some(served);
-            }
+        if let Some(slot) = self.run.as_mut()
+            && let Some(served) = slot.served.iter_mut().find(|s: &&mut Served| s.epoch.id == epoch && !s.released)
+        {
+            return Some(served);
         }
         self.inherited.iter_mut().find(|s: &&mut Served| s.epoch.id == epoch && !s.released)
     }
@@ -353,10 +353,10 @@ impl<K: NodeValue> AnyNode for Node<K> {
     }
 
     fn release_payload(&self) {
-        if self.header.ghost == GhostPolicy::CauseFailure {
-            if let Some(value) = self.value.swap(None) {
-                crate::drops::drop_value(value, self.header.runtime.as_ref());
-            }
+        if self.header.ghost == GhostPolicy::CauseFailure
+            && let Some(value) = self.value.swap(None)
+        {
+            crate::drops::drop_value(value, self.header.runtime.as_ref());
         }
         let body: Option<Body<K>> = self.body.lock().take();
         if let Some(body) = body {

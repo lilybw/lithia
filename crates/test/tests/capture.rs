@@ -30,7 +30,7 @@ async fn self_is_captured_as_a_clone() {
     let scaler: Scaler = Scaler { factor: 10 };
     let now: DerivedNode<u32> = scaler.scale(&n);
     let later: DerivedNode<u32> = scaler.scale_later(&n);
-    drop(scaler);
+    let _done_with: Scaler = scaler; // the nodes hold their own clones
     lithia::test::settled(&n).await;
     assert_eq!((*now.get(), *later.get()), (20, 20));
 }

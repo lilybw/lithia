@@ -320,24 +320,25 @@ impl Captures {
 
     fn mac(&mut self, mac: &Macro) {
         let name: String = mac.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
-        if name == "effect" {
-            if let Ok(nested) = syn::parse2::<crate::effect::EffectInput>(mac.tokens.clone()) {
-                nested.visit_captures(self);
-                return;
-            }
+        if name == "effect"
+            && let Ok(nested) = syn::parse2::<crate::effect::EffectInput>(mac.tokens.clone())
+        {
+            nested.visit_captures(self);
+            return;
         }
-        if FORMAT_MACROS.contains(&name.as_str()) {
-            if let Ok(args) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(mac.tokens.clone()) {
+        if FORMAT_MACROS.contains(&name.as_str())
+            && let Ok(args) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(mac.tokens.clone())
+        {
+            {
                 let mut named: HashSet<String> = HashSet::new();
                 for arg in &args {
-                    if let Expr::Assign(assign) = arg {
-                        if let Expr::Path(path) = &*assign.left {
-                            if let Some(ident) = path.path.get_ident() {
-                                named.insert(ident.to_string());
-                                self.expr(&assign.right);
-                                continue;
-                            }
-                        }
+                    if let Expr::Assign(assign) = arg
+                        && let Expr::Path(path) = &*assign.left
+                        && let Some(ident) = path.path.get_ident()
+                    {
+                        named.insert(ident.to_string());
+                        self.expr(&assign.right);
+                        continue;
                     }
                     self.expr(arg);
                 }

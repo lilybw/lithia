@@ -54,10 +54,13 @@ async fn writes_inside_closures_panic_and_leave_values_unchanged() {
 async fn writes_inside_equals_panic() {
     let other: SourceNode<u32> = effect!(0);
     let probe: SourceNode<u32> = other.clone();
-    let n: SourceNode<u32> = effect!(0, equals = move |_old: &u32, _new: &u32| {
-        probe.set(9);
-        false
-    });
+    let n: SourceNode<u32> = effect!(
+        0,
+        equals = move |_old: &u32, _new: &u32| {
+            probe.set(9);
+            false
+        }
+    );
     let outcome: std::thread::Result<()> = catch_unwind(AssertUnwindSafe(|| n.set(1)));
     assert!(outcome.is_err());
     assert_eq!((*n.get(), *other.get()), (0, 0));
@@ -65,12 +68,15 @@ async fn writes_inside_equals_panic() {
 
 #[lithia::test]
 async fn a_panicking_comparator_fails_the_write_and_keeps_the_value() {
-    let n: SourceNode<u32> = effect!(1, equals = |_old: &u32, new: &u32| {
-        if *new == 13 {
-            panic!("unlucky");
+    let n: SourceNode<u32> = effect!(
+        1,
+        equals = |_old: &u32, new: &u32| {
+            if *new == 13 {
+                panic!("unlucky");
+            }
+            false
         }
-        false
-    });
+    );
     let outcome: std::thread::Result<()> = catch_unwind(AssertUnwindSafe(|| n.set(13)));
     assert!(outcome.is_err());
     assert_eq!(*n.get(), 1);
@@ -81,12 +87,15 @@ async fn a_panicking_comparator_fails_the_write_and_keeps_the_value() {
 #[lithia::test]
 async fn a_panicking_comparator_fails_the_run() {
     let n: SourceNode<u32> = effect!(1);
-    let picky: DerivedNode<u32> = effect!(|n| *n.get(), equals = |_old: &u32, new: &u32| {
-        if *new == 13 {
-            panic!("unlucky");
+    let picky: DerivedNode<u32> = effect!(
+        |n| *n.get(),
+        equals = |_old: &u32, new: &u32| {
+            if *new == 13 {
+                panic!("unlucky");
+            }
+            false
         }
-        false
-    });
+    );
     lithia::flush().await;
     assert_eq!(*picky.get(), 1);
     n.set(13);
@@ -164,10 +173,13 @@ async fn reflow_of_a_derived_node_reruns_it_and_its_children() {
     let a: SourceNode<i32> = effect!(1);
     let body_runs: SourceNode<u32> = effect!(0);
     let child_runs: SourceNode<u32> = effect!(0);
-    let same: DerivedNode<i32> = effect!(|a| {
-        body_runs.update(|n: &u32| n + 1);
-        *a.get()
-    }, equals = lithia::eq);
+    let same: DerivedNode<i32> = effect!(
+        |a| {
+            body_runs.update(|n: &u32| n + 1);
+            *a.get()
+        },
+        equals = lithia::eq
+    );
     let _child: DerivedNode<()> = effect!(|same| child_runs.update(|n: &u32| n + 1));
     lithia::flush().await;
     assert_eq!((*body_runs.get(), *child_runs.get()), (1, 1));

@@ -144,10 +144,13 @@ async fn case_f_ghosts_and_views() {
 // Case G: async source node.
 #[lithia::test]
 async fn case_g_async_source() {
-    let user: SourceNode<String> = effect!(async {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        "loaded".to_string()
-    }, init = "guest".to_string());
+    let user: SourceNode<String> = effect!(
+        async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            "loaded".to_string()
+        },
+        init = "guest".to_string()
+    );
     assert!(matches!(lithia::status(&user), Status::Pending));
     assert_eq!(user.get().as_str(), "guest"); // initial value while pending
     lithia::test::settled(&user).await;
@@ -295,11 +298,14 @@ async fn case_n_created_mid_propagation() {
 #[lithia::test]
 async fn case_o_yield_nothing() {
     let on: SourceNode<bool> = effect!(true);
-    let last: DerivedNode<u32> = effect!(|on| {
-        if *on.get() {
-            yield 7;
-        }
-    }, init = 1);
+    let last: DerivedNode<u32> = effect!(
+        |on| {
+            if *on.get() {
+                yield 7;
+            }
+        },
+        init = 1
+    );
     lithia::test::settled(&last).await;
     assert_eq!(*last.get(), 7);
 
@@ -361,9 +367,7 @@ async fn case_r_equal_parent_stops_propagation() {
 #[lithia::test]
 async fn case_s_loop_through_creation() {
     let n: SourceNode<u32> = effect!(0);
-    let _holder: DerivedNode<Option<DerivedNode<()>>> = effect!(|n| {
-        Some(effect!(|n| n.update(|v: &u32| v + 1)))
-    });
+    let _holder: DerivedNode<Option<DerivedNode<()>>> = effect!(|n| { Some(effect!(|n| n.update(|v: &u32| v + 1))) });
     let spun: Result<(), tokio::time::error::Elapsed> =
         tokio::time::timeout(Duration::from_millis(50), lithia::flush()).await;
     assert!(spun.is_err()); // creating a node is not a write, so nothing cuts this loop
@@ -433,13 +437,16 @@ async fn case_w_reflow_from_its_own_body() {
     let tick: SourceNode<u32> = effect!(0);
     let body_runs: SourceNode<u32> = effect!(0);
     let child_runs: SourceNode<u32> = effect!(0);
-    let node: DerivedNode<u32> = effect!(|tick| {
-        body_runs.update(|n: &u32| n + 1);
-        if let Some(handle) = &*me.get() {
-            lithia::reflow(handle);
-        }
-        *tick.get()
-    }, equals = lithia::eq);
+    let node: DerivedNode<u32> = effect!(
+        |tick| {
+            body_runs.update(|n: &u32| n + 1);
+            if let Some(handle) = &*me.get() {
+                lithia::reflow(handle);
+            }
+            *tick.get()
+        },
+        equals = lithia::eq
+    );
     let _child: DerivedNode<()> = effect!(|node| child_runs.update(|n: &u32| n + 1));
     lithia::flush().await;
     me.set(Some(node.clone())); // a value cycle, broken at the end (10.1)

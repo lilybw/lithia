@@ -108,11 +108,14 @@ async fn a_write_stops_a_source_fed_by_a_stream() {
 #[lithia::test]
 async fn a_pending_parent_never_blocks_its_children() {
     let gate: SourceNode<u32> = effect!(0);
-    let never: DerivedNode<u32> = effect!(async |gate| {
-        let _ = *gate.get();
-        std::future::pending::<()>().await;
-        1
-    }, init = 7);
+    let never: DerivedNode<u32> = effect!(
+        async |gate| {
+            let _ = *gate.get();
+            std::future::pending::<()>().await;
+            1
+        },
+        init = 7
+    );
     let child: DerivedNode<u32> = effect!(|never| *never.get() + 1);
     lithia::flush().await;
     assert!(matches!(lithia::status(&never), Status::Pending));
