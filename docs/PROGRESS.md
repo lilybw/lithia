@@ -107,6 +107,14 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 - Code conventions applied in the same pass: every named binding and closure parameter is typed, and doc
   comments are at most two lines, with longer rationale moved into the spec.
 
+## Design migration to v0.3.0 (ownership)
+
+- `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc): stage 1 makes every node with a body
+  owned by the run, lithia task or `Owner` that created it, as one more holder beside its handles;
+  stage 2, automatic identity, is deferred. Revision 4, after three independent review rounds.
+- Status: waiting on Lily's answers to the doc's open questions (section 12) before implementing stage 1.
+  The spec stays at v0.2.5 until stage 1 passes the doc's verification plan.
+
 ## Next steps
 
 1. A TLA+ specification of the protocol (§11.4 step 8, §17).
