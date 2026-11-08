@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/macro",
+    "crates/public",
+    "crates/validation",
+    "crates/test",
+    "crates/bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+repository = "https://github.com/lilybw/lithia"
+
+[workspace.dependencies]
+lithia = { path = "crates/public" }
+lithia-core = { path = "crates/core" }
+lithia-macro = { path = "crates/macro" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-core = "0.3"
+arc-swap = "1"
+parking_lot = "0.12"
+tracing = "0.1"
+bitflags = "2"
+syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+trybuild = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "allow"

@@ -1,0 +1,4 @@
+# Every #[lithia::test] in this workspace runs under a timeout, so a flush or
+# settled that never returns fails the case instead of stalling it (spec §13).
+[env]
+LITHIA_TEST_TIMEOUT_MS = "20000"

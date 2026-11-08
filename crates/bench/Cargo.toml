@@ -1,0 +1,18 @@
+[package]
+name = "lithia-bench"
+description = "Benchmarks from the lithia spec (§15)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+lithia = { workspace = true }
+tokio = { workspace = true }
+
+[[bench]]
+name = "spec"
+harness = false
+
+[lints]
+workspace = true
