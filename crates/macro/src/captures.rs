@@ -395,11 +395,14 @@ pub(crate) fn inline_args(text: &str) -> Vec<String> {
                     break;
                 };
                 let inner: &str = &text[i + 1..i + 1 + close];
-                let name: &str = inner.split(':').next().unwrap_or("").trim();
-                let valid: bool = name.chars().next().is_some_and(|c: char| c.is_ascii_alphabetic() || c == '_')
-                    && name.chars().all(|c: char| c.is_ascii_alphanumeric() || c == '_');
-                if valid && is_lowercase(name) {
-                    out.push(name.to_string());
+                let (name, spec): (&str, &str) = inner.split_once(':').unwrap_or((inner, ""));
+                push_name(&mut out, name.trim());
+                // Width and precision may name arguments too: `{:>width$}`, `{:.prec$}`.
+                for (end, _) in spec.match_indices('$') {
+                    let start: usize = spec[..end]
+                        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                        .map_or(0, |at: usize| at + 1);
+                    push_name(&mut out, &spec[start..end]);
                 }
                 i += close + 2;
             }
@@ -407,6 +410,14 @@ pub(crate) fn inline_args(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn push_name(out: &mut Vec<String>, name: &str) {
+    let valid: bool = name.chars().next().is_some_and(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c: char| c.is_ascii_alphanumeric() || c == '_');
+    if valid && is_lowercase(name) && !out.iter().any(|existing: &String| existing == name) {
+        out.push(name.to_string());
+    }
 }
 
 /// Replaces `self` with `__self` in a token stream, leaving `self::` paths alone.
@@ -475,5 +486,6 @@ mod tests {
     #[test]
     fn inline_arg_parsing() {
         assert_eq!(inline_args("{a} {b:>4} {} {0} {{c}} {Upper}"), vec!["a", "b"]);
+        assert_eq!(inline_args("{:>width$} {v:.prec$} {0:1$}"), vec!["width", "v", "prec"]);
     }
 }
