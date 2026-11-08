@@ -7,10 +7,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Waker};
 
-use crate::context::{self, Frame, FrameKind};
+use crate::context::{self, Frame, FrameGuard, FrameKind};
 use crate::epoch::Scope;
 use crate::ids::NodeId;
-use crate::node::NodeRef;
+use crate::node::{NodeRef, Sched};
+use crate::sync::MutexGuard;
 use crate::{Readable, protocol};
 
 type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -62,7 +63,7 @@ impl ModelScope {
     pub fn batch<R>(&self, f: impl FnOnce() -> R) -> R {
         let frame: Frame = Frame::new(FrameKind::Task(self.0.clone()));
         let result: R = {
-            let _entered = context::enter(&frame);
+            let _entered: FrameGuard<'_> = context::enter(&frame);
             f()
         };
         protocol::deliver_outside(frame.take_batch(), &self.0);
@@ -107,9 +108,8 @@ pub fn work_until(stop: &loom::sync::atomic::AtomicBool) {
     }
 }
 
-/// Whether `node` and its descendants hold no open entry and no run, queued or in flight.
-/// Nodes are checked parents first (NodeId order is topological), so a parent found idle has
-/// already delivered everything its children will see.
+/// Whether `node` and its descendants hold no open entry and no run, queued or in flight;
+/// checked parents first, so an idle parent has already delivered to its children.
 pub fn quiet<N: Readable>(node: &N) -> bool {
     let root: NodeRef = node.__lithia_node().0;
     let mut closure: BTreeMap<NodeId, NodeRef> = BTreeMap::new();
@@ -123,7 +123,7 @@ pub fn quiet<N: Readable>(node: &N) -> bool {
         closure.insert(id, node);
     }
     closure.values().all(|node: &NodeRef| {
-        let guard = node.header().sched.lock();
+        let guard: MutexGuard<'_, Sched> = node.header().sched.lock();
         !(guard.busy() || guard.unseeded || !guard.entries.is_empty())
     })
 }

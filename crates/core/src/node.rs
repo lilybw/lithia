@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
-use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, Mutex};
+use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, Mutex, MutexGuard};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
@@ -288,7 +288,7 @@ impl Header {
 
     /// Strong references to the live children, pruning freed ones.
     pub(crate) fn subscribers(&self) -> Vec<NodeRef> {
-        let mut guard = self.sched.lock();
+        let mut guard: MutexGuard<'_, Sched> = self.sched.lock();
         let mut out: Vec<NodeRef> = Vec::with_capacity(guard.subscribers.len());
         guard.subscribers.retain(|(_, weak): &(NodeId, WeakNodeRef)| match weak.upgrade() {
             Some(node) => {
@@ -303,7 +303,7 @@ impl Header {
 
     /// Removes a freed or disposed child from the subscriber list.
     pub(crate) fn unsubscribe(&self, child: NodeId) {
-        let mut guard = self.sched.lock();
+        let mut guard: MutexGuard<'_, Sched> = self.sched.lock();
         guard.subscribers.retain(|(id, _): &(NodeId, WeakNodeRef)| *id != child);
     }
 

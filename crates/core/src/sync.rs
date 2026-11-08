@@ -2,10 +2,12 @@
 //! `--cfg lithia_loom`, so the model checker sees every lock, atomic and thread-local (spec §11.4 step 8).
 
 #[cfg(not(lithia_loom))]
-pub(crate) use parking_lot::Mutex;
+pub(crate) use parking_lot::{Mutex, MutexGuard};
 #[cfg(not(lithia_loom))]
 pub(crate) use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize};
 
+#[cfg(lithia_loom)]
+pub(crate) use loom::sync::MutexGuard;
 #[cfg(lithia_loom)]
 pub(crate) use loom::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize};
 
@@ -19,7 +21,7 @@ impl<T> Mutex<T> {
         Mutex(loom::sync::Mutex::new(value))
     }
 
-    pub(crate) fn lock(&self) -> loom::sync::MutexGuard<'_, T> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, T> {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 

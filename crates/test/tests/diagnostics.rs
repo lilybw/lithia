@@ -43,7 +43,8 @@ fn events() -> Arc<Mutex<Vec<Captured>>> {
     EVENTS
         .get_or_init(|| {
             let events: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(Vec::new()));
-            let subscriber = tracing_subscriber::registry().with(Collector(events.clone()));
+            let subscriber: tracing_subscriber::layer::Layered<Collector, tracing_subscriber::Registry> =
+                tracing_subscriber::registry().with(Collector(events.clone()));
             tracing::subscriber::set_global_default(subscriber).expect("one global subscriber");
             events
         })

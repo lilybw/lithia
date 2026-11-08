@@ -40,7 +40,7 @@ impl fmt::Display for Site {
 }
 
 /// Name of the marker function `effect!` declares to find its enclosing function.
-pub const SCOPE_MARKER: &str = "__lithia_scope";
+pub(crate) const SCOPE_MARKER: &str = "__lithia_scope";
 
 /// Trims the marker function's own name off a `type_name`, leaving the enclosing path.
 /// `assert_eq!(fn_path("app::run::__lithia_scope"), "app::run");`

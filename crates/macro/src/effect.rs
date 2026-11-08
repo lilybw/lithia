@@ -152,21 +152,10 @@ impl<'ast> Visit<'ast> for YieldScan {
     }
 }
 
-fn scan_yields(body: &Expr) -> syn::Result<bool> {
+/// Whether a body yields directly; a `yield` nested in a closure, async block or item is an error.
+fn scan_yields(visit: impl FnOnce(&mut YieldScan)) -> syn::Result<bool> {
     let mut scan: YieldScan = YieldScan::default();
-    scan.visit_expr(body);
-    if let Some(span) = scan.nested {
-        return Err(syn::Error::new(
-            span,
-            "`yield` publishes the enclosing effect! body's items and only works directly in that body",
-        ));
-    }
-    Ok(scan.direct)
-}
-
-fn scan_block_yields(block: &syn::Block) -> syn::Result<bool> {
-    let mut scan: YieldScan = YieldScan::default();
-    scan.visit_block(block);
+    visit(&mut scan);
     if let Some(span) = scan.nested {
         return Err(syn::Error::new(
             span,
@@ -255,7 +244,11 @@ fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Result<Resolved
                 chain = quote!(#chain.ghost({ #consts #value }));
             }
             "flags" => {
-                if value.to_token_stream().into_iter().any(|t| t.to_string() == "ALWAYS_PROPAGATE") {
+                if value
+                    .to_token_stream()
+                    .into_iter()
+                    .any(|token: proc_macro2::TokenTree| token.to_string() == "ALWAYS_PROPAGATE")
+                {
                     always_propagate = Some(option.name.span());
                 }
                 chain = quote!(#chain.flags({ #consts #value }));
@@ -358,7 +351,7 @@ fn expand_async_source(
     init: &TokenStream,
     options: &TokenStream,
 ) -> syn::Result<TokenStream> {
-    let generator: bool = scan_block_yields(&block.block)?;
+    let generator: bool = scan_yields(|scan: &mut YieldScan| scan.visit_block(&block.block))?;
     let moved: bool = block.capture.is_some();
     let mut body: syn::Block = block.block.clone();
     if generator {
@@ -423,7 +416,7 @@ fn expand_derived(
 
     let is_async: bool = closure.asyncness.is_some();
     let moved: bool = closure.capture.is_some();
-    let generator: bool = scan_yields(&closure.body)?;
+    let generator: bool = scan_yields(|scan: &mut YieldScan| scan.visit_expr(&closure.body))?;
     let mut body: Expr = (*closure.body).clone();
     if generator {
         LowerYield.visit_expr_mut(&mut body);

@@ -1,10 +1,5 @@
 //! Loom models of the scheduling protocol over the validation cases (spec §11.4 step 8).
-//! Run with `RUSTFLAGS="--cfg lithia_loom" cargo test -p lithia-test --test loom --release`;
-//! `LOOM_MAX_PREEMPTIONS` overrides the preemption bound (default 3).
-//!
-//! Each model runs the real engine on loom threads: the main thread delivers batches and polls
-//! runs, and worker threads poll runs alongside it, so every lock, atomic and value cell the
-//! protocol touches is explored in every order loom's bound allows.
+//! `RUSTFLAGS="--cfg lithia_loom" cargo test -p lithia-test --test loom --release`; bound: `LOOM_MAX_PREEMPTIONS`.
 
 #![cfg(lithia_loom)]
 #![allow(clippy::type_complexity)]
@@ -18,7 +13,7 @@ use loom::sync::atomic::{AtomicBool, Ordering};
 fn quiet_expected_panics() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let default = std::panic::take_hook();
+        let default: Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static> = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info: &std::panic::PanicHookInfo<'_>| {
             let message: String = info.to_string();
             let expected: bool =

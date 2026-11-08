@@ -6,8 +6,9 @@ use std::sync::atomic::Ordering;
 
 use crate::context;
 use crate::ids::NodeId;
-use crate::node::{NodeRef, WeakNodeRef, phase};
+use crate::node::{Header, NodeRef, WeakNodeRef, phase};
 use crate::protocol;
+use crate::sync::MutexGuard;
 
 /// Frees `root` and every descendant with no live parent outside the freed branch.
 pub(crate) fn dispose(root: &NodeRef) {
@@ -33,7 +34,7 @@ pub(crate) fn dispose(root: &NodeRef) {
     let mut freed_ids: BTreeSet<NodeId> = BTreeSet::from([root.header().id]);
     let mut survivors: Vec<NodeRef> = Vec::new();
     for (id, node) in &closure {
-        let header = node.header();
+        let header: &Header = node.header();
         if header.is_ghost() {
             continue;
         }
@@ -68,7 +69,7 @@ pub(crate) fn dispose(root: &NodeRef) {
 }
 
 fn is_ghost_parent(node: &NodeRef, parent: NodeId) -> bool {
-    let parents = node.header().parents.lock();
+    let parents: MutexGuard<'_, Option<Vec<NodeRef>>> = node.header().parents.lock();
     parents
         .as_ref()
         .and_then(|list: &Vec<NodeRef>| list.iter().find(|p: &&NodeRef| p.header().id == parent))
@@ -77,14 +78,14 @@ fn is_ghost_parent(node: &NodeRef, parent: NodeId) -> bool {
 
 /// Enters `Ghost` under the write lock, so no write can land afterwards.
 fn mark_ghost(node: &NodeRef) {
-    let header = node.header();
-    let _write = header.write.lock();
+    let header: &Header = node.header();
+    let _write: MutexGuard<'_, ()> = header.write.lock();
     header.set_bits(phase::GHOST);
     header.clear_bits(phase::PENDING);
 }
 
 fn teardown(node: &NodeRef) {
-    let header = node.header();
+    let header: &Header = node.header();
     protocol::retire(node);
     let parents: Option<Vec<NodeRef>> = header.parents.lock().take();
     if let Some(list) = parents.as_ref() {

@@ -56,8 +56,8 @@ fn drop_on_pool<T: Send + 'static>(payload: T, runtime: Option<&Handle>, is_valu
     }
 }
 
-#[cfg(not(lithia_loom))]
 /// A payload on its way to be dropped; if the runtime never runs it, it goes to the drop thread.
+#[cfg(not(lithia_loom))]
 struct Parcel {
     payload: Option<Box<dyn Any + Send>>,
     is_value: bool,
@@ -116,14 +116,14 @@ fn send_to_drop_thread(parcel: Parcel) {
 
 /// Drops a freed node's parents iteratively, so a long chain cannot overflow the stack.
 pub(crate) fn release_parents(parents: Vec<NodeRef>) {
+    let mut parents: Option<Vec<NodeRef>> = Some(parents);
     let queued: bool = PENDING_PARENTS
-        .try_with(|pending: &RefCell<Vec<NodeRef>>| pending.borrow_mut().extend(parents.iter().cloned()))
+        .try_with(|pending: &RefCell<Vec<NodeRef>>| pending.borrow_mut().extend(parents.take().into_iter().flatten()))
         .is_ok();
     if !queued {
         drop(parents);
         return;
     }
-    drop(parents);
     if RELEASING.try_with(|flag: &Cell<bool>| flag.replace(true)).unwrap_or(true) {
         return;
     }

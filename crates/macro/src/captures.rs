@@ -89,7 +89,7 @@ impl Captures {
         match expr {
             Expr::Path(path) => {
                 if path.qself.is_none() && path.path.leading_colon.is_none() && path.path.segments.len() == 1 {
-                    let segment = &path.path.segments[0];
+                    let segment: &syn::PathSegment = &path.path.segments[0];
                     if segment.arguments.is_none() {
                         self.use_ident(&segment.ident);
                     }
@@ -319,7 +319,8 @@ impl Captures {
     }
 
     fn mac(&mut self, mac: &Macro) {
-        let name: String = mac.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+        let name: String =
+            mac.path.segments.last().map(|segment: &syn::PathSegment| segment.ident.to_string()).unwrap_or_default();
         if name == "effect"
             && let Ok(nested) = syn::parse2::<crate::effect::EffectInput>(mac.tokens.clone())
         {

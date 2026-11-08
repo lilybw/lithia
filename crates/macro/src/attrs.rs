@@ -23,7 +23,7 @@ fn parse_args(args: TokenStream) -> syn::Result<RuntimeArgs> {
                 "expected `flavor = \"…\"`, `worker_threads = N` or `start_paused = bool`",
             ));
         };
-        let name: String = pair.path.get_ident().map(|i| i.to_string()).unwrap_or_default();
+        let name: String = pair.path.get_ident().map(|ident: &syn::Ident| ident.to_string()).unwrap_or_default();
         match name.as_str() {
             "flavor" => match &pair.value {
                 Expr::Lit(lit) => match &lit.lit {
@@ -98,10 +98,10 @@ pub(crate) fn main(args: TokenStream, item: TokenStream) -> syn::Result<TokenStr
     let mut function: ItemFn = async_fn(item, "main")?;
     function.sig.asyncness = None;
     let builder: TokenStream = builder(&runtime);
-    let body = &function.block;
-    let attrs = &function.attrs;
-    let vis = &function.vis;
-    let sig = &function.sig;
+    let body: &syn::Block = &function.block;
+    let attrs: &[syn::Attribute] = &function.attrs;
+    let vis: &syn::Visibility = &function.vis;
+    let sig: &syn::Signature = &function.sig;
     Ok(quote! {
         #(#attrs)*
         #vis #sig {
@@ -117,10 +117,10 @@ pub(crate) fn test(args: TokenStream, item: TokenStream) -> syn::Result<TokenStr
     function.sig.asyncness = None;
     let builder: TokenStream = builder(&runtime);
     let name: String = function.sig.ident.to_string();
-    let body = &function.block;
-    let attrs = &function.attrs;
-    let vis = &function.vis;
-    let sig = &function.sig;
+    let body: &syn::Block = &function.block;
+    let attrs: &[syn::Attribute] = &function.attrs;
+    let vis: &syn::Visibility = &function.vis;
+    let sig: &syn::Signature = &function.sig;
     Ok(quote! {
         #[::core::prelude::v1::test]
         #(#attrs)*

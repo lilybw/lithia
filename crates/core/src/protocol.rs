@@ -1,23 +1,17 @@
 //! The scheduling protocol: framing, releases, runs and settling (spec §7, §11.4).
-//!
-//! Invariants kept here:
-//! - A thread holds at most one scheduling lock, except `link`, which holds the new
-//!   node's lock while it takes each parent's in turn; no user code runs under one.
-//! - A node owes its children at most one release per epoch: an open entry, or a run
-//!   holding the epoch unreleased. Children wait on that one release through one bit.
-//! - Entries are opened before the work that opened them closes its own, so an epoch's
-//!   count never reaches zero while work remains.
+//! Its locking and release invariants are stated in spec §11.4.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::sync::{AtomicUsize, Mutex};
+use crate::sync::{AtomicUsize, Mutex, MutexGuard};
 
 use crate::context::{Batch, Deferred};
+use crate::diag::Diag;
 use crate::epoch::{Epoch, Scope};
 use crate::ids::{self, EpochId, NodeId};
-use crate::node::{Entry, Kind, NodeRef, RunSlot, Sched, Served, merge_served, phase};
+use crate::node::{Entry, Header, Kind, NodeRef, RunSlot, Sched, Served, merge_served, phase};
 use crate::options::{Fragility, GhostPolicy};
 use crate::run::{RunShared, TaskFuture};
 use crate::sets::WriterSet;
@@ -43,6 +37,7 @@ pub(crate) struct Work {
     spawns: Vec<NodeRef>,
     wakes: Vec<Arc<RunShared>>,
     closes: Vec<Arc<Epoch>>,
+    diags: Vec<Diag>,
     /// Strong references taken from weak lists, dropped only after every lock is released.
     keep: Vec<NodeRef>,
 }
@@ -69,6 +64,9 @@ pub(crate) fn drain_deferred(mut work: Work) -> Vec<Arc<Epoch>> {
         release_children(&release.from, &release.epoch, release.carry, &release.writers, release.origin, &mut work);
         work.keep.push(release.from);
     }
+    for diag in std::mem::take(&mut work.diags) {
+        diag.emit();
+    }
     let mut spawns: Vec<NodeRef> = std::mem::take(&mut work.spawns);
     spawns.sort_by_key(|node: &NodeRef| node.header().id);
     spawns.dedup_by_key(|node: &mut NodeRef| node.header().id);
@@ -91,8 +89,8 @@ pub(crate) fn frame(root: &NodeRef, epoch: &Arc<Epoch>, work: &mut Work) {
         let parent_id: NodeId = parent.header().id;
         for child in parent.header().subscribers() {
             let recurse: bool = {
-                let header = child.header();
-                let mut guard = header.sched.lock();
+                let header: &Header = child.header();
+                let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
                 let sched: &mut Sched = &mut guard;
                 match header.parent_index(parent_id) {
                     None => false,
@@ -134,8 +132,8 @@ fn release_children(
     let from_id: NodeId = from.header().id;
     for child in from.header().subscribers() {
         {
-            let header = child.header();
-            let mut guard = header.sched.lock();
+            let header: &Header = child.header();
+            let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
             let sched: &mut Sched = &mut guard;
             if let (Some(index), Some(entry)) = (header.parent_index(from_id), sched.entries.get_mut(&epoch.id))
                 && entry.waiting.get(index)
@@ -160,12 +158,12 @@ fn release_children(
 
 /// Failures of the parents that make a fragile node fail, if its condition holds (spec §9.2).
 fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<Vec<Arc<Failure>>> {
-    let header = node.header();
-    let parents = header.parents.lock();
-    let list = parents.as_ref()?;
+    let header: &Header = node.header();
+    let parents: MutexGuard<'_, Option<Vec<NodeRef>>> = header.parents.lock();
+    let list: &Vec<NodeRef> = parents.as_ref()?;
     let mut causes: Vec<Arc<Failure>> = Vec::new();
     for parent in list {
-        let parent_header = parent.header();
+        let parent_header: &Header = parent.header();
         let bits: u32 = parent_header.phase();
         if bits & phase::GHOST != 0 {
             if parent_header.ghost == GhostPolicy::CauseFailure {
@@ -191,7 +189,7 @@ fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<Vec<Arc<Fail
 
 /// Decides what a ready entry does: run, wait for the run in flight, or settle (spec §7.2).
 fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
-    let header = node.header();
+    let header: &Header = node.header();
     if header.is_ghost() {
         settle(node, sched, epoch, work);
         return;
@@ -203,7 +201,7 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
         return;
     };
     if entry.cut {
-        diag::cut(header, entry.origin);
+        work.diags.push(Diag::Cut { writer: header.site, is_unit: header.is_unit, written: entry.origin });
         settle(node, sched, epoch, work);
         return;
     }
@@ -215,7 +213,7 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
                     causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
                 header.fail(Failure { message: "parent failed".to_string(), site: *header.site, causes });
                 sched.failed_by_fragility = true;
-                diag::fragility_failed(header.site, &parent);
+                work.diags.push(Diag::FragilityFailed { site: header.site, parent });
                 settle(node, sched, epoch, work);
                 return;
             }
@@ -245,7 +243,7 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
             if !waits_for_run && !slot.restart {
                 slot.restart = true;
                 slot.shared.cancel();
-                diag::superseded(header.site, slot.id);
+                work.diags.push(Diag::Superseded { site: header.site, run: slot.id });
                 work.wakes.push(slot.shared.clone());
             }
         }
@@ -275,8 +273,8 @@ fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
 
 /// Decides every ready entry not yet marked runnable.
 fn evaluate(node: &NodeRef, work: &mut Work) {
-    let header = node.header();
-    let mut guard = header.sched.lock();
+    let header: &Header = node.header();
+    let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
     let sched: &mut Sched = &mut guard;
     let ready: Vec<EpochId> = sched
         .entries
@@ -301,9 +299,9 @@ enum Seed {
 }
 
 fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, work: &mut Work) {
-    let header = node.header();
+    let header: &Header = node.header();
     let created: bool = {
-        let mut guard = header.sched.lock();
+        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
         if header.is_ghost() {
             return;
@@ -340,9 +338,9 @@ fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, wor
 }
 
 fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet, stamp: u64, work: &mut Work) {
-    let header = node.header();
+    let header: &Header = node.header();
     let created: bool = {
-        let mut guard = header.sched.lock();
+        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
         if header.is_ghost() {
             return;
@@ -395,16 +393,14 @@ fn upgrade_sorted(list: Vec<(crate::node::WeakNodeRef, NodeId, u64)>) -> Vec<(No
 }
 
 fn upgrade_nodes(list: Vec<crate::node::WeakNodeRef>) -> Vec<NodeRef> {
-    let mut out: Vec<NodeRef> = list.into_iter().filter_map(|weak| weak.upgrade()).collect();
+    let mut out: Vec<NodeRef> = list.into_iter().filter_map(|weak: crate::node::WeakNodeRef| weak.upgrade()).collect();
     out.sort_by_key(|node: &NodeRef| node.header().id);
     out.dedup_by_key(|node: &mut NodeRef| node.header().id);
     out
 }
 
-/// Delivers a batch into `targets`, each an epoch with its base writer set (spec §7.1, §7.4).
-///
-/// `writer` is the node whose run made the batch; its writes are routed against the base
-/// set plus itself, and its creations start with the base set minus itself.
+/// Delivers a batch into `targets`, each an epoch with its base writer set (spec §7.1, §7.4);
+/// `writer`'s writes route against the base set plus itself, its creations seed with it removed.
 pub(crate) fn deliver_into(
     batch: Batch,
     targets: &[(Arc<Epoch>, WriterSet)],
@@ -574,13 +570,13 @@ pub(crate) fn fire_deferred(deferred: Deferred) {
 /// Links a new node to its parents and opens entries for every epoch a parent still owes
 /// a release in (spec §11.4 step 7).
 pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) {
-    let header = node.header();
+    let header: &Header = node.header();
     let weak: crate::node::WeakNodeRef = Arc::downgrade(node);
-    let mut guard = header.sched.lock();
+    let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
     for parent in parents {
-        let parent_header = parent.header();
+        let parent_header: &Header = parent.header();
         let epochs: Vec<Arc<Epoch>> = {
-            let mut parent_guard = parent_header.sched.lock();
+            let mut parent_guard: MutexGuard<'_, Sched> = parent_header.sched.lock();
             let parent_sched: &mut Sched = &mut parent_guard;
             parent_sched.subscribers.push((header.id, weak.clone()));
             let mut list: Vec<Arc<Epoch>> =
@@ -611,10 +607,10 @@ pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) {
 /// Starts a queued run: takes over the runnable entries and the handover (spec §7.3 item 1).
 /// Returns whether it started, and tokens for the caller to close.
 pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<Arc<Epoch>>) {
-    let header = node.header();
+    let header: &Header = node.header();
     let mut work: Work = Work::default();
     let started: bool = {
-        let mut guard = header.sched.lock();
+        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
         sched.queued = false;
         if sched.run.is_some() {
@@ -712,13 +708,13 @@ pub(crate) fn after_poll(
     outcome: &Outcome,
     own_stamp: u64,
 ) -> Vec<Arc<Epoch>> {
-    let header = node.header();
+    let header: &Header = node.header();
     if let Outcome::Panicked(message) = outcome {
         diag::run_panicked(header.site, message);
         header.fail(Failure { message: message.clone(), site: *header.site, causes: Vec::new() });
     }
     let snapshot: Option<(ServedEpochs, bool)> = {
-        let guard = header.sched.lock();
+        let guard: MutexGuard<'_, Sched> = header.sched.lock();
         match &guard.run {
             Some(slot) if slot.id == shared.id() => Some((
                 slot.served.iter().map(|s: &Served| (s.epoch.clone(), s.writers.clone())).collect(),
@@ -749,7 +745,7 @@ pub(crate) fn after_poll(
     }
     let mut work: Work = Work::default();
     {
-        let mut guard = header.sched.lock();
+        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
         let Sched { run, entries, .. } = sched;
         if let Some(slot) = run.as_mut().filter(|slot: &&mut RunSlot| slot.id == shared.id()) {
@@ -800,10 +796,10 @@ pub(crate) enum End {
 /// Returns tokens for the caller to close once it holds no strong reference to the node.
 #[must_use = "the returned tokens must be closed with close_all"]
 pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec<Arc<Epoch>> {
-    let header = node.header();
+    let header: &Header = node.header();
     let mut work: Work = Work::default();
     {
-        let mut guard = header.sched.lock();
+        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
         let slot: RunSlot = match sched.run.take() {
             Some(slot) if slot.id == shared.id() => slot,
@@ -862,10 +858,10 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
 #[must_use = "the returned tokens must be closed with close_all"]
 pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunShared>) -> Vec<Arc<Epoch>> {
     let mut pending: Vec<Arc<Epoch>> = finalize(node, shared, End::Shutdown);
-    let header = node.header();
+    let header: &Header = node.header();
     let mut work: Work = Work::default();
     {
-        let mut guard = header.sched.lock();
+        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
         if sched.run.is_some() {
             return pending;
@@ -893,22 +889,22 @@ pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunShared>) -> Vec<Arc<Epoch>
 /// Stops the async block or generator feeding a source node after a write (spec §7.3 item 5).
 pub(crate) fn kill_run(node: &NodeRef) {
     let shared: Option<Arc<RunShared>> = {
-        let guard = node.header().sched.lock();
+        let guard: MutexGuard<'_, Sched> = node.header().sched.lock();
         guard.run.as_ref().map(|slot: &RunSlot| slot.shared.clone())
     };
     if let Some(shared) = shared {
         shared.cancel();
-        diag::superseded(node.header().site, shared.id());
+        diag::Diag::Superseded { site: node.header().site, run: shared.id() }.emit();
         shared.wake();
     }
 }
 
 /// Settles every entry and run of a node that can no longer run; used by disposal.
 pub(crate) fn retire(node: &NodeRef) {
-    let header = node.header();
+    let header: &Header = node.header();
     let mut work: Work = Work::default();
     let shared: Option<Arc<RunShared>> = {
-        let mut guard = header.sched.lock();
+        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
         let epochs: Vec<EpochId> = sched.entries.keys().copied().collect();
         for epoch in epochs {

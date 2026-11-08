@@ -6,7 +6,8 @@ use std::sync::atomic::Ordering;
 
 use crate::changes::Changes;
 use crate::context::{self, ClosureCreations, ClosureGuard};
-use crate::node::{Node, NodeRef, phase};
+use crate::node::{Header, Node, NodeRef, phase};
+use crate::sync::MutexGuard;
 use crate::{GhostPolicy, Ghosted, NodeValue, Status, diag, ids, protocol};
 
 /// Type-erased reference to a node, used by `effect!` and the free functions.
@@ -70,7 +71,7 @@ pub trait Dispose: sealed::Sealed {
 impl<K: NodeValue> Node<K> {
     /// Current value, honouring the ghost policy (spec §10.5).
     pub(crate) fn read(&self) -> Result<Arc<K>, Ghosted> {
-        let header = &self.header;
+        let header: &Header = &self.header;
         if header.is_ghost() {
             if header.ghost == GhostPolicy::CauseFailure {
                 return Err(Ghosted);
@@ -93,11 +94,11 @@ impl<K: NodeValue> Node<K> {
     pub(crate) fn write(self: &Arc<Self>, guarded: bool, compute: impl FnOnce(&K) -> K) -> Result<(), Ghosted> {
         context::assert_not_in_closure("a lithia write");
         let _creations: ClosureCreations = ClosureCreations::new();
-        let header = &self.header;
+        let header: &Header = &self.header;
         let mut replaced: Option<Arc<K>> = None;
         let mut discarded: Option<K> = None;
         let stamp: Option<u64> = {
-            let _write = header.write.lock();
+            let _write: MutexGuard<'_, ()> = header.write.lock();
             if header.is_ghost() {
                 return Err(Ghosted);
             }

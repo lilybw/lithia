@@ -147,7 +147,8 @@ pub(crate) fn detached_scope() -> Arc<Scope> {
 
 fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
     static SCOPES: OnceLock<parking_lot::Mutex<HashMap<tokio::task::Id, Weak<Scope>>>> = OnceLock::new();
-    let mut map = SCOPES.get_or_init(|| parking_lot::Mutex::new(HashMap::new())).lock();
+    let mut map: parking_lot::MutexGuard<'_, HashMap<tokio::task::Id, Weak<Scope>>> =
+        SCOPES.get_or_init(|| parking_lot::Mutex::new(HashMap::new())).lock();
     if let Some(scope) = map.get(&id).and_then(Weak::upgrade) {
         return scope;
     }

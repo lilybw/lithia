@@ -4,19 +4,20 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, Mutex};
+use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, Mutex, MutexGuard};
 use tokio::runtime::Handle;
 
 use crate::context;
 use crate::epoch::Scope;
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
 use crate::ids::{self, NodeId};
-use crate::node::{Body, BoxFut, Header, Kind, Node, NodeRef, RateWindow, Sched, phase};
+use crate::node::{Body, BoxFut, Header, Kind, Node, NodeRef, RateWindow, Sched, WeakNodeRef, phase};
 use crate::options::Options;
-use crate::run::Yielder;
+use crate::run::{RunShared, Yielder};
 use crate::{NodeValue, Readable, Site, protocol, settle_wait};
 
 /// Type-erased dependency of a derived node; requires `Readable`.
+/// `let deps: [NodeHandle; 1] = [node_ref(&count)];`
 #[doc(hidden)]
 pub fn node_ref<R: Readable>(handle: &R) -> NodeHandle {
     handle.__lithia_node()
@@ -49,7 +50,7 @@ fn new_node<K: NodeValue>(
     let runtime: Option<Handle> = runtime_for(kind, site);
     let mut parents: Vec<NodeRef> = Vec::with_capacity(deps.len());
     for dep in deps {
-        let header = dep.0.header();
+        let header: &Header = dep.0.header();
         if header.is_ghost() {
             panic!("lithia: cannot create a node that depends on a disposed node ({site}; parent {})", header.site);
         }
@@ -59,9 +60,9 @@ fn new_node<K: NodeValue>(
     }
     parents.sort_by_key(|p: &NodeRef| p.header().id);
     let parent_ids: Box<[NodeId]> = parents.iter().map(|p: &NodeRef| p.header().id).collect();
-    let run: Option<Arc<crate::run::RunShared>> = context::current_run();
+    let run: Option<Arc<RunShared>> = context::current_run();
     let scope: Arc<Scope> = context::current_scope();
-    let creator: Option<NodeId> = run.as_ref().map(|r| r.node_id);
+    let creator: Option<NodeId> = run.as_ref().map(|r: &Arc<RunShared>| r.node_id);
     let pending: bool = kind != Kind::Source;
     let (sender, _): (tokio::sync::watch::Sender<u64>, tokio::sync::watch::Receiver<u64>) =
         tokio::sync::watch::channel(0u64);
@@ -100,9 +101,9 @@ fn new_node<K: NodeValue>(
         protocol::link(&erased, &parents);
     }
     drop(parents);
-    if let Some(creator) = run.as_ref().and_then(|r| r.node.upgrade()) {
-        let mut guard = creator.header().sched.lock();
-        guard.created.retain(|weak| weak.strong_count() > 0);
+    if let Some(creator) = run.as_ref().and_then(|r: &Arc<RunShared>| r.node.upgrade()) {
+        let mut guard: MutexGuard<'_, Sched> = creator.header().sched.lock();
+        guard.created.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
         guard.created.push(Arc::downgrade(&erased));
         drop(guard);
         settle_wait::bump();

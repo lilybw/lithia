@@ -11,8 +11,7 @@ use tokio_stream::wrappers::WatchStream;
 use crate::NodeValue;
 use crate::node::Node;
 
-/// `Unpin` `Stream<Item = Arc<K>>` of a node's values: the current value first, then each change;
-/// holds the node weakly (10.5).
+/// `Unpin` `Stream<Item = Arc<K>>` of a node's values, current value first; holds the node weakly.
 /// `while let Some(v) = changes.next().await { println!("{v}"); }`
 pub struct Changes<K: NodeValue> {
     node: Weak<Node<K>>,
@@ -24,7 +23,7 @@ impl<K: NodeValue> Changes<K> {
         let receiver: Option<tokio::sync::watch::Receiver<u64>> = if node.header.is_ghost() {
             None
         } else {
-            node.header.changes.lock().as_ref().map(|sender| sender.subscribe())
+            node.header.changes.lock().as_ref().map(|sender: &tokio::sync::watch::Sender<u64>| sender.subscribe())
         };
         Changes { node: Arc::downgrade(node), inner: receiver.map(WatchStream::new) }
     }

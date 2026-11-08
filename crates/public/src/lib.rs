@@ -1,18 +1,5 @@
 //! LITHIA: a thread-safe, fine-grained reactive engine for Rust on tokio, after Solid 2.0's signals.
-//! One primitive, `effect!`, creates signals, memos and effects with explicit dependencies.
-//!
-//! ```ignore
-//! use lithia::{effect, DerivedNode, SourceNode};
-//!
-//! #[lithia::main]
-//! async fn main() {
-//!     let count: SourceNode<u32> = effect!(0);
-//!     let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);
-//!     count.set(3);
-//!     lithia::flush().await;
-//!     assert_eq!(*doubled.get(), 6);
-//! }
-//! ```
+//! `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);` creates a memo over `count`.
 
 pub use lithia_core::{
     ALWAYS_PROPAGATE, Accessor, Changes, DerivedNode, Dispose, FRAGILE, Failure, Flags, Fragility, GhostPolicy,

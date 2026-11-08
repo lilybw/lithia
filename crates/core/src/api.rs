@@ -8,15 +8,17 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tokio::runtime::Handle;
+use tokio::sync::futures::Notified;
 use tokio::task::JoinHandle;
 
-use crate::context::{self, Batch, BlockingTarget, Deferred, Frame, FrameKind};
+use crate::context::{self, Batch, BlockingTarget, Deferred, Frame, FrameGuard, FrameKind};
 use crate::epoch::{Epoch, Scope};
 use crate::handles::NodeHandle;
 use crate::ids::{self, NodeId};
-use crate::node::{NodeRef, Served};
+use crate::node::{Header, NodeRef, Sched, Served, WeakNodeRef};
 use crate::protocol::ServedEpochs;
 use crate::run::{self, RunShared};
+use crate::sync::MutexGuard;
 use crate::{Dispose, Ghosted, Readable, Reflow, Status, dispose as disposal, protocol, settle_wait};
 
 /// What a flush waits for once its batch is delivered.
@@ -50,7 +52,7 @@ enum FrameTarget {
 fn served_by(run: &Arc<RunShared>) -> Option<(NodeRef, ServedEpochs)> {
     let node: NodeRef = run.node.upgrade()?;
     let served: Option<ServedEpochs> = {
-        let guard = node.header().sched.lock();
+        let guard: MutexGuard<'_, Sched> = node.header().sched.lock();
         match &guard.run {
             Some(slot) if slot.id == run.id() && !run.is_cancelled() => {
                 Some(slot.served.iter().map(|s: &Served| (s.epoch.clone(), s.writers.clone())).collect())
@@ -58,7 +60,7 @@ fn served_by(run: &Arc<RunShared>) -> Option<(NodeRef, ServedEpochs)> {
             _ => None,
         }
     };
-    served.map(|served| (node, served))
+    served.map(|served: ServedEpochs| (node, served))
 }
 
 /// Delivers a run's batch as child epochs while it is in flight, else as an outside batch.
@@ -77,9 +79,8 @@ fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Vec<Arc<Epoch>> {
     }
 }
 
-/// Delivers the pending batch, then waits until every run in the caller's scope has finished or suspended (11.3).
-/// It never waits for async results; tests use `lithia::test::settled`.
-/// `lithia::flush().await;`
+/// Delivers the pending batch, then waits until every run in the caller's scope has ended or suspended.
+/// `lithia::flush().await;` never waits for async results; tests use `lithia::test::settled`.
 pub async fn flush() {
     let (batch, target): (Batch, Option<FrameTarget>) = take_pending();
     let wait: Wait = match target {
@@ -100,9 +101,8 @@ pub async fn flush() {
     }
 }
 
-/// Raises the node's version and reruns its body after any run in flight, so its children rerun even on an equal value.
-/// From the node's own body only its children rerun (7.4).
-/// `lithia::reflow(&doubled);`
+/// Raises the node's version and reruns it after any run in flight; its children rerun even on an equal value.
+/// `lithia::reflow(&doubled);` from the node's own body reruns only its children.
 pub fn reflow<N: Reflow>(node: &N) {
     let handle: NodeHandle = node.__lithia_reflow_node();
     if try_reflow(node).is_err() {
@@ -111,12 +111,13 @@ pub fn reflow<N: Reflow>(node: &N) {
 }
 
 /// Like `reflow`, but returns `Err(Ghosted)` instead of panicking on a ghost.
+/// `assert_eq!(lithia::try_reflow(&disposed), Err(lithia::Ghosted));`
 pub fn try_reflow<N: Reflow>(node: &N) -> Result<(), Ghosted> {
     context::assert_not_in_closure("lithia::reflow");
     let handle: NodeHandle = node.__lithia_reflow_node();
-    let header = handle.0.header();
+    let header: &Header = handle.0.header();
     let stamp: u64 = {
-        let _write = header.write.lock();
+        let _write: MutexGuard<'_, ()> = header.write.lock();
         if header.is_ghost() {
             return Err(Ghosted);
         }
@@ -129,7 +130,7 @@ pub fn try_reflow<N: Reflow>(node: &N) -> Result<(), Ghosted> {
 }
 
 /// Frees the node and every descendant with no live parent outside the freed branch, regardless of handles.
-/// ⚠ Use-after-free hazard: remaining handles become ghosts governed by each node's `ghost` option.
+/// ⚠ Use-after-free hazard: remaining handles become ghosts. `lithia::dispose(&cache);`
 pub fn dispose<N: Dispose>(node: &N) {
     let handle: NodeHandle = node.__lithia_dispose_node();
     disposal::dispose(&handle.0);
@@ -162,9 +163,8 @@ pub fn spawn<F: Future<Output = ()> + Send + 'static>(fut: F) -> JoinHandle<()> 
     tokio::spawn(run::scoped(fut))
 }
 
-/// Runs blocking work on tokio's blocking pool in the caller's scope; from a body, its writes arrive as one of the
-/// run's deliveries while the run is in flight (7.1).
-/// `lithia::spawn_blocking(move || count.set(heavy()));`
+/// Runs blocking work on tokio's blocking pool in the caller's scope; from a body, its writes count as the run's.
+/// `lithia::spawn_blocking(move || count.set(heavy())).await?;`
 pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> JoinHandle<R> {
     let target: BlockingTarget = context::with_frame(|frame: Option<&Frame>| match frame {
         Some(frame) => match &frame.kind {
@@ -177,7 +177,7 @@ pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static)
     tokio::task::spawn_blocking(move || {
         let frame: Frame = Frame::new(FrameKind::Blocking(target.clone()));
         let result: std::thread::Result<R> = {
-            let _entered = context::enter(&frame);
+            let _entered: FrameGuard<'_> = context::enter(&frame);
             catch_unwind(AssertUnwindSafe(f))
         };
         let batch: Batch = frame.take_batch();
@@ -199,7 +199,7 @@ pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static)
 pub mod test_utils {
     use super::*;
 
-    /// Delivers the pending batch, then waits until every run started in the node's subtree has ended (11.3).
+    /// Delivers the pending batch, then waits until every run started in the node's subtree has ended.
     /// Unstable: may change in any release. `lithia::test::settled(&user).await;`
     pub async fn settled<N: Readable>(node: &N) {
         let (batch, target): (Batch, Option<FrameTarget>) = take_pending();
@@ -213,7 +213,7 @@ pub mod test_utils {
         let root: NodeRef = node.__lithia_node().0;
         let waiter: settle_wait::Waiter = settle_wait::Waiter::new();
         loop {
-            let notified = waiter.notify().notified();
+            let notified: Notified<'_> = waiter.notify().notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             let before: u64 = waiter.seq();
@@ -232,32 +232,32 @@ pub mod test_utils {
         }
     }
 
-    /// Number of live nodes created in the caller's scope (11.3); lets tests catch leaked value cycles.
+    /// Number of live nodes created in the caller's scope; lets tests catch leaked value cycles.
+    /// `assert_eq!(lithia::test::live_nodes(), before);`
     pub fn live_nodes() -> usize {
         context::current_scope().live.load(Ordering::SeqCst)
     }
 
-    /// Whether `root`, its descendants and every node their runs created have no work left.
-    /// Nodes are checked parents first (NodeId order is topological), so a parent found idle
-    /// has already delivered everything its children will see.
+    /// Whether `root`, its descendants and the nodes their runs created have no work left,
+    /// checked parents first so an idle parent has already delivered to its children.
     fn subtree_quiet(root: &NodeRef) -> bool {
         let mut closure: BTreeMap<NodeId, NodeRef> = BTreeMap::new();
         let mut stack: Vec<NodeRef> = vec![root.clone()];
         while let Some(node) = stack.pop() {
-            let header = node.header();
+            let header: &Header = node.header();
             if closure.contains_key(&header.id) {
                 continue;
             }
             let created: Vec<NodeRef> = {
-                let guard = header.sched.lock();
-                guard.created.iter().filter_map(|weak| weak.upgrade()).collect()
+                let guard: MutexGuard<'_, Sched> = header.sched.lock();
+                guard.created.iter().filter_map(|weak: &WeakNodeRef| weak.upgrade()).collect()
             };
             stack.extend(header.subscribers());
             stack.extend(created);
             closure.insert(header.id, node);
         }
         closure.values().all(|node: &NodeRef| {
-            let guard = node.header().sched.lock();
+            let guard: MutexGuard<'_, Sched> = node.header().sched.lock();
             !(guard.busy() || guard.unseeded || !guard.entries.is_empty())
         })
     }

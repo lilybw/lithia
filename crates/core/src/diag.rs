@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crate::Site;
 use crate::node::{Header, RateWindow};
+use crate::sync::MutexGuard;
 
 /// Default rerun-rate threshold in runs per second; override with `LITHIA_RERUN_RATE`.
 pub(crate) const DEFAULT_RERUN_RATE: u64 = 1000;
@@ -29,8 +30,8 @@ fn millis() -> u64 {
 pub(crate) fn count_run(header: &Header) {
     let threshold: u64 = rerun_threshold();
     let now: u64 = millis();
-    let mut window = header.rate.lock();
-    let window: &mut RateWindow = &mut window;
+    let mut guard: MutexGuard<'_, RateWindow> = header.rate.lock();
+    let window: &mut RateWindow = &mut guard;
     if now.saturating_sub(window.start_ms) >= 1000 {
         window.start_ms = now;
         window.count = 0;
@@ -59,16 +60,33 @@ pub(crate) fn freed_before_first_run(site: &Site) {
     );
 }
 
-pub(crate) fn cut(writer: &Header, written: Option<&'static Site>) {
-    let written: String = written.map_or_else(|| "<unknown>".to_string(), |site: &Site| site.to_string());
-    if writer.is_unit {
-        tracing::trace!(writer = %writer.site, written = %written, "lithia: a cycle cut an effect");
-    } else {
-        tracing::warn!(writer = %writer.site, written = %written, "lithia: a cycle cut a writer that holds a value");
+/// A diagnostic gathered under a scheduling lock, emitted once it is released.
+pub(crate) enum Diag {
+    Cut { writer: &'static Site, is_unit: bool, written: Option<&'static Site> },
+    FragilityFailed { site: &'static Site, parent: String },
+    Superseded { site: &'static Site, run: u64 },
+}
+
+impl Diag {
+    pub(crate) fn emit(self) {
+        match self {
+            Diag::Cut { writer, is_unit, written } => cut(writer, is_unit, written),
+            Diag::FragilityFailed { site, parent } => fragility_failed(site, &parent),
+            Diag::Superseded { site, run } => superseded(site, run),
+        }
     }
 }
 
-pub(crate) fn fragility_failed(site: &Site, parent: &str) {
+fn cut(writer: &Site, is_unit: bool, written: Option<&'static Site>) {
+    let written: String = written.map_or_else(|| "<unknown>".to_string(), |site: &Site| site.to_string());
+    if is_unit {
+        tracing::trace!(writer = %writer, written = %written, "lithia: a cycle cut an effect");
+    } else {
+        tracing::warn!(writer = %writer, written = %written, "lithia: a cycle cut a writer that holds a value");
+    }
+}
+
+fn fragility_failed(site: &Site, parent: &str) {
     tracing::debug!(site = %site, parent, "lithia: child failed through fragility");
 }
 
@@ -76,7 +94,7 @@ pub(crate) fn ghost_read(site: &Site, policy: crate::GhostPolicy) {
     tracing::debug!(site = %site, policy = ?policy, "lithia: read of a disposed node");
 }
 
-pub(crate) fn superseded(site: &Site, run: u64) {
+fn superseded(site: &Site, run: u64) {
     tracing::trace!(site = %site, run, "lithia: run superseded or aborted");
 }
 

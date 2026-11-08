@@ -8,13 +8,13 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 
-use crate::sync::{AtomicBool, AtomicU64, Mutex};
+use crate::sync::{AtomicBool, AtomicU64, Mutex, MutexGuard};
 
 use crate::NodeValue;
-use crate::context::{self, Batch, Frame, FrameKind};
+use crate::context::{self, Batch, ClosureGuard, Frame, FrameGuard, FrameKind};
 use crate::epoch::{Epoch, Scope};
 use crate::ids::{self, NodeId};
-use crate::node::{Body, BoxFut, Node, NodeRef, WeakNodeRef};
+use crate::node::{Body, BoxFut, Header, Node, NodeRef, WeakNodeRef};
 use crate::protocol::{self, End, Outcome};
 
 /// State of one run shared between its task, its yielder and the scheduler.
@@ -87,7 +87,7 @@ impl RunShared {
     }
 
     fn set_waker(&self, waker: &Waker) {
-        let mut slot = self.waker.lock();
+        let mut slot: MutexGuard<'_, Option<Waker>> = self.waker.lock();
         match slot.as_ref() {
             Some(existing) if existing.will_wake(waker) => {}
             _ => *slot = Some(waker.clone()),
@@ -147,7 +147,7 @@ impl<K: NodeValue> RunFuture<K> {
         let strong: Option<Arc<Node<K>>> = node.upgrade();
         let (node_id, scope, expected): (NodeId, Arc<Scope>, u64) = match &strong {
             Some(strong) => {
-                let header = &strong.header;
+                let header: &Header = &strong.header;
                 let expected: u64 = if header.kind == crate::node::Kind::AsyncSource { 1 } else { 0 };
                 (header.id, header.scope.clone(), expected)
             }
@@ -166,7 +166,7 @@ impl<K: NodeValue> RunFuture<K> {
 
     /// Builds the run's state from the node's body.
     fn prepare(&self, node: &Arc<Node<K>>) -> RunState<K> {
-        let mut body = node.body.lock();
+        let mut body: MutexGuard<'_, Option<Body<K>>> = node.body.lock();
         let yielder = || Yielder { shared: self.shared.clone(), node: Arc::downgrade(node) };
         match body.as_ref() {
             Some(Body::Sync(f)) => return RunState::Sync(f.clone()),
@@ -240,7 +240,7 @@ impl<K: NodeValue> RunFuture<K> {
             }
             let frame: Frame = Frame::new(FrameKind::Run(self.shared.clone()));
             let prepared: Result<RunState<K>, Box<dyn Any + Send>> = {
-                let _entered = context::enter(&frame);
+                let _entered: FrameGuard<'_> = context::enter(&frame);
                 catch_unwind(AssertUnwindSafe(|| self.prepare(&node)))
             };
             match prepared {
@@ -266,7 +266,7 @@ impl<K: NodeValue> RunFuture<K> {
         self.shared.begin_poll();
         let frame: Frame = Frame::new(FrameKind::Run(self.shared.clone()));
         let outcome: Outcome = {
-            let _entered = context::enter(&frame);
+            let _entered: FrameGuard<'_> = context::enter(&frame);
             let state: &mut RunState<K> = &mut self.state;
             let polled: Result<Poll<Option<K>>, Box<dyn Any + Send>> = catch_unwind(AssertUnwindSafe(|| match state {
                 RunState::Sync(f) => Poll::Ready(Some(f())),
@@ -377,18 +377,18 @@ impl<K: NodeValue> Future for YieldItem<'_, K> {
 impl<K: NodeValue> Node<K> {
     /// Publishes an item of `run`, unless the run was superseded (spec §6.4, §7.3 item 4).
     pub(crate) fn publish(&self, run: &RunShared, value: K) {
-        let header = &self.header;
+        let header: &Header = &self.header;
         let mut discarded: Option<K> = None;
         let mut replaced: Option<Arc<K>> = None;
         {
-            let _write = header.write.lock();
+            let _write: MutexGuard<'_, ()> = header.write.lock();
             let current: Option<Arc<K>> = self.value.load_full();
             if run.is_cancelled() || header.runs.load(Ordering::SeqCst) != run.id() || header.is_ghost() {
                 discarded = Some(value);
             } else if let Some(current) = current {
                 let equal: bool = match &self.equals {
                     Some(equals) => {
-                        let _guard = context::ClosureGuard::enter();
+                        let _guard: ClosureGuard = ClosureGuard::enter();
                         equals(&current, &value)
                     }
                     None => false,
@@ -451,7 +451,7 @@ impl<F: Future> Future for TaskFuture<F> {
         }
         let deliver: Deliver<'_> = Deliver { frame: &frame, scope: &this.scope };
         let polled: Poll<F::Output> = {
-            let _entered = context::enter(&frame);
+            let _entered: FrameGuard<'_> = context::enter(&frame);
             this.future.as_mut().poll(cx)
         };
         drop(deliver);

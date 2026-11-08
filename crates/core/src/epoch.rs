@@ -3,8 +3,9 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
-use crate::sync::{AtomicUsize, Mutex};
+use crate::sync::{AtomicUsize, Mutex, MutexGuard};
 use tokio::sync::Notify;
+use tokio::sync::futures::Notified;
 
 use crate::ids::{EpochId, next_epoch_id, next_scope_id};
 
@@ -48,7 +49,7 @@ impl Scope {
     /// Waits until no epoch of this scope has open work.
     pub(crate) async fn wait_settled(&self) {
         loop {
-            let notified = self.notify.notified();
+            let notified: Notified<'_> = self.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             if self.is_settled() {
@@ -148,7 +149,7 @@ impl Epoch {
 
     fn on_settled(&self) {
         let hooks: Vec<SettleHook> = {
-            let mut guard = self.hooks.lock();
+            let mut guard: MutexGuard<'_, Hooks> = self.hooks.lock();
             guard.settled = true;
             std::mem::take(&mut guard.list)
         };
@@ -160,7 +161,7 @@ impl Epoch {
     /// Runs `hook` once this epoch's own entries have all closed, or at once if they have.
     pub(crate) fn on_settle(&self, hook: SettleHook) {
         let run_now: Option<SettleHook> = {
-            let mut guard = self.hooks.lock();
+            let mut guard: MutexGuard<'_, Hooks> = self.hooks.lock();
             if guard.settled && self.own.load(Ordering::SeqCst) == 0 {
                 Some(hook)
             } else {
@@ -176,7 +177,7 @@ impl Epoch {
     /// Waits until this epoch and every child epoch have no open work.
     pub(crate) async fn wait_subtree(&self) {
         loop {
-            let notified = self.notify.notified();
+            let notified: Notified<'_> = self.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             if self.sub.load(Ordering::SeqCst) == 0 {

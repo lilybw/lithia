@@ -255,6 +255,6 @@ async fn concurrent_writers_reach_eventual_consistency() {
     for source in &sources {
         lithia::test::settled(source).await;
     }
-    let expected: u64 = (1..=8u64).map(|k| 200 * k).sum();
+    let expected: u64 = (1..=8u64).map(|k: u64| 200 * k).sum();
     assert_eq!(*total.get(), expected, "once writes stop, every value matches its inputs");
 }

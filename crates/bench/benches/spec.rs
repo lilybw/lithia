@@ -276,7 +276,7 @@ fn protocol_overhead() -> Row {
     let values: Mutex<Vec<(u64, u64)>> = Mutex::new(vec![(0, 0); LAYERS + 1]);
     let start: Instant = Instant::now();
     for round in 1..=ROUNDS {
-        let mut guard = values.lock().unwrap();
+        let mut guard: std::sync::MutexGuard<'_, Vec<(u64, u64)>> = values.lock().unwrap();
         guard[0] = (round + 1, round + 2);
         for layer in 1..=LAYERS {
             let (l, r): (u64, u64) = guard[layer - 1];
