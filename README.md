@@ -39,5 +39,13 @@ cargo test -p lithia-validation
 cargo bench -p lithia-bench   # prints a results table
 ```
 
+Model checking with [loom](https://docs.rs/loom) explores every thread interleaving of the
+scheduling protocol over the validation cases, up to a preemption bound (default 3):
+
+```sh
+RUSTFLAGS="--cfg lithia_loom" CARGO_TARGET_DIR=target/loom cargo test --release -p lithia-test --test loom
+LOOM_MAX_PREEMPTIONS=4 ...    # deeper: about 2 minutes instead of 20 seconds
+```
+
 `.cargo/config.toml` runs every `#[lithia::test]` under a timeout (`LITHIA_TEST_TIMEOUT_MS`), so a
 `flush` or `settled` that never returns fails its test instead of stalling the run.

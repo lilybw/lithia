@@ -1,9 +1,9 @@
 //! Scopes and the epoch tree with its progress accounting (spec §7.1, §11.3, §11.4 step 6).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
-use parking_lot::Mutex;
+use crate::sync::{AtomicUsize, Mutex};
 use tokio::sync::Notify;
 
 use crate::ids::{EpochId, next_epoch_id, next_scope_id};

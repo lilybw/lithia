@@ -10,9 +10,9 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
-use parking_lot::Mutex;
+use crate::sync::{AtomicUsize, Mutex};
 
 use crate::context::{Batch, Deferred};
 use crate::epoch::{Epoch, Scope};
@@ -549,6 +549,12 @@ pub(crate) fn fire_deferred(deferred: Deferred) {
         TaskFuture::new(task_scope, async move { f() }).await;
         scope.dec();
     };
+    #[cfg(lithia_loom)]
+    {
+        let _ = runtime;
+        crate::model::spawn(Box::pin(future));
+    }
+    #[cfg(not(lithia_loom))]
     match runtime {
         Some(handle) => {
             drop(handle.spawn(future));

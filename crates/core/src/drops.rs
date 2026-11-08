@@ -4,17 +4,19 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+#[cfg(not(lithia_loom))]
 use std::sync::OnceLock;
+#[cfg(not(lithia_loom))]
 use std::sync::mpsc;
 
 use tokio::runtime::Handle;
 
 use crate::node::NodeRef;
 
-thread_local! {
-    static IN_VALUE_DROP: Cell<bool> = const { Cell::new(false) };
-    static RELEASING: Cell<bool> = const { Cell::new(false) };
-    static PENDING_PARENTS: RefCell<Vec<NodeRef>> = const { RefCell::new(Vec::new()) };
+crate::sync::thread_local! {
+    static IN_VALUE_DROP: Cell<bool> = Cell::new(false);
+    static RELEASING: Cell<bool> = Cell::new(false);
+    static PENDING_PARENTS: RefCell<Vec<NodeRef>> = RefCell::new(Vec::new());
 }
 
 /// Whether this thread is dropping a replaced, discarded or freed value.
@@ -33,6 +35,18 @@ pub(crate) fn drop_value<K: Send + Sync + 'static>(value: Arc<K>, runtime: Optio
 
 /// Drops `payload` on the runtime's blocking pool, or on lithia's drop thread.
 pub(crate) fn drop_later<T: Send + 'static>(payload: T, runtime: Option<&Handle>, is_value: bool) {
+    // Loom models have no blocking pool: drops run inline, still outside every lock.
+    #[cfg(lithia_loom)]
+    {
+        let _ = runtime;
+        run_drop(Some(Box::new(payload)), is_value);
+    }
+    #[cfg(not(lithia_loom))]
+    drop_on_pool(payload, runtime, is_value);
+}
+
+#[cfg(not(lithia_loom))]
+fn drop_on_pool<T: Send + 'static>(payload: T, runtime: Option<&Handle>, is_value: bool) {
     let parcel: Parcel = Parcel { payload: Some(Box::new(payload)), is_value };
     match runtime {
         Some(handle) => {
@@ -42,12 +56,14 @@ pub(crate) fn drop_later<T: Send + 'static>(payload: T, runtime: Option<&Handle>
     }
 }
 
+#[cfg(not(lithia_loom))]
 /// A payload on its way to be dropped; if the runtime never runs it, it goes to the drop thread.
 struct Parcel {
     payload: Option<Box<dyn Any + Send>>,
     is_value: bool,
 }
 
+#[cfg(not(lithia_loom))]
 impl Parcel {
     fn run(mut self) {
         let payload: Option<Box<dyn Any + Send>> = self.payload.take();
@@ -55,6 +71,7 @@ impl Parcel {
     }
 }
 
+#[cfg(not(lithia_loom))]
 impl Drop for Parcel {
     fn drop(&mut self) {
         if let Some(payload) = self.payload.take() {
@@ -72,6 +89,7 @@ fn run_drop(payload: Option<Box<dyn Any + Send>>, is_value: bool) {
     }
 }
 
+#[cfg(not(lithia_loom))]
 fn drop_thread() -> &'static mpsc::Sender<Parcel> {
     static SENDER: OnceLock<mpsc::Sender<Parcel>> = OnceLock::new();
     SENDER.get_or_init(|| {
@@ -88,6 +106,7 @@ fn drop_thread() -> &'static mpsc::Sender<Parcel> {
     })
 }
 
+#[cfg(not(lithia_loom))]
 fn send_to_drop_thread(parcel: Parcel) {
     if let Err(mpsc::SendError(mut parcel)) = drop_thread().send(parcel) {
         let payload: Option<Box<dyn Any + Send>> = parcel.payload.take();

@@ -4,11 +4,11 @@ use std::any::Any;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 
-use parking_lot::Mutex;
+use crate::sync::{AtomicBool, AtomicU64, Mutex};
 
 use crate::NodeValue;
 use crate::context::{self, Batch, Frame, FrameKind};

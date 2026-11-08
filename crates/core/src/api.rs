@@ -1,6 +1,6 @@
 //! Free functions of the public API (spec §3.5).
 
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
@@ -238,27 +238,28 @@ pub mod test_utils {
     }
 
     /// Whether `root`, its descendants and every node their runs created have no work left.
+    /// Nodes are checked parents first (NodeId order is topological), so a parent found idle
+    /// has already delivered everything its children will see.
     fn subtree_quiet(root: &NodeRef) -> bool {
-        let mut seen: HashSet<NodeId> = HashSet::new();
+        let mut closure: BTreeMap<NodeId, NodeRef> = BTreeMap::new();
         let mut stack: Vec<NodeRef> = vec![root.clone()];
         while let Some(node) = stack.pop() {
             let header = node.header();
-            if !seen.insert(header.id) {
+            if closure.contains_key(&header.id) {
                 continue;
             }
-            let (busy, created): (bool, Vec<NodeRef>) = {
+            let created: Vec<NodeRef> = {
                 let guard = header.sched.lock();
-                let busy: bool = guard.busy() || guard.unseeded || !guard.entries.is_empty();
-                let created: Vec<NodeRef> = guard.created.iter().filter_map(|weak| weak.upgrade()).collect();
-                (busy, created)
+                guard.created.iter().filter_map(|weak| weak.upgrade()).collect()
             };
-            if busy {
-                return false;
-            }
             stack.extend(header.subscribers());
             stack.extend(created);
+            closure.insert(header.id, node);
         }
-        true
+        closure.values().all(|node: &NodeRef| {
+            let guard = node.header().sched.lock();
+            !(guard.busy() || guard.unseeded || !guard.entries.is_empty())
+        })
     }
 }
 

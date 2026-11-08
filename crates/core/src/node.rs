@@ -4,11 +4,10 @@ use std::any::TypeId;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
-use arc_swap::ArcSwapOption;
-use parking_lot::Mutex;
+use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, Mutex};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
@@ -79,7 +78,7 @@ pub(crate) struct Header {
     pub(crate) is_unit: bool,
     pub(crate) version: AtomicU64,
     pub(crate) phase: AtomicU32,
-    pub(crate) failure: ArcSwapOption<Failure>,
+    pub(crate) failure: ArcCell<Failure>,
     /// Id of the current run; stale items are discarded.
     pub(crate) runs: AtomicU64,
     /// Serializes writers; never poisons.
@@ -320,7 +319,7 @@ impl Header {
 pub(crate) struct Node<K: NodeValue> {
     pub(crate) header: Header,
     /// Lock-free reads; emptied only by disposal under `ON_GHOST_CAUSE_FAILURE`.
-    pub(crate) value: ArcSwapOption<K>,
+    pub(crate) value: ArcCell<K>,
     /// Empty for source nodes; taken on disposal.
     pub(crate) body: Mutex<Option<Body<K>>>,
     pub(crate) equals: Option<Equals<K>>,
@@ -344,6 +343,12 @@ impl<K: NodeValue> AnyNode for Node<K> {
         let runtime: Option<Handle> = self.header.runtime.clone();
         let future: crate::run::RunFuture<K> = crate::run::RunFuture::new(Arc::downgrade(&self));
         drop(self);
+        #[cfg(lithia_loom)]
+        {
+            let _ = runtime;
+            crate::model::spawn(Box::pin(future));
+        }
+        #[cfg(not(lithia_loom))]
         match runtime {
             Some(handle) => {
                 drop(handle.spawn(future));

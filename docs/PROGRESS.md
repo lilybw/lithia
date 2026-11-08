@@ -51,7 +51,8 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 | §9 Failure, fragility | done | |
 | §10 Lifetime, disposal, ghosts | done | |
 | §11 Concurrency, scopes | done | fast path (§11.2) left out, as v0 allows |
-| §11.4 step 8 loom + TLA+ | pending | open question in §17 |
+| §11.4 step 8 loom | done | 20 models, bound 3 by default; see "Model checking" below |
+| §11.4 step 8 TLA+ | pending | open question in §17 |
 | §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 1000/s) |
 | §15 Benchmarks | done | results and observations in `docs/BENCHMARKS.md` |
 
@@ -71,6 +72,21 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 - Reflow of a source node re-emits its value to its children but sends nothing to `changes()`, since the value did not change.
 - `lithia-test` holds 53 edge-case tests across values, propagation, async/generators, lifetime, capture, diagnostics and runtimes.
 
+## Model checking (loom)
+
+- `--cfg lithia_loom` (not `--cfg loom`, which tokio reacts to) swaps the engine's mutexes, atomics,
+  thread-locals, value cells and version clock for loom's through `crates/core/src/sync.rs`, and runs
+  bodies on a model executor (`crates/core/src/model.rs`) instead of tokio.
+- Models live in `crates/test/tests/loom.rs`: Cases A, B, C, D, E, G, H, J, M, N, P, R, T, V, W, X,
+  plus concurrent outside writes, a write during a run, disposal during a run, and a generator.
+- Default preemption bound 3: ~260 000 interleavings in ~20 s. Bound 4: ~1.7 million in ~2 min, all pass.
+- Teeth: reintroducing the Case J race fixed earlier makes the Case J model fail at bound 3
+  (`(2, 2)` vs `(2, 1)`), matching what stress-testing found. Bound 2 was too shallow to catch it.
+- Not modelled: `Arc`/`Weak` reference counts and tokio internals stay outside loom. Races that sit
+  entirely between two loom-visible operations are collapsed; every refcount-sensitive path in the
+  protocol is bracketed by locks or atomics loom does see, which is how the Case J mutation is caught.
+- Models never wait on async results with `flush`; like tests, they use `ModelScope::settle(&node)`.
+
 ## Working notes
 
 - Builds and tests run in a cloud container; the user's repo `E:\GitHub\lithia` is synced by sending a
@@ -82,6 +98,6 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 
 ## Next steps
 
-1. loom model of the protocol (§11.4 step 8) and a TLA+ specification (§17).
+1. A TLA+ specification of the protocol (§11.4 step 8, §17).
 2. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
 3. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.

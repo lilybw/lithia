@@ -31,8 +31,10 @@ syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"]
 quote = "1"
 proc-macro2 = "1"
 trybuild = "1"
+loom = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(lithia_loom)"] }
 missing_debug_implementations = "allow"

@@ -19,7 +19,11 @@ mod sets;
 mod settle_wait;
 mod site;
 mod status;
+mod sync;
 mod value;
+
+#[cfg(lithia_loom)]
+mod model;
 
 pub use api::{defer, dispose, eq, flush, reflow, spawn, spawn_blocking, status, try_reflow};
 pub use changes::Changes;
@@ -47,6 +51,12 @@ pub mod __private {
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
     pub use crate::site::fn_path;
     pub use crate::value::{Capture, CaptureAny, InitDefault};
+
+    /// Executor and harness for loom models; only under `--cfg lithia_loom`.
+    #[cfg(lithia_loom)]
+    pub mod model {
+        pub use crate::model::{ModelScope, quiet, reset, run_one, work_until};
+    }
 
     /// Option constants, glob-imported around option values so they need no import.
     pub mod consts {

@@ -2,10 +2,9 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
-use arc_swap::ArcSwapOption;
-use parking_lot::Mutex;
+use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, Mutex};
 use tokio::runtime::Handle;
 
 use crate::context;
@@ -24,6 +23,10 @@ pub fn node_ref<R: Readable>(handle: &R) -> NodeHandle {
 }
 
 fn runtime_for(kind: Kind, site: &Site) -> Option<Handle> {
+    // Loom models run every task on their own executor.
+    if cfg!(lithia_loom) {
+        return None;
+    }
     match Handle::try_current() {
         Ok(handle) => Some(handle),
         Err(_) if kind == Kind::Source => None,
@@ -72,7 +75,7 @@ fn new_node<K: NodeValue>(
             is_unit: Node::<K>::is_unit(),
             version: AtomicU64::new(0),
             phase: AtomicU32::new(if pending { phase::PENDING } else { 0 }),
-            failure: ArcSwapOption::empty(),
+            failure: ArcCell::new(None),
             runs: AtomicU64::new(if kind == Kind::AsyncSource { 1 } else { 0 }),
             write: Mutex::new(()),
             sched: Mutex::new(Sched::new(kind != Kind::Source)),
@@ -88,7 +91,7 @@ fn new_node<K: NodeValue>(
             first_run_done: AtomicBool::new(false),
             rate: Mutex::new(RateWindow { start_ms: 0, count: 0, warned: false }),
         },
-        value: ArcSwapOption::new(Some(Arc::new(value))),
+        value: ArcCell::new(Some(Arc::new(value))),
         body: Mutex::new(body),
         equals: options.equals,
     });

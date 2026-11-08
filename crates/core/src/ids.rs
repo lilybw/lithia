@@ -10,7 +10,12 @@ pub(crate) type EpochId = u64;
 static NEXT_NODE: AtomicU64 = AtomicU64::new(1);
 static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
+#[cfg(not(lithia_loom))]
 static CLOCK: AtomicU64 = AtomicU64::new(1);
+#[cfg(lithia_loom)]
+loom::lazy_static! {
+    static ref CLOCK: crate::sync::AtomicU64 = crate::sync::AtomicU64::new(1);
+}
 
 /// Allocates the next node id.
 pub(crate) fn next_node_id() -> NodeId {

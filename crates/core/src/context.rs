@@ -5,8 +5,6 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock, Weak};
 
-use parking_lot::Mutex;
-
 use crate::epoch::{Epoch, Scope};
 use crate::ids::NodeId;
 use crate::node::{NodeRef, WeakNodeRef};
@@ -87,11 +85,11 @@ impl Frame {
     }
 }
 
-thread_local! {
-    static CURRENT: Cell<*const Frame> = const { Cell::new(std::ptr::null()) };
-    static CLOSURE_DEPTH: Cell<u32> = const { Cell::new(0) };
-    static CLOSURE_CREATIONS: RefCell<Vec<WeakNodeRef>> = const { RefCell::new(Vec::new()) };
-    static THREAD_SCOPE: RefCell<Option<Arc<Scope>>> = const { RefCell::new(None) };
+crate::sync::thread_local! {
+    static CURRENT: Cell<*const Frame> = Cell::new(std::ptr::null());
+    static CLOSURE_DEPTH: Cell<u32> = Cell::new(0);
+    static CLOSURE_CREATIONS: RefCell<Vec<WeakNodeRef>> = RefCell::new(Vec::new());
+    static THREAD_SCOPE: RefCell<Option<Arc<Scope>>> = RefCell::new(None);
 }
 
 /// Restores the previous frame when dropped.
@@ -148,8 +146,8 @@ pub(crate) fn detached_scope() -> Arc<Scope> {
 }
 
 fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
-    static SCOPES: OnceLock<Mutex<HashMap<tokio::task::Id, Weak<Scope>>>> = OnceLock::new();
-    let mut map = SCOPES.get_or_init(|| Mutex::new(HashMap::new())).lock();
+    static SCOPES: OnceLock<parking_lot::Mutex<HashMap<tokio::task::Id, Weak<Scope>>>> = OnceLock::new();
+    let mut map = SCOPES.get_or_init(|| parking_lot::Mutex::new(HashMap::new())).lock();
     if let Some(scope) = map.get(&id).and_then(Weak::upgrade) {
         return scope;
     }
