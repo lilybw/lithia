@@ -115,7 +115,6 @@ fn new_node<K: NodeValue>(
             scope,
             counted: AtomicBool::new(true),
             changes: Mutex::new(Some(sender)),
-            first_run_done: AtomicBool::new(false),
             rate: Mutex::new(RateWindow { start_ms: 0, count: 0, warned: false }),
             anchors: AtomicUsize::new(1),
             captured: AtomicUsize::new(0),

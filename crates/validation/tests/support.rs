@@ -260,14 +260,16 @@ async fn case_an_a_loop_takes_the_state_it_serves_as_a_parent() {
     let base: usize = lithia::test::live_nodes().await;
     let cfg: SourceNode<u64> = effect!(1);
     let line: u32 = line!() + 1;
-    effect!(async |cfg| loop {
-        tokio::time::sleep(Duration::from_millis(*cfg.get())).await;
-        ticks.update(bump);
+    effect!(async |cfg| {
+        starts.update(bump);
+        loop {
+            tokio::time::sleep(Duration::from_millis(*cfg.get())).await;
+            ticks.update(bump);
+        }
     });
     until(|| *ticks.get() >= 2).await; // polled a second time
     cfg.set(2);
-    until(|| *ticks.get() >= 4).await;
-    let _ = starts.get();
+    until(|| *starts.get() == 2 && *ticks.get() >= 4).await; // restarted on the change
     assert_eq!(lithia::test::live_nodes().await, base + 2);
     drop(cfg);
     assert_eq!(lithia::test::live_nodes().await, base);
@@ -298,6 +300,7 @@ async fn case_ao_an_idle_old_child_never_runs_again() {
     }
 }
 
+// Case AP: captures through a `Vec`, `self` and a generic helper are internal handles.
 #[derive(Clone)]
 struct Panel {
     count: SourceNode<u32>,
@@ -317,7 +320,6 @@ fn watch_generic<R: lithia::Readable<Value = u32> + Clone + Send + Sync + 'stati
     effect!(|n| seen.set(*n.get()));
 }
 
-// Case AP: captures through a `Vec`, `self` and a generic helper are internal handles.
 #[lithia::test]
 async fn case_ap_captures_are_internal_handles() {
     let seen: SourceNode<u32> = effect!(0);
@@ -437,6 +439,7 @@ async fn case_as_move_bodies_take_internal_handles() {
     assert_eq!(lithia::test::live_nodes().await, base);
 }
 
+// Case AT: per-request memos.
 /// A per-request memo that drops its handle; returns the line it is created on.
 fn per_request(rates: &SourceNode<f64>, hits: &Arc<AtomicU32>) -> u32 {
     let rates: SourceNode<f64> = rates.clone();
@@ -465,7 +468,6 @@ async fn handler(rates: &SourceNode<f64>, metrics: &SourceNode<u32>, hang: bool)
     *price.get()
 }
 
-// Case AT: per-request memos.
 #[lithia::test]
 async fn case_at_per_request_memos() {
     let _ = warnings(); // collect from the start
@@ -518,6 +520,7 @@ async fn case_at_per_request_memos() {
     assert_eq!(*metrics.get(), before); // also freed when the future is cancelled
 }
 
+// Case AU: an effect whose parents nobody holds is freed before its first run, with the warning.
 fn apply_once(cfg: u32, applied: &SourceNode<u32>) -> u32 {
     let applied: SourceNode<u32> = applied.clone();
     let c: SourceNode<u32> = effect!(cfg);
@@ -526,7 +529,6 @@ fn apply_once(cfg: u32, applied: &SourceNode<u32>) -> u32 {
     line
 }
 
-// Case AU: an effect whose parents nobody holds is freed before its first run, with the warning.
 #[lithia::test]
 async fn case_au_an_effect_on_nothing_held_never_runs() {
     let _ = warnings(); // collect from the start
@@ -538,10 +540,10 @@ async fn case_au_an_effect_on_nothing_held_never_runs() {
     assert!(warned(FIRST_RUN, line, Duration::from_secs(2)).await);
 }
 
+// Case AV: support returns through a handle a body sends out, and passes through a node let go of.
 /// What Case AV's body sends out.
 type Sent = (Accessor<u32>, Accessor<u32>);
 
-// Case AV: support returns through a handle a body sends out, and passes through a node let go of.
 #[lithia::test]
 async fn case_av_support_returns_through_a_sent_handle() {
     let trigger: SourceNode<bool> = effect!(false);
@@ -584,11 +586,11 @@ async fn case_av_support_returns_through_a_sent_handle() {
     assert_eq!(lithia::test::live_nodes().await, base + 3);
 }
 
+// Case AW: self-support. A node whose value or captured `Arc` holds its parent's handle stays alive.
 struct Conn {
     input: SourceNode<u32>,
 }
 
-// Case AW: self-support. A node whose value or captured `Arc` holds its parent's handle stays alive.
 #[lithia::test]
 async fn case_aw_self_support() {
     let runs: SourceNode<u32> = effect!(0);
@@ -643,11 +645,11 @@ async fn case_aw_self_support() {
     assert_eq!(lithia::test::live_nodes().await, base, "disposing the parent frees it");
 }
 
+// Case AX: a creator and a child that may write the creator's parent are freed together.
 fn reset(n: &SourceNode<u32>) {
     n.set(0);
 }
 
-// Case AX: a creator and a child that may write the creator's parent are freed together.
 #[lithia::test]
 async fn case_ax_a_child_writing_its_creators_parent() {
     let base: usize = lithia::test::live_nodes().await;
@@ -669,6 +671,7 @@ async fn case_ax_a_child_writing_its_creators_parent() {
     assert_eq!(lithia::test::live_nodes().await, base);
 }
 
+// Case AY: field paths classify the handles of a value captured whole.
 #[derive(Clone)]
 struct Themed {
     total: SourceNode<u32>,
@@ -741,7 +744,6 @@ async fn panel_case(start: fn(&Themed, &SourceNode<u32>), theme_kept: bool) {
     assert_eq!(lithia::test::live_nodes().await, base - 1);
 }
 
-// Case AY: field paths classify the handles of a value captured whole.
 #[lithia::test]
 async fn case_ay_field_paths_are_precise() {
     panel_case(Themed::precise, false).await;
@@ -774,9 +776,9 @@ async fn case_az_an_escaping_accessor_anchors_nothing() {
     assert_eq!(lithia::test::live_nodes().await, base + 1); // the watcher is freed; `local` is still readable
 }
 
+// Case BA: a scoped child kept by its run's value lives exactly as long as that value.
 type Slot = Arc<Mutex<Option<DerivedNode<()>>>>;
 
-// Case BA: a scoped child kept by its run's value lives exactly as long as that value.
 #[lithia::test]
 async fn case_ba_a_scoped_child_lives_as_long_as_the_value() {
     let tick: SourceNode<u32> = effect!(0);
@@ -805,6 +807,7 @@ async fn case_ba_a_scoped_child_lives_as_long_as_the_value() {
     assert_eq!(*runs.get(), 2);
 }
 
+// Case BB: an effect owned by a struct field through `.scoped()`.
 struct Widget {
     watch: DerivedNode<()>,
 }
@@ -822,7 +825,6 @@ impl Widget {
     }
 }
 
-// Case BB: an effect owned by a struct field through `.scoped()`.
 #[lithia::test]
 async fn case_bb_a_scoped_field() {
     let count: SourceNode<u32> = effect!(0);

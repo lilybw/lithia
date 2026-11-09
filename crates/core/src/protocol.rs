@@ -862,9 +862,6 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
                 work.spawns.push(node.clone());
             }
         }
-        if header.kind == Kind::Derived {
-            header.first_run_done.store(true, Ordering::SeqCst);
-        }
         header.under_way.store(true, Ordering::SeqCst);
     }
     let releasing: bool = !work.released.is_empty();

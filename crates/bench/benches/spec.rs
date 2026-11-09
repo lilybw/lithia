@@ -398,6 +398,159 @@ fn rerun_rates() -> Row {
     }
 }
 
+/// Clone and drop of an outside handle, which counts anchors beside its `Arc`, against a bare `Arc`.
+fn handle_clone() -> Row {
+    const COUNT: u64 = 2_000_000;
+    let rt: tokio::runtime::Runtime = runtime(1);
+    let (handle, bare, read): (Duration, Duration, Duration) = rt.block_on(async {
+        let n: SourceNode<u64> = effect!(0);
+        let start: Instant = Instant::now();
+        for _ in 0..COUNT {
+            std::hint::black_box(n.clone());
+        }
+        let handle: Duration = start.elapsed();
+        let arc: Arc<u64> = Arc::new(0);
+        let start: Instant = Instant::now();
+        for _ in 0..COUNT {
+            std::hint::black_box(arc.clone());
+        }
+        let bare: Duration = start.elapsed();
+        let start: Instant = Instant::now();
+        for _ in 0..COUNT {
+            std::hint::black_box(n.get());
+        }
+        (handle, bare, start.elapsed())
+    });
+    Row {
+        name: "Handles (v0.3.0)",
+        result: format!(
+            "clone and drop {} with the anchoring count vs {} for a bare `Arc`; a read {}",
+            per(handle, COUNT),
+            per(bare, COUNT),
+            per(read, COUNT)
+        ),
+        informs: "Whether the per-node token design is needed (10.1)",
+    }
+}
+
+/// Creating effects without handles, which support holds, and one sweep letting go of all of them.
+fn creation_and_sweep() -> Row {
+    const COUNT: u64 = 10_000;
+    let rt: tokio::runtime::Runtime = runtime(2);
+    let (bound, held, sweep): (Duration, Duration, Duration) = rt.block_on(lithia_task(async {
+        let a: SourceNode<u64> = effect!(0);
+        let start: Instant = Instant::now();
+        let mut kept: Vec<DerivedNode<()>> = Vec::with_capacity(COUNT as usize);
+        for _ in 0..COUNT {
+            kept.push(effect!(|a| {
+                let _ = a.get();
+            }));
+        }
+        let bound: Duration = start.elapsed();
+        lithia::flush().await;
+        drop(kept);
+        let hub: SourceNode<u64> = effect!(0);
+        let start: Instant = Instant::now();
+        for _ in 0..COUNT {
+            effect!(|hub| {
+                let _ = hub.get();
+            });
+        }
+        let held: Duration = start.elapsed();
+        lithia::flush().await;
+        let start: Instant = Instant::now();
+        drop(hub); // one sweep lets go of every watcher
+        (bound, held, start.elapsed())
+    }));
+    Row {
+        name: "Creation and sweeps (v0.3.0)",
+        result: format!(
+            "creating a bound effect {}, one held by support {}; dropping the hub's handle lets go of {} watchers in {}",
+            per(bound, COUNT),
+            per(held, COUNT),
+            COUNT,
+            per(sweep, 1)
+        ),
+        informs: "The cost of support at creation and of a sweep over a hub's downstream (10.1)",
+    }
+}
+
+/// A rerun that rebuilds its children: release of the old generation and its sweep.
+fn rebuild_children() -> Row {
+    const CHILDREN: usize = 100;
+    const ROUNDS: u64 = 50;
+    let rt: tokio::runtime::Runtime = runtime(2);
+    let elapsed: Duration = rt.block_on(lithia_task(async {
+        let tick: SourceNode<u64> = effect!(0);
+        let k: SourceNode<u64> = effect!(0);
+        effect!(|tick| {
+            let _ = tick.get();
+            for _ in 0..CHILDREN {
+                effect!(|k| {
+                    let _ = k.get();
+                });
+            }
+        });
+        lithia::flush().await;
+        let start: Instant = Instant::now();
+        for round in 1..=ROUNDS {
+            tick.set(round);
+            lithia::flush().await;
+        }
+        start.elapsed()
+    }));
+    Row {
+        name: "Rebuilding children (v0.3.0)",
+        result: format!("{CHILDREN} children rebuilt: {} per rerun", per(elapsed, ROUNDS)),
+        informs: "Generations against value-held children (drop churn above; 6.2)",
+    }
+}
+
+/// The latency of a last-handle drop on a node support still holds, through the helper idiom
+/// `helper(&x.accessor())`, on one thread and on two at once (sweep-lock contention).
+fn last_handle_drops() -> Row {
+    const DROPS: u64 = 100_000;
+    let measure = |threads: usize| -> Duration {
+        let rt: tokio::runtime::Runtime = runtime(2);
+        rt.block_on(lithia_task(async move {
+            let total: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+            let mut triggers: Vec<SourceNode<u64>> = Vec::new();
+            let mut sources: Vec<SourceNode<u64>> = Vec::new();
+            for _ in 0..threads {
+                let s: SourceNode<u64> = effect!(1);
+                let m: DerivedNode<u64> = effect!(|s| *s.get());
+                let trigger: SourceNode<u64> = effect!(0);
+                let total: Arc<AtomicU64> = total.clone();
+                effect!(|trigger| {
+                    if *trigger.get() > 0 {
+                        let start: Instant = Instant::now();
+                        for _ in 0..DROPS {
+                            drop(m.accessor()); // anchors `m` and lets go: a sweep that ends at once
+                        }
+                        total.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    }
+                });
+                drop(m);
+                sources.push(s);
+                triggers.push(trigger);
+            }
+            lithia::flush().await;
+            for trigger in &triggers {
+                trigger.set(1);
+            }
+            lithia::flush().await;
+            Duration::from_nanos(total.load(Ordering::Relaxed) / threads as u64)
+        }))
+    };
+    let one: Duration = measure(1);
+    let two: Duration = measure(2);
+    Row {
+        name: "Last-handle drops (v0.3.0)",
+        result: format!("{} per drop on one thread, {} on each of two", per(one, DROPS), per(two, DROPS)),
+        informs: "The drop-latency budget and the one sweep lock (5.5)",
+    }
+}
+
 /// Runs a future as a lithia task, so its polls form batches like `#[lithia::main]`.
 async fn lithia_task<F>(future: F) -> F::Output
 where
@@ -422,6 +575,10 @@ fn main() {
         meshes(),
         drop_churn(),
         rerun_rates(),
+        handle_clone(),
+        creation_and_sweep(),
+        rebuild_children(),
+        last_handle_drops(),
     ];
     println!("| Benchmark | Result | Informs |");
     println!("|---|---|---|");

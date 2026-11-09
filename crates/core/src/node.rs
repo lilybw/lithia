@@ -97,7 +97,6 @@ pub(crate) struct Header {
     /// Whether the node still counts towards its scope's live nodes.
     pub(crate) counted: AtomicBool,
     pub(crate) changes: Mutex<Option<watch::Sender<u64>>>,
-    pub(crate) first_run_done: AtomicBool,
     pub(crate) rate: Mutex<RateWindow>,
     /// Outside handles that anchor the node.
     pub(crate) anchors: AtomicUsize,
