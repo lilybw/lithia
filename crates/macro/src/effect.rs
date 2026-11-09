@@ -84,7 +84,7 @@ impl EffectInput {
             Expr::Closure(closure) => {
                 for input in &closure.inputs {
                     if let Some(ident) = param_ident(input) {
-                        captures.use_ident(ident);
+                        captures.read_ident(ident);
                     }
                 }
                 captures.expr(&closure.body);
@@ -279,39 +279,86 @@ fn site(tokens: &str) -> TokenStream {
     }
 }
 
-fn capture_clone(ident: &Ident) -> TokenStream {
+/// How one captured name is taken into a body.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Take {
+    /// Cloned; a dependency only read records a read-only capture.
+    Clone { read_only: bool, dependency: bool },
+    /// Moved by a `move` body.
+    Move { read_only: bool, dependency: bool },
+}
+
+/// Binds `ident` to its capture: an internal clone, or the moved value flagged internal.
+fn capture_take(ident: &Ident, take: Take) -> TokenStream {
+    let (moved, read_only, dependency): (bool, bool, bool) = match take {
+        Take::Clone { read_only, dependency } => (false, read_only, dependency),
+        Take::Move { read_only, dependency } => (true, read_only, dependency),
+    };
+    // A dependency is always a handle, so its whole capture can be read-only; any other name
+    // is read-only only when its type is a handle, which method dispatch decides.
+    let session_read_only: bool = read_only && dependency;
+    let call: TokenStream = match (moved, read_only && !dependency) {
+        (true, _) => quote_spanned!(ident.span()=> (#ident).__lithia_move()),
+        (false, true) => quote_spanned!(ident.span()=> (#ident).__lithia_capture_ro()),
+        (false, false) => quote_spanned!(ident.span()=> (#ident).__lithia_capture()),
+    };
+    let closure: TokenStream = if moved { quote!(move ||) } else { quote!(||) };
+    // A moved value keeps the mutability it may have had, as a `move` closure would.
+    let binding: TokenStream = if moved { quote!(mut #ident) } else { quote!(#ident) };
     quote_spanned! {ident.span()=>
-        #[allow(unused_variables)]
-        let #ident = {
+        #[allow(unused_variables, unused_mut)]
+        let #binding = __lithia_cap.take(#session_read_only, #closure {
             #[allow(unused_imports)]
-            use ::lithia::__private::CaptureAny as _;
-            (#ident).__lithia_capture()
-        };
+            use ::lithia::__private::{CaptureAny as _, MoveAny as _};
+            #call
+        });
     }
 }
 
 fn self_clone() -> TokenStream {
     quote! {
         #[allow(unused_variables)]
-        let __self = {
+        let __self = __lithia_cap.take(false, || {
             #[allow(unused_imports)]
             use ::lithia::__private::CaptureAny as _;
             (self).__lithia_capture()
-        };
+        });
     }
 }
 
-/// Identifiers a body captures, plus whether it uses `self`.
-fn analyse(body: &Expr) -> (Vec<Ident>, bool) {
-    let mut captures: Captures = Captures::new();
-    captures.expr(body);
-    (captures.found, captures.uses_self)
+/// Opens the capture session an expansion's captures are recorded in.
+fn session_begin() -> TokenStream {
+    quote!(let __lithia_cap = ::lithia::__private::Capturing::begin();)
 }
 
-fn analyse_block(block: &syn::Block) -> (Vec<Ident>, bool) {
+/// Closes the capture session; what it recorded goes to node creation.
+fn session_end() -> TokenStream {
+    quote!(let __lithia_captured: ::lithia::__private::Captured = __lithia_cap.finish();)
+}
+
+/// Rebinds each capture by reference inside a body that runs once (an async source block).
+fn by_reference(names: &[Ident]) -> TokenStream {
+    quote! {
+        #(
+            #[allow(unused_variables)]
+            let #names = &#names;
+        )*
+    }
+}
+
+/// Identifiers a body captures, plus whether it uses `self`, and which names it only reads.
+fn analyse(body: &Expr) -> (Vec<Ident>, bool, Vec<bool>) {
+    let mut captures: Captures = Captures::new();
+    captures.expr(body);
+    let read_only: Vec<bool> = captures.found.iter().map(|ident: &Ident| captures.read_only(ident)).collect();
+    (captures.found, captures.uses_self, read_only)
+}
+
+fn analyse_block(block: &syn::Block) -> (Vec<Ident>, bool, Vec<bool>) {
     let mut captures: Captures = Captures::new();
     captures.block(block);
-    (captures.found, captures.uses_self)
+    let read_only: Vec<bool> = captures.found.iter().map(|ident: &Ident| captures.read_only(ident)).collect();
+    (captures.found, captures.uses_self, read_only)
 }
 
 /// Binds every capture by reference from the shared `Arc<Captures>` inside a run's future.
@@ -357,31 +404,64 @@ fn expand_async_source(
     if generator {
         LowerYield.visit_block_mut(&mut body);
     }
-    let (names, uses_self): (Vec<Ident>, bool) = if moved { (Vec::new(), false) } else { analyse_block(&block.block) };
-    let clones: Vec<TokenStream> = names.iter().map(capture_clone).collect();
+    let (names, uses_self, read_only): (Vec<Ident>, bool, Vec<bool>) = analyse_block(&block.block);
+    let uses_self: bool = uses_self && !moved;
+    let takes: Vec<TokenStream> = names
+        .iter()
+        .zip(&read_only)
+        .map(|(ident, read_only): (&Ident, &bool)| {
+            let read_only: bool = *read_only;
+            capture_take(
+                ident,
+                if moved {
+                    Take::Move { read_only, dependency: false }
+                } else {
+                    Take::Clone { read_only, dependency: false }
+                },
+            )
+        })
+        .collect();
     let self_capture: TokenStream = if uses_self { self_clone() } else { TokenStream::new() };
     let mut body_tokens: TokenStream = body.to_token_stream();
     if uses_self {
         body_tokens = rewrite_self(body_tokens);
     }
+    // A block without `move` runs once on its own clones; it sees them by reference, so a
+    // handle cannot be moved out of it uncounted.
+    let mut shared: Vec<Ident> = if moved { Vec::new() } else { names.clone() };
+    if uses_self {
+        shared.push(format_ident!("__self"));
+    }
+    let rebind: TokenStream = by_reference(&shared);
+    let begin: TokenStream = session_begin();
+    let end: TokenStream = session_end();
     let call: TokenStream = if generator {
         quote! {
             ::lithia::__private::source_gen(
                 &__LITHIA_SITE,
+                &__lithia_captured,
                 #init,
-                move |__lithia_y: ::lithia::__private::Yielder<_>| async move #body_tokens,
+                move |__lithia_y: ::lithia::__private::Yielder<_>| async move { #rebind #body_tokens },
                 #options,
             )
         }
     } else {
         quote! {
-            ::lithia::__private::source_async(&__LITHIA_SITE, #init, async move #body_tokens, #options)
+            ::lithia::__private::source_async(
+                &__LITHIA_SITE,
+                &__lithia_captured,
+                #init,
+                async move { #rebind #body_tokens },
+                #options,
+            )
         }
     };
     Ok(quote! {{
         #site
-        #(#clones)*
+        #begin
+        #(#takes)*
         #self_capture
+        #end
         #call
     }})
 }
@@ -422,7 +502,21 @@ fn expand_derived(
         LowerYield.visit_expr_mut(&mut body);
     }
 
-    let (captured, uses_self): (Vec<Ident>, bool) = analyse(&closure.body);
+    let (captured, uses_self, read_only): (Vec<Ident>, bool, Vec<bool>) = analyse(&closure.body);
+    let takes: Vec<TokenStream> = captured
+        .iter()
+        .zip(&read_only)
+        .map(|(ident, read_only): (&Ident, &bool)| {
+            let read_only: bool = *read_only;
+            let dependency: bool = params.iter().any(|param: &Ident| param == ident);
+            capture_take(
+                ident,
+                if moved { Take::Move { read_only, dependency } } else { Take::Clone { read_only, dependency } },
+            )
+        })
+        .collect();
+    let begin: TokenStream = session_begin();
+    let end: TokenStream = session_end();
     let mut body_tokens: TokenStream = body.to_token_stream();
     if uses_self && !moved {
         body_tokens = rewrite_self(body_tokens);
@@ -431,7 +525,6 @@ fn expand_derived(
 
     if !is_async && !generator {
         // Synchronous body: captures are cloned into the closure, which lives in one Arc.
-        let clones: Vec<TokenStream> = if moved { Vec::new() } else { captured.iter().map(capture_clone).collect() };
         let closure_tokens: TokenStream = match &closure.output {
             syn::ReturnType::Type(arrow, ty) => quote!(move || #arrow #ty #body_tokens),
             syn::ReturnType::Default => quote!(move || #body_tokens),
@@ -440,9 +533,11 @@ fn expand_derived(
             #site
             #deps
             #(#checks)*
-            #(#clones)*
+            #begin
+            #(#takes)*
             #self_capture
-            ::lithia::__private::derived(&__LITHIA_SITE, &__lithia_deps, #init, #closure_tokens, #options)
+            #end
+            ::lithia::__private::derived(&__LITHIA_SITE, &__lithia_deps, &__lithia_captured, #init, #closure_tokens, #options)
         }});
     }
 
@@ -451,13 +546,13 @@ fn expand_derived(
     if uses_self && !moved {
         bundle.push(format_ident!("__self"));
     }
-    let clones: Vec<TokenStream> = if moved { Vec::new() } else { captured.iter().map(capture_clone).collect() };
     let unpacked: TokenStream = unpack(&bundle);
     let call: TokenStream = if generator {
         quote! {
             ::lithia::__private::derived_gen(
                 &__LITHIA_SITE,
                 &__lithia_deps,
+                &__lithia_captured,
                 #init,
                 move |__lithia_y: ::lithia::__private::Yielder<_>| {
                     let __lithia_caps = ::std::sync::Arc::clone(&__lithia_caps);
@@ -474,6 +569,7 @@ fn expand_derived(
             ::lithia::__private::derived_async(
                 &__LITHIA_SITE,
                 &__lithia_deps,
+                &__lithia_captured,
                 #init,
                 move || {
                     let __lithia_caps = ::std::sync::Arc::clone(&__lithia_caps);
@@ -490,8 +586,10 @@ fn expand_derived(
         #site
         #deps
         #(#checks)*
-        #(#clones)*
+        #begin
+        #(#takes)*
         #self_capture
+        #end
         let __lithia_caps = ::std::sync::Arc::new((#(#bundle,)*));
         #call
     }})

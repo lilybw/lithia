@@ -47,6 +47,11 @@ pub trait CaptureAny {
     fn __lithia_capture(&self) -> Self
     where
         Self: Capture;
+
+    /// Like `__lithia_capture`; handle types shadow it to record a read-only capture.
+    fn __lithia_capture_ro(&self) -> Self
+    where
+        Self: Capture;
 }
 
 impl<T> CaptureAny for T {
@@ -56,5 +61,27 @@ impl<T> CaptureAny for T {
         Self: Capture,
     {
         self.clone()
+    }
+
+    #[inline]
+    fn __lithia_capture_ro(&self) -> Self
+    where
+        Self: Capture,
+    {
+        self.clone()
+    }
+}
+
+/// Takes a value a `move` body captures; handle types shadow it to flag the handle internal.
+#[doc(hidden)]
+pub trait MoveAny: Sized {
+    /// Returns the value unchanged.
+    fn __lithia_move(self) -> Self;
+}
+
+impl<T> MoveAny for T {
+    #[inline]
+    fn __lithia_move(self) -> Self {
+        self
     }
 }

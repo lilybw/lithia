@@ -63,40 +63,37 @@ async fn a_cause_failure_ghost_fails_fragile_children() {
 
 #[lithia::test]
 async fn live_nodes_counts_disposals_and_drops() {
-    let base: usize = lithia::test::live_nodes();
+    let base: usize = lithia::test::live_nodes().await;
     let root: SourceNode<u32> = effect!(1);
     let a: DerivedNode<u32> = effect!(|root| *root.get());
     let b: DerivedNode<u32> = effect!(|a| *a.get());
     lithia::flush().await;
-    assert_eq!(lithia::test::live_nodes(), base + 3);
+    assert_eq!(lithia::test::live_nodes().await, base + 3);
     lithia::dispose(&root);
     lithia::dispose(&root);
-    assert_eq!(lithia::test::live_nodes(), base);
+    assert_eq!(lithia::test::live_nodes().await, base);
     assert!(matches!(lithia::status(&b), Status::Ghost));
     drop((a, b));
-    assert_eq!(lithia::test::live_nodes(), base);
+    assert_eq!(lithia::test::live_nodes().await, base);
 }
 
 #[lithia::test]
 async fn a_node_created_in_a_body_is_freed_when_the_value_lets_go() {
     let n: SourceNode<u32> = effect!(1);
-    let base: usize = lithia::test::live_nodes();
+    let base: usize = lithia::test::live_nodes().await;
     let holder: DerivedNode<Option<SourceNode<u32>>> = effect!(|n| {
         let inner: SourceNode<u32> = effect!(*n.get());
         if *n.get() == 1 { Some(inner) } else { None }
     });
     lithia::flush().await;
-    assert_eq!(lithia::test::live_nodes(), base + 2, "the holder and the node its value keeps");
+    assert_eq!(lithia::test::live_nodes().await, base + 2, "the holder and the node its value keeps");
     n.set(2);
     lithia::flush().await;
-    let freed: Result<(), tokio::time::error::Elapsed> = tokio::time::timeout(Duration::from_secs(5), async {
-        while lithia::test::live_nodes() != base + 1 {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-    })
-    .await;
-    assert!(freed.is_ok(), "the replaced value is dropped, and its node with it");
-    drop(holder);
+    // The replaced value is dropped, and its node with it; the source the second run
+    // discarded stays in that run's generation until the holder's next run is decided.
+    assert_eq!(lithia::test::live_nodes().await, base + 2, "the holder and its current generation");
+    lithia::dispose(&holder);
+    assert_eq!(lithia::test::live_nodes().await, base, "disposal releases the generation");
 }
 
 #[lithia::test]

@@ -40,6 +40,8 @@ pub(crate) struct Work {
     diags: Vec<Diag>,
     /// Strong references taken from weak lists, dropped only after every lock is released.
     keep: Vec<NodeRef>,
+    /// Generations released by this step, let go of before its spawns.
+    released: Vec<NodeRef>,
 }
 
 /// Carries out gathered work: releases, spawns and wakes, then token closes.
@@ -66,6 +68,13 @@ pub(crate) fn drain_deferred(mut work: Work) -> Vec<Arc<Epoch>> {
     }
     for diag in std::mem::take(&mut work.diags) {
         diag.emit();
+    }
+    {
+        // The step's other references and its released generations go before its spawns,
+        // so an idle old child released here is freed before its task exists.
+        let _op: crate::support::OpGuard = crate::support::enter();
+        drop(std::mem::take(&mut work.keep));
+        crate::support::release_generation(std::mem::take(&mut work.released));
     }
     let mut spawns: Vec<NodeRef> = std::mem::take(&mut work.spawns);
     spawns.sort_by_key(|node: &NodeRef| node.header().id);
@@ -234,6 +243,7 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     let waits_for_run: bool = entry.reflow && !entry.first && !entry.force && !changed;
     match sched.run.as_mut() {
         None => {
+            work.released.append(&mut sched.generation);
             if !sched.queued {
                 sched.queued = true;
                 work.spawns.push(node.clone());
@@ -658,6 +668,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 header.failure.store(None);
                 sched.failed_by_fragility = false;
                 sched.run = Some(RunSlot { id, shared: shared.clone(), served, restart: false });
+                work.released.append(&mut sched.generation);
                 true
             }
         }
@@ -809,6 +820,9 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
             }
         };
         let restart: bool = slot.restart && end == End::Finished && !header.is_ghost();
+        if restart || shared.is_cancelled() {
+            work.released.append(&mut sched.generation);
+        }
         if restart {
             for record in slot.served {
                 merge_served(&mut sched.inherited, record);
@@ -850,6 +864,7 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
         if header.kind == Kind::Derived {
             header.first_run_done.store(true, Ordering::SeqCst);
         }
+        header.under_way.store(true, Ordering::SeqCst);
     }
     drain_deferred(work)
 }

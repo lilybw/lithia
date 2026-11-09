@@ -232,10 +232,23 @@ pub mod test_utils {
         }
     }
 
-    /// Number of live nodes created in the caller's scope; lets tests catch leaked value cycles.
-    /// `assert_eq!(lithia::test::live_nodes(), before);`
-    pub fn live_nodes() -> usize {
-        context::current_scope().live.load(Ordering::SeqCst)
+    /// Number of live nodes created in the caller's scope, once pending payload drops have run.
+    /// Exact once the scope has settled. `assert_eq!(lithia::test::live_nodes().await, before);`
+    pub async fn live_nodes() -> usize {
+        let scope: Arc<Scope> = context::current_scope();
+        let mut quiet: u32 = 0;
+        for _ in 0..10_000 {
+            if crate::drops::queued() == 0 {
+                quiet += 1;
+                if quiet >= 3 {
+                    break;
+                }
+            } else {
+                quiet = 0;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        scope.live.load(Ordering::SeqCst)
     }
 
     /// Whether `root`, its descendants and the nodes their runs created have no work left,

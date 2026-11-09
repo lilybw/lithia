@@ -596,18 +596,18 @@ async fn case_ae_panic_still_propagates_writes() {
 // Case AF: live_nodes catches a value cycle.
 #[lithia::test]
 async fn case_af_live_nodes_catch_a_value_cycle() {
-    let base: usize = lithia::test::live_nodes();
+    let base: usize = lithia::test::live_nodes().await;
     {
         let _tmp: SourceNode<i32> = effect!(0);
     }
-    assert_eq!(lithia::test::live_nodes(), base); // freed when its last handle dropped
+    assert_eq!(lithia::test::live_nodes().await, base); // freed when its last handle dropped
     {
         let holder: SourceNode<Option<DerivedNode<bool>>> = effect!(None);
         let child: DerivedNode<bool> = effect!(|holder| holder.get().is_some());
         holder.set(Some(child.clone())); // the holder's value holds its own subscriber (10.1)
         lithia::flush().await;
     }
-    assert_eq!(lithia::test::live_nodes(), base + 2); // the cycle leaked, and the count shows it
+    assert_eq!(lithia::test::live_nodes().await, base + 2); // the cycle leaked, and the count shows it
 }
 
 // Case AG: a graph spanning two runtimes.

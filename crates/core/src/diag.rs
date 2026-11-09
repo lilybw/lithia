@@ -56,8 +56,71 @@ pub(crate) fn run_panicked(site: &Site, message: &str) {
 pub(crate) fn freed_before_first_run(site: &Site) {
     tracing::warn!(
         site = %site,
-        "lithia: derived node freed before its first run finished; the likely cause is `let _ = effect!(…)`"
+        "lithia: node freed before its first run got under way; nothing outside lithia held it or its parents"
     );
+}
+
+/// Support-held nodes per creating site, for the growth warning.
+fn held_counts() -> &'static std::sync::Mutex<std::collections::HashMap<usize, usize>> {
+    static COUNTS: OnceLock<std::sync::Mutex<std::collections::HashMap<usize, usize>>> = OnceLock::new();
+    COUNTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Counts a node support now holds, warning at 1 000, 10 000, … nodes from one site.
+pub(crate) fn support_held(site: &'static Site) {
+    let key: usize = site as *const Site as usize;
+    let mut counts = held_counts().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let count: &mut usize = counts.entry(key).or_insert(0);
+    *count += 1;
+    let reached: usize = *count;
+    drop(counts);
+    if reached >= 1000 && reached.is_power_of_ten() {
+        tracing::warn!(
+            site = %site,
+            count = reached,
+            "lithia: nodes held without handles keep piling up at this site; stop them with `.scoped()` or `lithia::dispose`"
+        );
+    }
+}
+
+/// Counts a node support let go of.
+pub(crate) fn support_released(site: &'static Site) {
+    let key: usize = site as *const Site as usize;
+    let mut counts = held_counts().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(count) = counts.get_mut(&key) {
+        *count = count.saturating_sub(1);
+    }
+}
+
+/// Warns once per site about a memo support keeps running though nothing reads it.
+pub(crate) fn unread_memo(site: &'static Site) {
+    static WARNED: OnceLock<std::sync::Mutex<std::collections::HashSet<usize>>> = OnceLock::new();
+    let key: usize = site as *const Site as usize;
+    let first: bool = WARNED
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key);
+    if first {
+        tracing::warn!(
+            site = %site,
+            "lithia: a memo keeps running though nothing reads it; bind it with `.scoped()` or dispose it"
+        );
+    }
+}
+
+trait PowerOfTen {
+    fn is_power_of_ten(self) -> bool;
+}
+
+impl PowerOfTen for usize {
+    fn is_power_of_ten(self) -> bool {
+        let mut n: usize = self;
+        while n >= 10 && n % 10 == 0 {
+            n /= 10;
+        }
+        n == 1
+    }
 }
 
 /// A diagnostic gathered under a scheduling lock, emitted once it is released.

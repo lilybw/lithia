@@ -111,9 +111,8 @@ async fn a_panicking_run_warns_with_its_site_and_message() {
 #[lithia::test]
 async fn a_node_freed_before_its_first_run_warns() {
     let _ = events();
-    let marker_7782: SourceNode<u32> = effect!(0);
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let _ = effect!(|marker_7782| *marker_7782.get());
+    let _ = effect!(async { 7782u32 });
     lithia::flush().await;
     let event: Option<Captured> =
         find(Level::WARN, &["freed before its first run", &line], Duration::from_secs(2)).await;

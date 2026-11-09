@@ -58,17 +58,20 @@ async fn a_long_chain_propagates_and_drops_without_recursion() {
     source.set(10);
     lithia::flush().await;
     assert_eq!(*tail.get(), 20_011);
-    let base: usize = lithia::test::live_nodes();
-    // Frees 20 001 nodes bottom-up: parents through a worklist, bodies (which hold the
-    // captured previous node) on the blocking pool, so neither path recurses.
+    let base: usize = lithia::test::live_nodes().await;
+    // Every node is top-level, so support holds the chain while `source` is held. Dropping the
+    // head's handle starts one sweep that lets go of all 20 002 nodes; they are freed
+    // bottom-up, parents through a worklist and bodies on the blocking pool, without recursion.
     drop(tail);
+    assert_eq!(lithia::test::live_nodes().await, base, "support still holds the chain");
+    drop(source);
     let freed: Result<(), tokio::time::error::Elapsed> = tokio::time::timeout(Duration::from_secs(15), async {
-        while lithia::test::live_nodes() != base - 20_001 {
+        while lithia::test::live_nodes().await != base - 20_002 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await;
-    assert!(freed.is_ok(), "live nodes: {} of {}", lithia::test::live_nodes(), base - 20_001);
+    assert!(freed.is_ok(), "live nodes: {} of {}", lithia::test::live_nodes().await, base - 20_002);
 }
 
 #[lithia::test]

@@ -16,6 +16,7 @@ pub(crate) fn dispose(root: &NodeRef) {
     if root.header().is_ghost() {
         return;
     }
+    let _op: crate::support::OpGuard = crate::support::enter();
 
     // Every descendant, in NodeId order, which is topological.
     let mut closure: BTreeMap<NodeId, NodeRef> = BTreeMap::new();
@@ -57,6 +58,15 @@ pub(crate) fn dispose(root: &NodeRef) {
     for node in &freed {
         teardown(node);
     }
+    // Support may be lost downstream: by the freed nodes' targets, generations and surviving children.
+    for node in &freed {
+        for target in node.header().targets.iter().filter_map(WeakNodeRef::upgrade) {
+            crate::support::start(target);
+        }
+    }
+    for node in &survivors {
+        crate::support::start(node.clone());
+    }
     let reruns: Vec<WeakNodeRef> = survivors
         .iter()
         .filter(|node: &&NodeRef| node.header().parent_ids.iter().any(|parent: &NodeId| freed_ids.contains(parent)))
@@ -87,6 +97,15 @@ fn mark_ghost(node: &NodeRef) {
 fn teardown(node: &NodeRef) {
     let header: &Header = node.header();
     protocol::retire(node);
+    let generation: Vec<NodeRef> = {
+        let mut guard: MutexGuard<'_, crate::node::Sched> = header.sched.lock();
+        guard.closed = true;
+        std::mem::take(&mut guard.generation)
+    };
+    let me: Option<NodeRef> = header.support.lock().take();
+    if me.is_some() {
+        crate::diag::support_released(header.site);
+    }
     let parents: Option<Vec<NodeRef>> = header.parents.lock().take();
     if let Some(list) = parents.as_ref() {
         for parent in list {
@@ -99,7 +118,9 @@ fn teardown(node: &NodeRef) {
         header.scope.live.fetch_sub(1, Ordering::SeqCst);
     }
     node.release_payload();
+    crate::support::release_generation(generation);
     if let Some(list) = parents {
         crate::drops::release_parents(list);
     }
+    drop(me);
 }

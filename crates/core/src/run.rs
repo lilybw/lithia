@@ -140,6 +140,7 @@ pub(crate) struct RunFuture<K: NodeValue> {
     node: Weak<Node<K>>,
     shared: Arc<RunShared>,
     state: RunState<K>,
+    polls: u32,
 }
 
 impl<K: NodeValue> RunFuture<K> {
@@ -161,7 +162,12 @@ impl<K: NodeValue> RunFuture<K> {
             None => Weak::<Node<K>>::new(),
         };
         drop(strong);
-        RunFuture { node, shared: Arc::new(RunShared::new(weak, node_id, scope, expected)), state: RunState::Init }
+        RunFuture {
+            node,
+            shared: Arc::new(RunShared::new(weak, node_id, scope, expected)),
+            state: RunState::Init,
+            polls: 0,
+        }
     }
 
     /// Builds the run's state from the node's body.
@@ -294,7 +300,11 @@ impl<K: NodeValue> RunFuture<K> {
         };
         let batch: Batch = frame.take_batch();
         drop(frame);
+        self.polls = self.polls.saturating_add(1);
         let ended: bool = matches!(outcome, Outcome::Ended | Outcome::Panicked(_));
+        if ended || self.polls >= 2 || matches!(outcome, Outcome::Yielded) {
+            node.header.under_way.store(true, Ordering::SeqCst);
+        }
         if ended {
             self.stop();
         }
@@ -326,7 +336,7 @@ impl<K: NodeValue> Drop for RunFuture<K> {
             }
             None => Vec::new(),
         };
-        crate::drops::drop_later(state, None, false);
+        crate::drops::drop_later(state, None);
         protocol::close_all(closes);
     }
 }
@@ -363,7 +373,7 @@ impl<K: NodeValue> Future for YieldItem<'_, K> {
             Some(value) => {
                 match this.yielder.node.upgrade() {
                     Some(node) => node.publish(&this.yielder.shared, value),
-                    None => crate::drops::drop_later(value, None, true),
+                    None => crate::drops::drop_later(value, None),
                 }
                 this.yielder.shared.yielded.store(true, Ordering::SeqCst);
                 cx.waker().wake_by_ref();
@@ -413,7 +423,7 @@ impl<K: NodeValue> Node<K> {
             }
         }
         if let Some(value) = discarded {
-            crate::drops::drop_later(value, header.runtime.as_ref(), true);
+            crate::drops::drop_later(value, header.runtime.as_ref());
         }
         if let Some(old) = replaced {
             crate::drops::drop_value(old, header.runtime.as_ref());

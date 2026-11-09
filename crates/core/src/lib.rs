@@ -2,6 +2,7 @@
 //! Depend on the `lithia` crate, which re-exports this one together with `effect!`.
 
 mod api;
+mod capture;
 mod changes;
 mod context;
 mod create;
@@ -19,6 +20,7 @@ mod sets;
 mod settle_wait;
 mod site;
 mod status;
+mod support;
 mod sync;
 mod value;
 
@@ -45,12 +47,13 @@ pub mod test {
 #[doc(hidden)]
 pub mod __private {
     pub use crate::api::{block_on_main, block_on_test};
+    pub use crate::capture::{Captured, Capturing};
     pub use crate::create::{derived, derived_async, derived_gen, node_ref, source, source_async, source_gen};
     pub use crate::handles::NodeHandle;
     pub use crate::options::Options;
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
     pub use crate::site::fn_path;
-    pub use crate::value::{Capture, CaptureAny, InitDefault};
+    pub use crate::value::{Capture, CaptureAny, InitDefault, MoveAny};
 
     /// Executor and harness for loom models; only under `--cfg lithia_loom`.
     #[cfg(lithia_loom)]

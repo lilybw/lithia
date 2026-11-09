@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
-use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, Mutex, MutexGuard};
+use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Mutex, MutexGuard};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
@@ -99,6 +99,24 @@ pub(crate) struct Header {
     pub(crate) changes: Mutex<Option<watch::Sender<u64>>>,
     pub(crate) first_run_done: AtomicBool,
     pub(crate) rate: Mutex<RateWindow>,
+    /// Outside handles that anchor the node.
+    pub(crate) anchors: AtomicUsize,
+    /// Handles that bodies captured; readers for the unread-memo warning.
+    pub(crate) captured: AtomicUsize,
+    /// Self-reference while support holds the node.
+    pub(crate) support: Mutex<Option<NodeRef>>,
+    /// Set by `.scoped()`: only the node's own handles support it.
+    pub(crate) scoped: AtomicBool,
+    /// The node whose run's generation holds this node.
+    pub(crate) held_by: Mutex<Option<WeakNodeRef>>,
+    /// Nodes this node's body may write.
+    pub(crate) targets: Box<[WeakNodeRef]>,
+    /// Nodes whose bodies may write this node.
+    pub(crate) writers: Mutex<Vec<WeakNodeRef>>,
+    /// Warn if freed before its first run got under way.
+    pub(crate) warn_first_run: bool,
+    /// The first run finished, yielded an item or was polled a second time.
+    pub(crate) under_way: AtomicBool,
 }
 
 /// Scheduler state of one node, guarded by its scheduling lock.
@@ -119,6 +137,10 @@ pub(crate) struct Sched {
     pub(crate) subscribers: Vec<(NodeId, WeakNodeRef)>,
     /// Nodes created by this node's runs, held weakly, for `lithia::test::settled`.
     pub(crate) created: Vec<WeakNodeRef>,
+    /// The generation: nodes the runs created, held until the next run is decided.
+    pub(crate) generation: Vec<NodeRef>,
+    /// Disposed: creations under this node get no creator.
+    pub(crate) closed: bool,
     /// Failed through fragility rather than its own panic.
     pub(crate) failed_by_fragility: bool,
 }
@@ -134,6 +156,8 @@ impl Sched {
             ran_at: 0,
             subscribers: Vec::new(),
             created: Vec::new(),
+            generation: Vec::new(),
+            closed: false,
             failed_by_fragility: false,
         }
     }
@@ -365,7 +389,7 @@ impl<K: NodeValue> AnyNode for Node<K> {
         }
         let body: Option<Body<K>> = self.body.lock().take();
         if let Some(body) = body {
-            crate::drops::drop_later(body, self.header.runtime.as_ref(), false);
+            crate::drops::drop_later(body, self.header.runtime.as_ref());
         }
     }
 }
@@ -378,13 +402,10 @@ impl<K: NodeValue> Node<K> {
 
 impl<K: NodeValue> Drop for Node<K> {
     fn drop(&mut self) {
+        let _op: crate::support::OpGuard = crate::support::enter();
         let header: &mut Header = &mut self.header;
         let ghost: bool = header.phase.load(Ordering::SeqCst) & phase::GHOST != 0;
-        if header.kind == Kind::Derived
-            && !ghost
-            && !header.first_run_done.load(Ordering::SeqCst)
-            && !crate::drops::in_value_drop()
-        {
+        if header.warn_first_run && !ghost && !header.under_way.load(Ordering::SeqCst) {
             crate::diag::freed_before_first_run(header.site);
         }
         if header.counted.swap(false, Ordering::SeqCst) {
@@ -410,6 +431,7 @@ impl<K: NodeValue> Drop for Node<K> {
         }
         sched.subscribers.clear();
         sched.created.clear();
+        let generation: Vec<NodeRef> = std::mem::take(&mut sched.generation);
         let parents: Option<Vec<NodeRef>> = header.parents.get_mut().take();
         if let Some(list) = parents.as_ref() {
             for parent in list {
@@ -424,8 +446,13 @@ impl<K: NodeValue> Drop for Node<K> {
             crate::drops::drop_value(value, runtime.as_ref());
         }
         if let Some(body) = self.body.get_mut().take() {
-            crate::drops::drop_later(body, runtime.as_ref(), false);
+            crate::drops::drop_later(body, runtime.as_ref());
         }
+        // A freed writer no longer supports its targets; its generation loses its creation edges.
+        for target in self.header.targets.iter().filter_map(WeakNodeRef::upgrade) {
+            crate::support::start(target);
+        }
+        crate::support::release_generation(generation);
         if let Some(list) = parents {
             crate::drops::release_parents(list);
         }

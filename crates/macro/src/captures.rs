@@ -36,7 +36,12 @@ pub(crate) struct Captures {
     seen: HashSet<String>,
     pub(crate) found: Vec<Ident>,
     pub(crate) uses_self: bool,
+    /// Captured names used other than to read them.
+    written: HashSet<String>,
 }
+
+/// Methods that only read a handle.
+const READ_METHODS: &[&str] = &["get", "try_get", "changes", "accessor"];
 
 /// Whether a name is lowercase in the capture rule's sense: not a constant, type or variant.
 fn is_lowercase(name: &str) -> bool {
@@ -70,18 +75,57 @@ impl Captures {
         self.scopes.pop();
     }
 
-    /// Records `ident` as captured if it is free and lowercase.
+    /// Records `ident` as captured if it is free and lowercase; the use may write it.
     pub(crate) fn use_ident(&mut self, ident: &Ident) {
+        if self.capture(ident) {
+            self.written.insert(ident.to_string());
+        }
+    }
+
+    /// Records `ident` as captured, used only to read it.
+    pub(crate) fn read_ident(&mut self, ident: &Ident) {
+        self.capture(ident);
+    }
+
+    /// Whether a captured name is only ever read.
+    pub(crate) fn read_only(&self, ident: &Ident) -> bool {
+        !self.written.contains(&ident.to_string())
+    }
+
+    fn capture(&mut self, ident: &Ident) -> bool {
         let name: String = ident.to_string();
         if name == "self" {
             self.uses_self = true;
-            return;
+            return false;
         }
         if !is_lowercase(&name) || self.is_bound(&name) {
-            return;
+            return false;
         }
         if self.seen.insert(name) {
             self.found.push(ident.clone());
+        }
+        true
+    }
+
+    /// The single name an expression is, if it is a bare path.
+    fn bare_name(expr: &Expr) -> Option<&Ident> {
+        match expr {
+            Expr::Path(path)
+                if path.qself.is_none() && path.path.leading_colon.is_none() && path.path.segments.len() == 1 =>
+            {
+                let segment: &syn::PathSegment = &path.path.segments[0];
+                segment.arguments.is_none().then_some(&segment.ident)
+            }
+            Expr::Paren(paren) => Captures::bare_name(&paren.expr),
+            _ => None,
+        }
+    }
+
+    /// Visits `expr` as a read: a bare name, or a read method call on one, counts as a read.
+    fn read_expr(&mut self, expr: &Expr) {
+        match Captures::bare_name(expr) {
+            Some(ident) => self.read_ident(ident),
+            None => self.expr(expr),
         }
     }
 
@@ -101,12 +145,26 @@ impl Captures {
                 if !callee_is_name {
                     self.expr(&call.func);
                 }
+                // `lithia::status(&name)` only reads its argument.
+                let status: bool = matches!(&*call.func, Expr::Path(path)
+                    if path.path.segments.last().is_some_and(|s: &syn::PathSegment| s.ident == "status")
+                        && path.path.segments.len() == 2
+                        && path.path.segments[0].ident == "lithia");
                 for arg in &call.args {
-                    self.expr(arg);
+                    match arg {
+                        Expr::Reference(reference) if status && reference.mutability.is_none() => {
+                            self.read_expr(&reference.expr)
+                        }
+                        _ => self.expr(arg),
+                    }
                 }
             }
             Expr::MethodCall(call) => {
-                self.expr(&call.receiver);
+                let reads: bool = call.args.is_empty() && READ_METHODS.contains(&call.method.to_string().as_str());
+                match Captures::bare_name(&call.receiver) {
+                    Some(ident) if reads => self.read_ident(ident),
+                    _ => self.expr(&call.receiver),
+                }
                 for arg in &call.args {
                     self.expr(arg);
                 }
@@ -338,16 +396,16 @@ impl Captures {
                         && let Some(ident) = path.path.get_ident()
                     {
                         named.insert(ident.to_string());
-                        self.expr(&assign.right);
+                        self.read_expr(&assign.right);
                         continue;
                     }
-                    self.expr(arg);
+                    self.read_expr(arg);
                 }
                 for arg in &args {
                     if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) = arg {
                         for name in inline_args(&text.value()) {
                             if !named.contains(&name) {
-                                self.use_ident(&Ident::new(&name, text.span()));
+                                self.read_ident(&Ident::new(&name, text.span()));
                             }
                         }
                     }
