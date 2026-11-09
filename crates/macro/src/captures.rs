@@ -54,7 +54,7 @@ struct Uses {
 }
 
 /// How a capture's handles are classified for writer edges.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Class {
     /// A handle the body only reads.
     ReadOnly,
@@ -608,6 +608,7 @@ pub(crate) fn rewrite_self(tokens: TokenStream) -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proc_macro2::Span;
 
     fn captured(src: &str) -> Vec<String> {
         let expr: Expr = syn::parse_str(src).expect("parses");
@@ -637,6 +638,71 @@ mod tests {
     fn sees_into_nested_effects() {
         assert_eq!(captured("Some(effect!(|n| n.update(|v: &u32| v + 1)))"), vec!["n"]);
         assert_eq!(captured("effect!(async |id| { cache.set(id.get()); })"), vec!["id", "cache"]);
+    }
+
+    fn classes(src: &str) -> Vec<(String, Class)> {
+        let expr: Expr = syn::parse_str(src).expect("parses");
+        let mut captures: Captures = Captures::new();
+        captures.expr(&expr);
+        let mut names: Vec<String> = captures.found.iter().map(|i: &Ident| i.to_string()).collect();
+        if captures.uses_self {
+            names.push("self".to_string());
+        }
+        names.into_iter().map(|name: String| (name.clone(), captures.class(&name))).collect()
+    }
+
+    fn fields(paths: &[&[&str]]) -> Vec<Vec<Ident>> {
+        paths
+            .iter()
+            .map(|path: &&[&str]| path.iter().map(|f: &&str| Ident::new(f, Span::call_site())).collect())
+            .collect()
+    }
+
+    #[test]
+    fn classifies_reads_and_writes() {
+        let read: Class = Class::ReadOnly;
+        let write: Class = Class::Write;
+        assert_eq!(
+            classes("(a.get(), b.try_get(), c.changes(), d.accessor())"),
+            vec![
+                ("a".into(), read.clone()),
+                ("b".into(), read.clone()),
+                ("c".into(), read.clone()),
+                ("d".into(), read.clone())
+            ]
+        );
+        assert_eq!(classes("lithia::status(&a)"), vec![("a".into(), read.clone())]);
+        assert_eq!(
+            classes("println!(\"{a} {}\", b.get())"),
+            vec![("b".into(), read.clone()), ("a".into(), read.clone())]
+        );
+        assert_eq!(classes("println!(\"{:?}\", a.set(1))"), vec![("a".into(), write.clone())]);
+        assert_eq!(classes("helper(&a)"), vec![("a".into(), write.clone())]);
+        assert_eq!(classes("items.get(0).unwrap().set(5)"), vec![("items".into(), write.clone())]);
+        assert_eq!(classes("my_macro!(a.get())"), vec![("a".into(), write.clone())]);
+        assert_eq!(classes("vec![a.get()]"), vec![("a".into(), read.clone())]);
+        assert_eq!(classes("effect!(|a| b.get())"), vec![("a".into(), read.clone()), ("b".into(), read)]);
+    }
+
+    #[test]
+    fn classifies_field_paths() {
+        assert_eq!(
+            classes("{ self.total.set(1); self.theme.get() }"),
+            vec![(
+                "self".into(),
+                Class::Paths { all: fields(&[&["total"], &["theme"]]), written: fields(&[&["total"]]) }
+            )]
+        );
+        assert_eq!(
+            classes("app.user.name.get()"),
+            vec![("app".into(), Class::Paths { all: fields(&[&["user", "name"]]), written: Vec::new() })]
+        );
+        assert_eq!(classes("{ self.theme.get(); self.notify(1) }"), vec![("self".into(), Class::Write)]);
+        assert_eq!(
+            classes("pair.items[0].get()"),
+            vec![("pair".into(), Class::Paths { all: fields(&[&["items"]]), written: fields(&[&["items"]]) })]
+        );
+        assert_eq!(classes("pair.0.get()"), vec![("pair".into(), Class::Write)]);
     }
 
     #[test]

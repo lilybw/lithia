@@ -75,7 +75,7 @@ fn new_node<K: NodeValue>(
     }
     parents.sort_by_key(|p: &NodeRef| p.header().id);
     let parent_ids: Box<[NodeId]> = parents.iter().map(|p: &NodeRef| p.header().id).collect();
-    let run: Option<Arc<RunShared>> = context::current_run();
+    let run: Option<Arc<RunShared>> = context::creating_run();
     let scope: Arc<Scope> = context::current_scope();
     let creator: Option<NodeId> = run.as_ref().map(|r: &Arc<RunShared>| r.node_id);
     let pending: bool = kind != Kind::Source;

@@ -1,0 +1,14 @@
+error[E0308]: mismatched types
+ --> tests/ui/async_block_captures_by_reference.rs:7:39
+  |
+7 |         let _owned: SourceNode<u32> = n; // error: expected `SourceNode<u32>`, found `&SourceNode<u32>`
+  |                     ---------------   ^ expected `SourceNode<u32>`, found `&SourceNode<u32>`
+  |                     |
+  |                     expected due to this
+  |
+  = note: expected struct `SourceNode<u32>`
+          found reference `&SourceNode<u32>`
+help: consider using clone here
+  |
+7 |         let _owned: SourceNode<u32> = n.clone(); // error: expected `SourceNode<u32>`, found `&SourceNode<u32>`
+  |                                        ++++++++

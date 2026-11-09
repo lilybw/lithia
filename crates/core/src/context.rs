@@ -119,10 +119,10 @@ pub(crate) fn with_frame<R>(f: impl FnOnce(Option<&Frame>) -> R) -> R {
     f(frame)
 }
 
-/// The node whose run is being polled on this thread, if any.
-pub(crate) fn current_run() -> Option<Arc<RunShared>> {
+/// The run that creates here: the one being polled, or the one whose blocking work this is.
+pub(crate) fn creating_run() -> Option<Arc<RunShared>> {
     with_frame(|frame: Option<&Frame>| match frame.map(|f: &Frame| &f.kind) {
-        Some(FrameKind::Run(run)) => Some(run.clone()),
+        Some(FrameKind::Run(run)) | Some(FrameKind::Blocking(BlockingTarget::Run(run))) => Some(run.clone()),
         _ => None,
     })
 }

@@ -15,6 +15,9 @@ loom::lazy_static! {
     static ref SWEEP: Mutex<()> = Mutex::new(());
 }
 
+/// Nodes an exact check of a starting point visits before it leaves the question to the walk.
+const START_BUDGET: usize = 64;
+
 /// Set once any node is scoped; until then no node can be blocked by a scoped parent.
 static ANY_SCOPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -136,12 +139,26 @@ fn run() {
 /// references taken, for the caller to drop after the sweep lock is released.
 fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     let mut keep: Vec<NodeRef> = Vec::new();
-    let _lock: MutexGuard<'_, ()> = SWEEP.lock();
-    // The region: everything downstream of the starting points, up to anchors, whose support
-    // cannot have changed. Outside it, a node support holds still counts as supported.
+    let raised: usize = starts.len();
+    let lock: MutexGuard<'_, ()> = SWEEP.lock();
+    // A starting point an anchor still reaches loses nothing downstream, since support flows
+    // only forward. The check trusts nothing and gives up after a few nodes.
+    let mut lost: Vec<NodeRef> = Vec::new();
+    let mut still: Vec<NodeRef> = Vec::new();
+    for node in starts {
+        let mut exact: Search = Search { budget: Some(START_BUDGET), ..Search::default() };
+        if exact.supported(&node, &mut keep) {
+            still.push(node);
+        } else {
+            lost.push(node);
+        }
+    }
+    // The region: everything downstream of the starting points that lost support, up to
+    // anchors. Outside it, a node support holds still counts as supported, since only nodes
+    // downstream of a starting point can have lost support.
     let mut region: HashMap<NodeId, NodeRef> = HashMap::new();
     let mut order: Vec<NodeRef> = Vec::new();
-    let mut stack: Vec<NodeRef> = starts;
+    let mut stack: Vec<NodeRef> = lost;
     while let Some(node) = stack.pop() {
         let id: NodeId = node.header().id;
         if region.contains_key(&id) {
@@ -156,7 +173,9 @@ fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
         region.insert(id, node.clone());
         order.push(node);
     }
-    let mut search: Search = Search { region, ..Search::default() };
+    let walked: usize = order.len();
+    let mut search: Search = Search { region, trust: true, ..Search::default() };
+    let mut released: usize = 0;
     for node in &order {
         let header: &Header = node.header();
         if is_held(header)
@@ -165,18 +184,23 @@ fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
         {
             crate::diag::support_released(header.site);
             keep.push(me);
+            released += 1;
         }
     }
-    for node in &order {
-        unread_check(node);
-    }
+    let unread: Vec<&'static crate::Site> = still.iter().chain(&order).filter_map(unread).collect();
+    keep.extend(still);
     keep.extend(order);
     keep.extend(search.region.into_values());
+    drop(lock);
+    for site in unread {
+        crate::diag::unread_memo(site);
+    }
+    tracing::trace!(raised, walked, released, "lithia: sweep");
     keep
 }
 
-/// Warns about a memo that support keeps running though nothing reads it.
-fn unread_check(node: &NodeRef) {
+/// The site of a memo that support keeps running though nothing reads it, for the warning.
+fn unread(node: &NodeRef) -> Option<&'static crate::Site> {
     let header: &Header = node.header();
     if header.is_unit
         || !is_held(header)
@@ -184,16 +208,14 @@ fn unread_check(node: &NodeRef) {
         || header.anchors.load(Ordering::SeqCst) > 0
         || header.captured.load(Ordering::SeqCst) > 0
     {
-        return;
+        return None;
     }
     let readers: bool = header
         .changes
         .lock()
         .as_ref()
         .is_some_and(|sender: &tokio::sync::watch::Sender<u64>| sender.receiver_count() > 0);
-    if !readers && header.sched.lock().subscribers.is_empty() {
-        crate::diag::unread_memo(header.site);
-    }
+    (!readers && header.sched.lock().subscribers.is_empty()).then_some(header.site)
 }
 
 /// Nodes support flows to from `node`: children, its generation, and the nodes it may write.
@@ -237,8 +259,11 @@ fn parents(node: &NodeRef) -> Vec<NodeRef> {
 struct Search {
     supported: HashMap<NodeId, bool>,
     blocked: HashMap<NodeId, bool>,
-    /// The walked region; any node support holds outside it counts as supported.
+    /// The walked region; with `trust`, any node support holds outside it counts as supported.
     region: HashMap<NodeId, NodeRef>,
+    trust: bool,
+    /// Nodes left to visit; once spent, every answer is "unsupported".
+    budget: Option<usize>,
 }
 
 impl Search {
@@ -258,7 +283,11 @@ impl Search {
                 continue;
             }
             visited.push(header.id);
-            let trusted: bool = !self.region.contains_key(&header.id) && is_held(header);
+            if !self.spend() {
+                found = false;
+                break;
+            }
+            let trusted: bool = self.trust && !self.region.contains_key(&header.id) && is_held(header);
             if is_anchor(header) || (trusted && current.header().id != id) {
                 found = true;
             } else if !header.scoped.load(Ordering::SeqCst) && !self.blocked(&current, keep) {
@@ -285,6 +314,18 @@ impl Search {
         found
     }
 
+    /// Takes one visit from the budget; false once it is spent.
+    fn spend(&mut self) -> bool {
+        match &mut self.budget {
+            Some(0) => false,
+            Some(left) => {
+                *left -= 1;
+                true
+            }
+            None => true,
+        }
+    }
+
     /// Whether `node` depends on a scoped node without handles, directly or through nodes without handles.
     fn blocked(&mut self, node: &NodeRef, keep: &mut Vec<NodeRef>) -> bool {
         if !ANY_SCOPED.load(Ordering::SeqCst) {
@@ -292,6 +333,10 @@ impl Search {
         }
         let mut stack: Vec<NodeRef> = vec![node.clone()];
         while let Some(top) = stack.last().cloned() {
+            if !self.spend() {
+                // Spent: counting the node as blocked keeps the answer "unsupported".
+                return true;
+            }
             let header: &Header = top.header();
             if self.blocked.contains_key(&header.id) {
                 stack.pop();
