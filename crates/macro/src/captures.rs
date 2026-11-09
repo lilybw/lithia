@@ -1,6 +1,6 @@
 //! Free-identifier analysis for automatic capture (spec §4.2).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use proc_macro2::{Ident, TokenStream, TokenTree};
 use syn::parse::{ParseStream, Parser};
@@ -36,9 +36,36 @@ pub(crate) struct Captures {
     seen: HashSet<String>,
     pub(crate) found: Vec<Ident>,
     pub(crate) uses_self: bool,
-    /// Captured names used other than to read them.
-    written: HashSet<String>,
+    /// How each captured name, `self` included, is used.
+    uses: HashMap<String, Uses>,
+    /// Depth of macros the analysis cannot see into; every use inside one may write.
+    opaque: u32,
 }
+
+/// The uses of one captured name.
+#[derive(Default)]
+struct Uses {
+    /// Used other than through a field path.
+    direct: bool,
+    /// Used directly other than to read it.
+    written: bool,
+    /// Field paths used, each with whether a use of it may write.
+    paths: Vec<(Vec<Ident>, bool)>,
+}
+
+/// How a capture's handles are classified for writer edges.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum Class {
+    /// A handle the body only reads.
+    ReadOnly,
+    /// Everything recorded inside it may be written.
+    Write,
+    /// Used only through field paths; each path that may write, by its fields.
+    Paths { all: Vec<Vec<Ident>>, written: Vec<Vec<Ident>> },
+}
+
+/// Macros whose arguments are plain expressions, evaluated as written.
+const TRANSPARENT_MACROS: &[&str] = &["vec", "dbg"];
 
 /// Methods that only read a handle.
 const READ_METHODS: &[&str] = &["get", "try_get", "changes", "accessor"];
@@ -77,34 +104,87 @@ impl Captures {
 
     /// Records `ident` as captured if it is free and lowercase; the use may write it.
     pub(crate) fn use_ident(&mut self, ident: &Ident) {
-        if self.capture(ident) {
-            self.written.insert(ident.to_string());
+        if let Some(uses) = self.capture(ident) {
+            uses.direct = true;
+            uses.written = true;
         }
     }
 
     /// Records `ident` as captured, used only to read it.
     pub(crate) fn read_ident(&mut self, ident: &Ident) {
-        self.capture(ident);
+        if self.opaque > 0 {
+            return self.use_ident(ident);
+        }
+        if let Some(uses) = self.capture(ident) {
+            uses.direct = true;
+        }
     }
 
-    /// Whether a captured name is only ever read.
-    pub(crate) fn read_only(&self, ident: &Ident) -> bool {
-        !self.written.contains(&ident.to_string())
+    /// Records a use of the field path `base.fields…`; `read` when the use only reads it.
+    fn path_use(&mut self, base: &Ident, fields: Vec<Ident>, read: bool) {
+        let written: bool = !read || self.opaque > 0;
+        if let Some(uses) = self.capture(base) {
+            match uses.paths.iter_mut().find(|(known, _): &&mut (Vec<Ident>, bool)| *known == fields) {
+                Some((_, was)) => *was |= written,
+                None => uses.paths.push((fields, written)),
+            }
+        }
     }
 
-    fn capture(&mut self, ident: &Ident) -> bool {
+    /// How a captured name (or `self`) is classified.
+    pub(crate) fn class(&self, name: &str) -> Class {
+        let Some(uses) = self.uses.get(name) else {
+            return Class::ReadOnly;
+        };
+        if uses.paths.is_empty() {
+            return if uses.written { Class::Write } else { Class::ReadOnly };
+        }
+        if uses.direct {
+            return Class::Write;
+        }
+        Class::Paths {
+            all: uses.paths.iter().map(|(fields, _): &(Vec<Ident>, bool)| fields.clone()).collect(),
+            written: uses
+                .paths
+                .iter()
+                .filter(|(_, written): &&(Vec<Ident>, bool)| *written)
+                .map(|(fields, _): &(Vec<Ident>, bool)| fields.clone())
+                .collect(),
+        }
+    }
+
+    fn capture(&mut self, ident: &Ident) -> Option<&mut Uses> {
         let name: String = ident.to_string();
         if name == "self" {
             self.uses_self = true;
-            return false;
+            return Some(self.uses.entry(name).or_default());
         }
         if !is_lowercase(&name) || self.is_bound(&name) {
-            return false;
+            return None;
         }
-        if self.seen.insert(name) {
+        if self.seen.insert(name.clone()) {
             self.found.push(ident.clone());
         }
-        true
+        Some(self.uses.entry(name).or_default())
+    }
+
+    /// A field path: a captured name, or `self`, followed by named fields only.
+    fn field_path(expr: &Expr) -> Option<(&Ident, Vec<Ident>)> {
+        match expr {
+            Expr::Field(field) => {
+                let syn::Member::Named(member) = &field.member else {
+                    return None;
+                };
+                let (base, mut fields): (&Ident, Vec<Ident>) = match &*field.base {
+                    Expr::Field(_) => Captures::field_path(&field.base)?,
+                    other => (Captures::bare_name(other)?, Vec::new()),
+                };
+                fields.push(member.clone());
+                Some((base, fields))
+            }
+            Expr::Paren(paren) => Captures::field_path(&paren.expr),
+            _ => None,
+        }
     }
 
     /// The single name an expression is, if it is a bare path.
@@ -121,12 +201,15 @@ impl Captures {
         }
     }
 
-    /// Visits `expr` as a read: a bare name, or a read method call on one, counts as a read.
+    /// Visits `expr` as a read: a bare name or field path, or a read method call on one, counts as a read.
     fn read_expr(&mut self, expr: &Expr) {
-        match Captures::bare_name(expr) {
-            Some(ident) => self.read_ident(ident),
-            None => self.expr(expr),
+        if let Some(ident) = Captures::bare_name(expr) {
+            return self.read_ident(ident);
         }
+        if let Some((base, fields)) = Captures::field_path(expr) {
+            return self.path_use(base, fields, true);
+        }
+        self.expr(expr)
     }
 
     pub(crate) fn expr(&mut self, expr: &Expr) {
@@ -161,15 +244,19 @@ impl Captures {
             }
             Expr::MethodCall(call) => {
                 let reads: bool = call.args.is_empty() && READ_METHODS.contains(&call.method.to_string().as_str());
-                match Captures::bare_name(&call.receiver) {
-                    Some(ident) if reads => self.read_ident(ident),
-                    _ => self.expr(&call.receiver),
+                if reads {
+                    self.read_expr(&call.receiver);
+                } else {
+                    self.expr(&call.receiver);
                 }
                 for arg in &call.args {
                     self.expr(arg);
                 }
             }
-            Expr::Field(field) => self.expr(&field.base),
+            Expr::Field(field) => match Captures::field_path(expr) {
+                Some((base, fields)) => self.path_use(base, fields, false),
+                None => self.expr(&field.base),
+            },
             Expr::Closure(closure) => {
                 self.push();
                 for input in &closure.inputs {
@@ -413,7 +500,16 @@ impl Captures {
                 return;
             }
         }
-        // Other macros: best effort.
+        if TRANSPARENT_MACROS.contains(&name.as_str()) {
+            return self.opaque_mac(mac);
+        }
+        // Other macros: best effort, and every use inside may write.
+        self.opaque += 1;
+        self.opaque_mac(mac);
+        self.opaque -= 1;
+    }
+
+    fn opaque_mac(&mut self, mac: &Macro) {
         if let Ok(args) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(mac.tokens.clone()) {
             for arg in &args {
                 self.expr(arg);

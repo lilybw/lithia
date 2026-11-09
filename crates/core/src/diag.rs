@@ -74,7 +74,7 @@ pub(crate) fn support_held(site: &'static Site) {
     *count += 1;
     let reached: usize = *count;
     drop(counts);
-    if reached >= 1000 && reached.is_power_of_ten() {
+    if reached >= 1000 && power_of_ten(reached) {
         tracing::warn!(
             site = %site,
             count = reached,
@@ -109,18 +109,12 @@ pub(crate) fn unread_memo(site: &'static Site) {
     }
 }
 
-trait PowerOfTen {
-    fn is_power_of_ten(self) -> bool;
-}
-
-impl PowerOfTen for usize {
-    fn is_power_of_ten(self) -> bool {
-        let mut n: usize = self;
-        while n >= 10 && n % 10 == 0 {
-            n /= 10;
-        }
-        n == 1
+/// Whether `n` is 1, 10, 100, …
+fn power_of_ten(mut n: usize) -> bool {
+    while n >= 10 && n.is_multiple_of(10) {
+        n /= 10;
     }
+    n == 1
 }
 
 /// A diagnostic gathered under a scheduling lock, emitted once it is released.

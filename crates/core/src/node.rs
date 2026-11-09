@@ -417,7 +417,9 @@ impl<K: NodeValue> Drop for Node<K> {
             tokens.push(entry.epoch);
         }
         if let Some(slot) = sched.run.take() {
+            // Woken, a parked run finds its node gone and drops its future, captures included.
             slot.shared.cancel();
+            slot.shared.wake();
             for served in slot.served {
                 for _ in 0..served.tokens {
                     tokens.push(served.epoch.clone());

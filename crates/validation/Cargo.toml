@@ -11,6 +11,8 @@ lithia = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 trybuild = { workspace = true }
 
 [lints]

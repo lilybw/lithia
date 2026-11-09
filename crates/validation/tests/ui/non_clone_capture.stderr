@@ -16,5 +16,5 @@ note: required by a bound in `lithia::__private::CaptureAny::__lithia_capture`
    |               ^^^^^^^ required by this bound in `CaptureAny::__lithia_capture`
 help: consider borrowing here
    |
-14 |     let _uses: DerivedNode<u32> = effect!(|n| *n.get() + (&token).id());
-   |                                                          ++     +
+14 |     let _uses: DerivedNode<u32> = effect!(|n| *n.get() + &token.id());
+   |                                                          +

@@ -24,6 +24,19 @@ pub fn node_ref<R: Readable>(handle: &R) -> NodeHandle {
     handle.__lithia_node()
 }
 
+/// Fixes the output type of a body's future: `output::<(), _>(async { loop {} })`.
+#[doc(hidden)]
+pub fn output<T, F: Future<Output = T>>(future: F) -> F {
+    future
+}
+
+/// Flags a dependency a `move` body is about to take as internal; works in generic code.
+/// `move_dep(&count, true);`
+#[doc(hidden)]
+pub fn move_dep<R: Readable>(handle: &R, read_only: bool) {
+    handle.__lithia_move_dep(read_only)
+}
+
 fn runtime_for(kind: Kind, site: &Site) -> Option<Handle> {
     // Loom models run every task on their own executor.
     if cfg!(lithia_loom) {
@@ -153,7 +166,10 @@ fn new_node<K: NodeValue>(
 /// Creates a source node holding `value` (spec §3.1).
 #[doc(hidden)]
 pub fn source<K: NodeValue>(site: &'static Site, value: K, options: Options<K>) -> SourceNode<K> {
-    SourceNode { node: new_node(site, Kind::Source, &[], &Captured::default(), value, None, options), internal: false }
+    SourceNode {
+        node: new_node(site, Kind::Source, &[], &Captured::default(), value, None, options),
+        internal: std::sync::atomic::AtomicBool::new(false),
+    }
 }
 
 /// Creates a source node fed by an async block, pending with `init` until its first item (spec §8).
@@ -170,7 +186,10 @@ where
     F: Future<Output = K> + Send + 'static,
 {
     let body: Body<K> = Body::Once(Box::pin(block));
-    SourceNode { node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options), internal: false }
+    SourceNode {
+        node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options),
+        internal: std::sync::atomic::AtomicBool::new(false),
+    }
 }
 
 /// Creates a source node fed by an async block that yields (spec §3.6).
@@ -190,7 +209,10 @@ where
     let start: Box<dyn FnOnce(Yielder<K>) -> BoxFut<()> + Send> =
         Box::new(move |yielder: Yielder<K>| -> BoxFut<()> { Box::pin(block(yielder)) });
     let body: Body<K> = Body::OnceGen(start);
-    SourceNode { node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options), internal: false }
+    SourceNode {
+        node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options),
+        internal: std::sync::atomic::AtomicBool::new(false),
+    }
 }
 
 /// Creates a derived node with a synchronous body (spec §3.1).
@@ -208,7 +230,10 @@ where
     B: Fn() -> K + Send + Sync + 'static,
 {
     let body: Body<K> = Body::Sync(Arc::new(body));
-    DerivedNode { node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options), internal: false }
+    DerivedNode {
+        node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
+        internal: std::sync::atomic::AtomicBool::new(false),
+    }
 }
 
 /// Creates a derived node with an async body (spec §8).
@@ -227,7 +252,10 @@ where
     F: Future<Output = K> + Send + 'static,
 {
     let body: Body<K> = Body::Async(Arc::new(move || -> BoxFut<K> { Box::pin(body()) }));
-    DerivedNode { node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options), internal: false }
+    DerivedNode {
+        node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
+        internal: std::sync::atomic::AtomicBool::new(false),
+    }
 }
 
 /// Creates a derived node with a generator body (spec §3.6).
@@ -246,5 +274,8 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let body: Body<K> = Body::Gen(Arc::new(move |yielder: Yielder<K>| -> BoxFut<()> { Box::pin(body(yielder)) }));
-    DerivedNode { node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options), internal: false }
+    DerivedNode {
+        node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
+        internal: std::sync::atomic::AtomicBool::new(false),
+    }
 }

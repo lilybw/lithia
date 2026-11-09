@@ -1,9 +1,9 @@
-// Case AH: #[must_use] fires through the macro.
+// Case AH: a bare `effect!(…).scoped();` is a `#[must_use]` warning.
 #![deny(unused_must_use)]
 use lithia::{effect, SourceNode};
 
 #[lithia::main]
 async fn main() {
     let count: SourceNode<u32> = effect!(0);
-    effect!(|count| println!("{}", count.get())); // error: unused `DerivedNode` that must be used
+    effect!(|count| println!("{}", count.get())).scoped(); // error: unused return value of `scoped`
 }

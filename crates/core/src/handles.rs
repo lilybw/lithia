@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::changes::Changes;
 use crate::context::{self, ClosureCreations, ClosureGuard};
@@ -43,6 +43,8 @@ pub trait Readable: sealed::Sealed {
     fn changes(&self) -> Changes<Self::Value>;
     #[doc(hidden)]
     fn __lithia_node(&self) -> NodeHandle;
+    #[doc(hidden)]
+    fn __lithia_move_dep(&self, read_only: bool);
 }
 
 /// Write access; implemented by `SourceNode` and `Setter`.
@@ -173,6 +175,9 @@ macro_rules! readable {
             fn __lithia_node(&self) -> NodeHandle {
                 NodeHandle(self.node.clone())
             }
+            fn __lithia_move_dep(&self, read_only: bool) {
+                if read_only { self.__lithia_move_ro() } else { self.__lithia_move() }
+            }
         }
 
         impl<K: NodeValue> $ty<K> {
@@ -194,13 +199,13 @@ macro_rules! readable {
 
         impl<K: NodeValue> Clone for $ty<K> {
             fn clone(&self) -> Self {
-                $ty { internal: new_ref(&self.node, $ty::<K>::writes()), node: self.node.clone() }
+                $ty { internal: AtomicBool::new(new_ref(&self.node, $ty::<K>::writes())), node: self.node.clone() }
             }
         }
 
         impl<K: NodeValue> Drop for $ty<K> {
             fn drop(&mut self) {
-                drop_ref(&self.node, self.internal, $ty::<K>::anchoring(&self.node));
+                drop_ref(&self.node, self.internal.load(Ordering::Relaxed), $ty::<K>::anchoring(&self.node));
             }
         }
 
@@ -211,7 +216,7 @@ macro_rules! readable {
                 if $ty::<K>::anchoring(node) {
                     node.header.anchors.fetch_add(1, Ordering::SeqCst);
                 }
-                $ty { node: node.clone(), internal: false }
+                $ty { node: node.clone(), internal: AtomicBool::new(false) }
             }
 
             /// Clones the handle for a body, recorded as a capture its body only reads.
@@ -220,11 +225,28 @@ macro_rules! readable {
                 crate::capture::read_only(|| self.clone())
             }
 
-            /// Takes the handle into a `move` body as an internal handle.
+            /// Flags the handle a `move` body is about to take as internal.
             #[doc(hidden)]
-            pub fn __lithia_move(mut self) -> Self {
-                take_moved(&self.node, &mut self.internal, $ty::<K>::writes(), $ty::<K>::anchoring(&self.node));
-                self
+            pub fn __lithia_move(&self) {
+                take_moved(&self.node, &self.internal, $ty::<K>::writes(), $ty::<K>::anchoring(&self.node));
+            }
+
+            /// Like `__lithia_move`, recorded as a capture its body only reads.
+            #[doc(hidden)]
+            pub fn __lithia_move_ro(&self) {
+                crate::capture::read_only(|| self.__lithia_move())
+            }
+
+            /// A field path whose value is this handle.
+            #[doc(hidden)]
+            pub fn __lithia_is_handle(&self) -> bool {
+                true
+            }
+
+            /// Records this handle's node as one a body reaching it by a field path may write.
+            #[doc(hidden)]
+            pub fn __lithia_field(&self) {
+                record_field(&self.node, $ty::<K>::writes());
             }
         }
 
@@ -245,28 +267,28 @@ macro_rules! readable {
 /// `let count: SourceNode<u32> = effect!(0); count.set(3);`
 pub struct SourceNode<K: NodeValue> {
     pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: bool,
+    pub(crate) internal: AtomicBool,
 }
 
 /// Node whose body produces its value from its dependencies; `DerivedNode<()>` is an effect.
 /// `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);`
 pub struct DerivedNode<K: NodeValue> {
     pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: bool,
+    pub(crate) internal: AtomicBool,
 }
 
 /// Read-only view of a node.
 /// `let reader: Accessor<u32> = count.accessor();`
 pub struct Accessor<K: NodeValue> {
     pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: bool,
+    pub(crate) internal: AtomicBool,
 }
 
 /// Write-only view of a source node.
 /// `let writer: Setter<u32> = count.setter();`
 pub struct Setter<K: NodeValue> {
     pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: bool,
+    pub(crate) internal: AtomicBool,
 }
 
 /// Records a new handle: internal in capture mode, otherwise an outside handle.
@@ -288,17 +310,24 @@ fn true_if_counted<K: NodeValue>(node: &Arc<Node<K>>, writes: bool) -> bool {
     false
 }
 
+/// Records a node a body reaches by a field path, without a handle of its own.
+fn record_field<K: NodeValue>(node: &Arc<Node<K>>, writes: bool) {
+    if crate::capture::active() {
+        let erased: NodeRef = node.clone();
+        crate::capture::record(erased, writes);
+    }
+}
+
 /// Flags a handle a `move` body takes as internal; its anchoring count drops after creation.
-fn take_moved<K: NodeValue>(node: &Arc<Node<K>>, internal: &mut bool, writes: bool, anchoring: bool) {
+fn take_moved<K: NodeValue>(node: &Arc<Node<K>>, internal: &AtomicBool, writes: bool, anchoring: bool) {
     if !crate::capture::active() {
         return;
     }
     let erased: NodeRef = node.clone();
     crate::capture::record(erased.clone(), writes);
-    if *internal {
+    if internal.swap(true, Ordering::Relaxed) {
         return;
     }
-    *internal = true;
     node.header.captured.fetch_add(1, Ordering::SeqCst);
     if anchoring {
         crate::capture::moved(erased);
@@ -341,13 +370,13 @@ impl<K: NodeValue> sealed::Sealed for Setter<K> {}
 
 impl<K: NodeValue> Clone for Setter<K> {
     fn clone(&self) -> Self {
-        Setter { internal: new_ref(&self.node, true), node: self.node.clone() }
+        Setter { internal: AtomicBool::new(new_ref(&self.node, true)), node: self.node.clone() }
     }
 }
 
 impl<K: NodeValue> Drop for Setter<K> {
     fn drop(&mut self) {
-        drop_ref(&self.node, self.internal, true);
+        drop_ref(&self.node, self.internal.load(Ordering::Relaxed), true);
     }
 }
 
@@ -358,11 +387,28 @@ impl<K: NodeValue> Setter<K> {
         self.clone()
     }
 
-    /// Takes the handle into a `move` body as an internal handle.
+    /// Flags the handle a `move` body is about to take as internal.
     #[doc(hidden)]
-    pub fn __lithia_move(mut self) -> Self {
-        take_moved(&self.node, &mut self.internal, true, true);
-        self
+    pub fn __lithia_move(&self) {
+        take_moved(&self.node, &self.internal, true, true);
+    }
+
+    /// Like `__lithia_move`; a `Setter` always writes.
+    #[doc(hidden)]
+    pub fn __lithia_move_ro(&self) {
+        self.__lithia_move()
+    }
+
+    /// A field path whose value is this handle.
+    #[doc(hidden)]
+    pub fn __lithia_is_handle(&self) -> bool {
+        true
+    }
+
+    /// Records this handle's node as one a body reaching it by a field path may write.
+    #[doc(hidden)]
+    pub fn __lithia_field(&self) {
+        record_field(&self.node, true);
     }
 }
 
@@ -450,7 +496,7 @@ impl<K: NodeValue> SourceNode<K> {
     /// Write-only view of this node.
     pub fn setter(&self) -> Setter<K> {
         self.node.header.anchors.fetch_add(1, Ordering::SeqCst);
-        Setter { node: self.node.clone(), internal: false }
+        Setter { node: self.node.clone(), internal: AtomicBool::new(false) }
     }
 
     /// Lets this node live by its handles alone, as in v0.2.5; nodes hanging off it stop with it.

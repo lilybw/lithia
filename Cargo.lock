@@ -185,6 +185,8 @@ version = "0.1.0"
 dependencies = [
  "lithia",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "trybuild",
 ]
 

@@ -1,4 +1,5 @@
-//! Validation cases A–AG from spec §13, verbatim; Case AH lives in `compile.rs`.
+//! Validation cases A–AG from spec §13, verbatim, with Case J as rewritten for v0.3.0; Case AH
+//! lives in `compile.rs`, and the cases v0.3.0 adds in `support.rs`.
 //! Every case runs under the workspace's test timeout (`.cargo/config.toml`).
 
 use std::sync::mpsc;
@@ -192,23 +193,25 @@ async fn case_i_returned_memo() {
     assert!(matches!(lithia::status(&m), Status::Ready)); // `c` lives as long as `m` holds it
 }
 
-// Case J: an effect lives while its handle does.
+// Case J: an effect lives while its parent can change.
 #[lithia::test]
-async fn case_j_handle_lifetime() {
+async fn case_j_an_effect_lives_while_its_parent_can_change() {
     let count: SourceNode<i32> = effect!(0);
-    let kept_runs: SourceNode<u32> = effect!(0);
-    let scoped_runs: SourceNode<u32> = effect!(0);
-    let _kept: DerivedNode<()> = effect!(|count| kept_runs.update(|n: &u32| n + 1));
+    let runs: SourceNode<u32> = effect!(0);
+    effect!(|count| runs.update(|n: &u32| n + 1)); // lives while `count` is held
+    let base: usize = lithia::test::live_nodes().await;
     {
-        let _scoped: DerivedNode<()> = effect!(|count| scoped_runs.update(|n: &u32| n + 1));
+        let local: SourceNode<i32> = effect!(0);
+        effect!(|local| runs.update(|n: &u32| n + 1)); // writing `runs` does not keep it alive
         lithia::flush().await;
-    } // `_scoped` drops here, and its effect stops
+        assert_eq!(lithia::test::live_nodes().await, base + 2);
+    } // `local` drops here, and its effect is freed with it
+    assert_eq!(lithia::test::live_nodes().await, base);
     count.set(1);
     lithia::flush().await;
-    assert_eq!((*kept_runs.get(), *scoped_runs.get()), (2, 1));
+    assert_eq!(*runs.get(), 3);
 }
 
-// Case K: generator body.
 #[lithia::test]
 async fn case_k_generator() {
     let count_to: SourceNode<u32> = effect!(3);
@@ -277,6 +280,7 @@ async fn case_n_created_mid_propagation() {
     let (go_tx, go_rx): (mpsc::Sender<()>, mpsc::Receiver<()>) = mpsc::channel();
     let started_rx: Arc<Mutex<mpsc::Receiver<()>>> = Arc::new(Mutex::new(started_rx));
     let go_rx: Arc<Mutex<mpsc::Receiver<()>>> = Arc::new(Mutex::new(go_rx));
+    let base: usize = lithia::test::live_nodes().await;
     let a: SourceNode<i32> = effect!(1);
     let slow: DerivedNode<i32> = effect!(|a| {
         started_tx.send(()).unwrap();
@@ -292,6 +296,8 @@ async fn case_n_created_mid_propagation() {
     lithia::flush().await;
     let m: DerivedNode<i32> = (*holder.get()).clone().expect("set by _maker");
     assert_eq!(*m.get(), 2); // `m`'s entry waited on `slow`'s in-flight run, so `m` ran once, after it
+    drop((a, slow, holder, _maker, m));
+    assert_eq!(lithia::test::live_nodes().await, base); // v0.3.0: nothing holds itself
 }
 
 // Case O: a run that yields nothing.
@@ -398,6 +404,7 @@ async fn case_t_cut_writer_releases_children() {
 // Case U: a loader feeds its creator.
 #[lithia::test]
 async fn case_u_loader_feeds_its_creator() {
+    let base: usize = lithia::test::live_nodes().await;
     let id: SourceNode<u32> = effect!(1);
     let cache: SourceNode<Option<String>> = effect!(None, equals = lithia::eq);
     let view: DerivedNode<(String, Option<DerivedNode<()>>)> = effect!(|id, cache| {
@@ -413,6 +420,8 @@ async fn case_u_loader_feeds_its_creator() {
     });
     lithia::test::settled(&view).await;
     assert_eq!(view.get().0, "user-1"); // the loader's write reruns `view`: a creator is not in its child's writer set
+    drop((id, cache, view));
+    assert_eq!(lithia::test::live_nodes().await, base); // v0.3.0: nothing holds itself
 }
 
 // Case V: reflow reruns children on an equal value.
@@ -433,6 +442,7 @@ async fn case_v_reflow() {
 // Case W: reflow from a node's own body.
 #[lithia::test]
 async fn case_w_reflow_from_its_own_body() {
+    let base: usize = lithia::test::live_nodes().await;
     let me: SourceNode<Option<DerivedNode<u32>>> = effect!(None);
     let tick: SourceNode<u32> = effect!(0);
     let body_runs: SourceNode<u32> = effect!(0);
@@ -454,6 +464,9 @@ async fn case_w_reflow_from_its_own_body() {
     lithia::flush().await;
     assert_eq!((*body_runs.get(), *child_runs.get()), (2, 2)); // the node did not rerun itself; its child did
     me.set(None);
+    lithia::flush().await;
+    drop((me, tick, body_runs, child_runs, node, _child));
+    assert_eq!(lithia::test::live_nodes().await, base); // v0.3.0: nothing holds itself
 }
 
 // Case X: defer feeds a value back on purpose.

@@ -48,12 +48,14 @@ pub mod test {
 pub mod __private {
     pub use crate::api::{block_on_main, block_on_test};
     pub use crate::capture::{Captured, Capturing};
-    pub use crate::create::{derived, derived_async, derived_gen, node_ref, source, source_async, source_gen};
+    pub use crate::create::{
+        derived, derived_async, derived_gen, move_dep, node_ref, output, source, source_async, source_gen,
+    };
     pub use crate::handles::NodeHandle;
     pub use crate::options::Options;
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
     pub use crate::site::fn_path;
-    pub use crate::value::{Capture, CaptureAny, InitDefault, MoveAny};
+    pub use crate::value::{Capture, CaptureAny, FieldAny, InitDefault, MoveAny};
 
     /// Executor and harness for loom models; only under `--cfg lithia_loom`.
     #[cfg(lithia_loom)]

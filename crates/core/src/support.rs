@@ -159,11 +159,12 @@ fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     let mut search: Search = Search { region, ..Search::default() };
     for node in &order {
         let header: &Header = node.header();
-        if is_held(header) && !search.supported(node, &mut keep) {
-            if let Some(me) = header.support.lock().take() {
-                crate::diag::support_released(header.site);
-                keep.push(me);
-            }
+        if is_held(header)
+            && !search.supported(node, &mut keep)
+            && let Some(me) = header.support.lock().take()
+        {
+            crate::diag::support_released(header.site);
+            keep.push(me);
         }
     }
     for node in &order {

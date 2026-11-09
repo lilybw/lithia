@@ -1,10 +1,10 @@
-error: unused `DerivedNode` that must be used
+error: unused return value of `DerivedNode::<K>::scoped` that must be used
  --> tests/ui/must_use.rs:8:5
   |
-8 |     effect!(|count| println!("{}", count.get())); // error: unused `DerivedNode` that must be used
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+8 |     effect!(|count| println!("{}", count.get())).scoped(); // error: unused return value of `scoped`
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = note: a derived node stops when its last handle drops
+  = note: a scoped node lives only while its handles do; bind this one
 note: the lint level is defined here
  --> tests/ui/must_use.rs:2:9
   |
@@ -12,5 +12,5 @@ note: the lint level is defined here
   |         ^^^^^^^^^^^^^^^
 help: use `let _ = ...` to ignore the resulting value
   |
-8 |     let _ = effect!(|count| println!("{}", count.get()));; // error: unused `DerivedNode` that must be used
-  |     +++++++                                             +
+8 |     let _ = effect!(|count| println!("{}", count.get())).scoped(); // error: unused return value of `scoped`
+  |     +++++++

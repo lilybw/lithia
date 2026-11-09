@@ -10,7 +10,7 @@ use syn::visit::Visit;
 use syn::visit_mut::VisitMut;
 use syn::{Expr, ExprAsync, ExprClosure, Ident, Pat, Token, Type};
 
-use crate::captures::{Captures, rewrite_self};
+use crate::captures::{Captures, Class, rewrite_self};
 
 const OPTIONS: &[&str] = &["init", "equals", "fragility", "ghost", "flags"];
 
@@ -189,6 +189,92 @@ impl VisitMut for LowerYield {
     fn visit_item_mut(&mut self, _item: &mut syn::Item) {}
 }
 
+/// Finds what lets a body's future complete: `return`, `?`, or a `break` out of the loop.
+#[derive(Default)]
+struct Exits {
+    /// Loops entered inside the loop being checked.
+    depth: usize,
+    /// The checked loop's label.
+    label: Option<String>,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for Exits {
+    fn visit_expr_break(&mut self, node: &'ast syn::ExprBreak) {
+        let targets: bool = match &node.label {
+            Some(label) => Some(label.ident.to_string()) == self.label,
+            None => self.depth == 0,
+        };
+        self.found |= targets;
+        syn::visit::visit_expr_break(self, node);
+    }
+
+    fn visit_expr_return(&mut self, node: &'ast syn::ExprReturn) {
+        self.found = true;
+        syn::visit::visit_expr_return(self, node);
+    }
+
+    fn visit_expr_try(&mut self, node: &'ast syn::ExprTry) {
+        self.found = true;
+        syn::visit::visit_expr_try(self, node);
+    }
+
+    fn visit_expr_loop(&mut self, node: &'ast syn::ExprLoop) {
+        self.depth += 1;
+        syn::visit::visit_expr_loop(self, node);
+        self.depth -= 1;
+    }
+
+    fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
+        self.depth += 1;
+        syn::visit::visit_expr_while(self, node);
+        self.depth -= 1;
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        self.depth += 1;
+        syn::visit::visit_expr_for_loop(self, node);
+        self.depth -= 1;
+    }
+
+    fn visit_expr_closure(&mut self, _: &'ast ExprClosure) {}
+
+    fn visit_expr_async(&mut self, _: &'ast ExprAsync) {}
+
+    fn visit_item(&mut self, _: &'ast syn::Item) {}
+}
+
+/// Whether a body ends in a `loop` it can never leave, so its future never completes; its
+/// output is then typed `()` rather than left to the never-type fallback.
+fn never_completes(stmts: &[syn::Stmt]) -> bool {
+    let Some(syn::Stmt::Expr(Expr::Loop(tail), None)) = stmts.last() else {
+        return false;
+    };
+    let mut exits: Exits =
+        Exits { label: tail.label.as_ref().map(|l: &syn::Label| l.name.ident.to_string()), ..Exits::default() };
+    exits.visit_block(&tail.body);
+    for stmt in &stmts[..stmts.len() - 1] {
+        exits.visit_stmt(stmt);
+    }
+    !exits.found
+}
+
+/// The statements of a body: a block's own, or the expression alone.
+fn body_stmts(body: &Expr) -> Vec<syn::Stmt> {
+    match body {
+        Expr::Block(block) if block.attrs.is_empty() && block.label.is_none() => block.block.stmts.clone(),
+        other => vec![syn::Stmt::Expr(other.clone(), None)],
+    }
+}
+
+/// Wraps a body's future so its output is `ty`, when one is known.
+fn typed_future(ty: Option<TokenStream>, future: TokenStream) -> TokenStream {
+    match ty {
+        Some(ty) => quote!(::lithia::__private::output::<#ty, _>(#future)),
+        None => future,
+    }
+}
+
 /// Validated options, as token streams ready for the expansion.
 struct Resolved {
     init: Option<Expr>,
@@ -279,43 +365,80 @@ fn site(tokens: &str) -> TokenStream {
     }
 }
 
-/// How one captured name is taken into a body.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Take {
-    /// Cloned; a dependency only read records a read-only capture.
-    Clone { read_only: bool, dependency: bool },
-    /// Moved by a `move` body.
-    Move { read_only: bool, dependency: bool },
-}
-
-/// Binds `ident` to its capture: an internal clone, or the moved value flagged internal.
-fn capture_take(ident: &Ident, take: Take) -> TokenStream {
-    let (moved, read_only, dependency): (bool, bool, bool) = match take {
-        Take::Clone { read_only, dependency } => (false, read_only, dependency),
-        Take::Move { read_only, dependency } => (true, read_only, dependency),
-    };
-    // A dependency is always a handle, so its whole capture can be read-only; any other name
-    // is read-only only when its type is a handle, which method dispatch decides.
+/// Binds `ident` to its capture: an internal clone, or, in a `move` body, the moved value
+/// flagged internal. `dependency` names are handles, so their whole capture can be read-only.
+fn capture_take(ident: &Ident, class: &Class, moved: bool, dependency: bool) -> TokenStream {
+    // A `move` body is analysed by name only.
+    let read_only: bool = *class == Class::ReadOnly;
+    if let (Class::Paths { all, written }, false, false) = (class, moved, dependency) {
+        return path_take(&quote!(#ident), ident, all, written);
+    }
+    if moved {
+        // The body moves the value as written; a handle is flagged internal in place, and a
+        // dependency through `Readable`, so generic code is flagged too.
+        let flag: TokenStream = match (dependency, read_only) {
+            (true, _) => quote_spanned!(ident.span()=> ::lithia::__private::move_dep(&#ident, #read_only)),
+            (false, false) => quote_spanned!(ident.span()=> (&#ident).__lithia_move()),
+            (false, true) => quote_spanned!(ident.span()=> (&#ident).__lithia_move_ro()),
+        };
+        return quote_spanned! {ident.span()=>
+            __lithia_cap.take(false, || {
+                #[allow(unused_imports)]
+                use ::lithia::__private::MoveAny as _;
+                #flag
+            });
+        };
+    }
+    // Any name other than a dependency is read-only only when its type is a handle, which
+    // method dispatch decides.
     let session_read_only: bool = read_only && dependency;
-    let call: TokenStream = match (moved, read_only && !dependency) {
-        (true, _) => quote_spanned!(ident.span()=> (#ident).__lithia_move()),
-        (false, true) => quote_spanned!(ident.span()=> (#ident).__lithia_capture_ro()),
-        (false, false) => quote_spanned!(ident.span()=> (#ident).__lithia_capture()),
+    let call: TokenStream = if read_only && !dependency {
+        quote_spanned!(ident.span()=> (#ident).__lithia_capture_ro())
+    } else {
+        quote_spanned!(ident.span()=> (#ident).__lithia_capture())
     };
-    let closure: TokenStream = if moved { quote!(move ||) } else { quote!(||) };
-    // A moved value keeps the mutability it may have had, as a `move` closure would.
-    let binding: TokenStream = if moved { quote!(mut #ident) } else { quote!(#ident) };
     quote_spanned! {ident.span()=>
-        #[allow(unused_variables, unused_mut)]
-        let #binding = __lithia_cap.take(#session_read_only, #closure {
+        #[allow(unused_variables)]
+        let #ident = __lithia_cap.take(#session_read_only, || {
             #[allow(unused_imports)]
-            use ::lithia::__private::{CaptureAny as _, MoveAny as _};
+            use ::lithia::__private::CaptureAny as _;
             #call
         });
     }
 }
 
-fn self_clone() -> TokenStream {
+/// Clones a value used only through field paths: when every path is a handle, the clone
+/// records no edges and each path that may write records its own.
+fn path_take(base: &TokenStream, binding: &Ident, all: &[Vec<Ident>], written: &[Vec<Ident>]) -> TokenStream {
+    let checks: Vec<TokenStream> =
+        all.iter().map(|fields: &Vec<Ident>| quote!(&& (#base #(.#fields)*).__lithia_is_handle())).collect();
+    let edges: Vec<TokenStream> =
+        written.iter().map(|fields: &Vec<Ident>| quote!((#base #(.#fields)*).__lithia_field();)).collect();
+    quote_spanned! {binding.span()=>
+        let __lithia_paths: bool = {
+            #[allow(unused_imports)]
+            use ::lithia::__private::FieldAny as _;
+            true #(#checks)*
+        };
+        if __lithia_paths {
+            #[allow(unused_imports)]
+            use ::lithia::__private::FieldAny as _;
+            #(#edges)*
+        }
+        #[allow(unused_variables)]
+        let #binding = __lithia_cap.take(__lithia_paths, || {
+            #[allow(unused_imports)]
+            use ::lithia::__private::CaptureAny as _;
+            (#base).__lithia_capture()
+        });
+    }
+}
+
+fn self_clone(class: &Class) -> TokenStream {
+    let binding: Ident = format_ident!("__self");
+    if let Class::Paths { all, written } = class {
+        return path_take(&quote!(self), &binding, all, written);
+    }
     quote! {
         #[allow(unused_variables)]
         let __self = __lithia_cap.take(false, || {
@@ -346,19 +469,29 @@ fn by_reference(names: &[Ident]) -> TokenStream {
     }
 }
 
-/// Identifiers a body captures, plus whether it uses `self`, and which names it only reads.
-fn analyse(body: &Expr) -> (Vec<Ident>, bool, Vec<bool>) {
-    let mut captures: Captures = Captures::new();
-    captures.expr(body);
-    let read_only: Vec<bool> = captures.found.iter().map(|ident: &Ident| captures.read_only(ident)).collect();
-    (captures.found, captures.uses_self, read_only)
+/// What a body captures: each name with its class, and `self`'s class if it uses `self`.
+struct Analysis {
+    names: Vec<Ident>,
+    classes: Vec<Class>,
+    self_class: Option<Class>,
 }
 
-fn analyse_block(block: &syn::Block) -> (Vec<Ident>, bool, Vec<bool>) {
+fn analysed(captures: Captures) -> Analysis {
+    let classes: Vec<Class> = captures.found.iter().map(|ident: &Ident| captures.class(&ident.to_string())).collect();
+    let self_class: Option<Class> = captures.uses_self.then(|| captures.class("self"));
+    Analysis { names: captures.found, classes, self_class }
+}
+
+fn analyse(body: &Expr) -> Analysis {
+    let mut captures: Captures = Captures::new();
+    captures.expr(body);
+    analysed(captures)
+}
+
+fn analyse_block(block: &syn::Block) -> Analysis {
     let mut captures: Captures = Captures::new();
     captures.block(block);
-    let read_only: Vec<bool> = captures.found.iter().map(|ident: &Ident| captures.read_only(ident)).collect();
-    (captures.found, captures.uses_self, read_only)
+    analysed(captures)
 }
 
 /// Binds every capture by reference from the shared `Arc<Captures>` inside a run's future.
@@ -404,25 +537,19 @@ fn expand_async_source(
     if generator {
         LowerYield.visit_block_mut(&mut body);
     }
-    let (names, uses_self, read_only): (Vec<Ident>, bool, Vec<bool>) = analyse_block(&block.block);
-    let uses_self: bool = uses_self && !moved;
+    let Analysis { names, classes, self_class }: Analysis = analyse_block(&block.block);
+    let self_class: Option<Class> = self_class.filter(|_: &Class| !moved);
+    let uses_self: bool = self_class.is_some();
     let takes: Vec<TokenStream> = names
         .iter()
-        .zip(&read_only)
-        .map(|(ident, read_only): (&Ident, &bool)| {
-            let read_only: bool = *read_only;
-            capture_take(
-                ident,
-                if moved {
-                    Take::Move { read_only, dependency: false }
-                } else {
-                    Take::Clone { read_only, dependency: false }
-                },
-            )
-        })
+        .zip(&classes)
+        .map(|(ident, class): (&Ident, &Class)| capture_take(ident, class, moved, false))
         .collect();
-    let self_capture: TokenStream = if uses_self { self_clone() } else { TokenStream::new() };
-    let mut body_tokens: TokenStream = body.to_token_stream();
+    let self_capture: TokenStream = self_class.as_ref().map(self_clone).unwrap_or_default();
+    // The block's statements are spliced after the rebinding, so a one-expression block does
+    // not trip `unused_braces`.
+    let stmts: &[syn::Stmt] = &body.stmts;
+    let mut body_tokens: TokenStream = quote!(#(#stmts)*);
     if uses_self {
         body_tokens = rewrite_self(body_tokens);
     }
@@ -446,12 +573,14 @@ fn expand_async_source(
             )
         }
     } else {
+        let ty: Option<TokenStream> = never_completes(&block.block.stmts).then(|| quote!(()));
+        let future: TokenStream = typed_future(ty, quote!(async move { #rebind #body_tokens }));
         quote! {
             ::lithia::__private::source_async(
                 &__LITHIA_SITE,
                 &__lithia_captured,
                 #init,
-                async move { #rebind #body_tokens },
+                #future,
                 #options,
             )
         }
@@ -502,26 +631,36 @@ fn expand_derived(
         LowerYield.visit_expr_mut(&mut body);
     }
 
-    let (captured, uses_self, read_only): (Vec<Ident>, bool, Vec<bool>) = analyse(&closure.body);
+    let Analysis { names: captured, classes, self_class }: Analysis = analyse(&closure.body);
+    let uses_self: bool = self_class.is_some();
     let takes: Vec<TokenStream> = captured
         .iter()
-        .zip(&read_only)
-        .map(|(ident, read_only): (&Ident, &bool)| {
-            let read_only: bool = *read_only;
+        .zip(&classes)
+        .map(|(ident, class): (&Ident, &Class)| {
             let dependency: bool = params.iter().any(|param: &Ident| param == ident);
-            capture_take(
-                ident,
-                if moved { Take::Move { read_only, dependency } } else { Take::Clone { read_only, dependency } },
-            )
+            capture_take(ident, class, moved, dependency)
         })
         .collect();
     let begin: TokenStream = session_begin();
     let end: TokenStream = session_end();
     let mut body_tokens: TokenStream = body.to_token_stream();
+    if is_async || generator {
+        // Spliced after the unpacking, so a one-expression block does not trip `unused_braces`.
+        if let Expr::Block(block) = &body
+            && block.attrs.is_empty()
+            && block.label.is_none()
+        {
+            let stmts: &[syn::Stmt] = &block.block.stmts;
+            body_tokens = quote!(#(#stmts)*);
+        }
+    }
     if uses_self && !moved {
         body_tokens = rewrite_self(body_tokens);
     }
-    let self_capture: TokenStream = if uses_self && !moved { self_clone() } else { TokenStream::new() };
+    let self_capture: TokenStream = match (&self_class, moved) {
+        (Some(class), false) => self_clone(class),
+        _ => TokenStream::new(),
+    };
 
     if !is_async && !generator {
         // Synchronous body: captures are cloned into the closure, which lives in one Arc.
@@ -565,6 +704,11 @@ fn expand_derived(
             )
         }
     } else {
+        let ty: Option<TokenStream> = match &closure.output {
+            syn::ReturnType::Type(_, ty) => Some(ty.to_token_stream()),
+            syn::ReturnType::Default => never_completes(&body_stmts(&closure.body)).then(|| quote!(())),
+        };
+        let future: TokenStream = typed_future(ty, quote!(async move { #unpacked #body_tokens }));
         quote! {
             ::lithia::__private::derived_async(
                 &__LITHIA_SITE,
@@ -573,10 +717,7 @@ fn expand_derived(
                 #init,
                 move || {
                     let __lithia_caps = ::std::sync::Arc::clone(&__lithia_caps);
-                    async move {
-                        #unpacked
-                        #body_tokens
-                    }
+                    #future
                 },
                 #options,
             )

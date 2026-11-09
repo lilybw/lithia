@@ -33,7 +33,7 @@ impl<T: Default> InitDefault for T {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is captured by an effect! body but is not `Clone`",
     label = "captured here",
-    note = "wrap the value in `Arc`, or write `move` and manage the capture yourself"
+    note = "wrap the part that is not `Clone` in `Arc` and capture node handles beside it, or write `move` and manage the capture yourself"
 )]
 pub trait Capture: Clone {}
 
@@ -72,16 +72,31 @@ impl<T> CaptureAny for T {
     }
 }
 
-/// Takes a value a `move` body captures; handle types shadow it to flag the handle internal.
+/// Marks a value a `move` body is about to take; handle types shadow it to flag the handle
+/// internal. Called as `(&name).__lithia_move()`, so a reference to a handle is left alone.
 #[doc(hidden)]
-pub trait MoveAny: Sized {
-    /// Returns the value unchanged.
-    fn __lithia_move(self) -> Self;
+pub trait MoveAny {
+    /// Does nothing.
+    #[inline]
+    fn __lithia_move(&self) {}
+
+    /// Like `__lithia_move`; handle types shadow it to record a read-only capture.
+    #[inline]
+    fn __lithia_move_ro(&self) {}
 }
 
-impl<T> MoveAny for T {
-    #[inline]
-    fn __lithia_move(self) -> Self {
-        self
+impl<T: ?Sized> MoveAny for T {}
+
+/// Classifies a field path of a captured value; handle types shadow both methods.
+#[doc(hidden)]
+pub trait FieldAny {
+    /// Whether the path's value is a handle.
+    fn __lithia_is_handle(&self) -> bool {
+        false
     }
+
+    /// Records the path's node as one the body may write.
+    fn __lithia_field(&self) {}
 }
+
+impl<T: ?Sized> FieldAny for T {}
