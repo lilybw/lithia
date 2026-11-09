@@ -570,11 +570,13 @@ async fn case_av_support_returns_through_a_sent_handle() {
     trigger.set(true);
     let (xa, ma): (Accessor<u32>, Accessor<u32>) = sent.recv().await.unwrap();
     effect!(|xa| w2_seen.set(*xa.get()));
-    let below: DerivedNode<()> = effect!(|ma| below_seen.set(*ma.get()));
+    let s: SourceNode<u32> = effect!(0);
+    effect!(|ma, s| below_seen.set(*ma.get() + *s.get()));
     drop(ma);
-    drop(below); // support reaches it through `m`, which support no longer holds
     lithia::flush().await;
-    assert_eq!(lithia::test::live_nodes().await, base + 5);
+    drop(s); // a sweep from `s`: support still reaches the node below `m` through `m`, which support no longer holds
+    lithia::flush().await;
+    assert_eq!(lithia::test::live_nodes().await, base + 6);
     feed.send(2).unwrap();
     until(|| *w2_seen.get() == 2 && *below_seen.get() == 20).await;
     assert_eq!(*w1_seen.get(), 1);
