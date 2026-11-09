@@ -109,11 +109,15 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 
 ## Design migration to v0.3.0 (ownership)
 
-- `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc): stage 1 makes every node with a body
-  owned by the run, lithia task or `Owner` that created it, as one more holder beside its handles;
-  stage 2, automatic identity, is deferred. Revision 4, after three independent review rounds.
-- Status: waiting on Lily's answers to the doc's open questions (section 12) before implementing stage 1.
-  The spec stays at v0.2.5 until stage 1 passes the doc's verification plan.
+- `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc), revision 10. A node created in a run is
+  held by that run's generation until its creator's next run is decided; any other node with a body is held
+  by support: while an anchor (a node with an outside handle) reaches it along parent, creation and writer
+  edges. Sweeps let go of nodes support no longer reaches. No identity, no declarations, no process-wide owner.
+- Eight independent review rounds (protocol, API, simplification); all three judged revision 9 ready to
+  implement, and revision 10 makes their last wording fixes.
+- Status: waiting on Lily's answers to the doc's open questions (section 15: `.scoped()`, the unread-memo
+  warning, async source blocks living by their handles, captures by reference). Then implement on a branch
+  against the doc's verification plan (section 13); the spec stays at v0.2.5 until that passes.
 
 ## Next steps
 
