@@ -75,6 +75,11 @@ impl ModelScope {
         self.0.is_settled()
     }
 
+    /// Live nodes created in this scope: each node's lifecycle, as the model sees it.
+    pub fn live(&self) -> usize {
+        self.0.live.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Runs queued work on this thread until the scope has settled, like `flush()`.
     pub fn flush(&self) {
         loop {

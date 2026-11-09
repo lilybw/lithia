@@ -820,8 +820,9 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
             }
         };
         let restart: bool = slot.restart && end == End::Finished && !header.is_ghost();
-        if restart || shared.is_cancelled() {
+        if (restart || shared.is_cancelled()) && !sched.generation.is_empty() {
             work.released.append(&mut sched.generation);
+            sched.releasing = true;
         }
         if restart {
             for record in slot.served {
@@ -866,7 +867,13 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
         }
         header.under_way.store(true, Ordering::SeqCst);
     }
-    drain_deferred(work)
+    let releasing: bool = !work.released.is_empty();
+    let closes: Vec<Arc<Epoch>> = drain_deferred(work);
+    if releasing {
+        header.sched.lock().releasing = false;
+        crate::settle_wait::bump();
+    }
+    closes
 }
 
 /// Gives up on a node whose run task was dropped because its runtime shut down (spec §11.3).

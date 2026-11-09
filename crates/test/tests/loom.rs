@@ -357,30 +357,29 @@ fn case_w_reflow_from_its_own_body() {
     });
 }
 
+/// An effect lives while its parent can change: one on `count` keeps running, one on a dropped
+/// source is freed with it (Case J as rewritten for v0.3.0).
 #[test]
-fn case_j_a_dropped_effect_stops() {
+fn case_j_an_effect_lives_while_its_parent_can_change() {
     check(|| {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
-            let (count, kept_runs, scoped_runs, _kept, scoped): (
-                SourceNode<i32>,
-                SourceNode<u32>,
-                SourceNode<u32>,
-                DerivedNode<()>,
-                DerivedNode<()>,
-            ) = scope.batch(|| {
+            let (count, runs, local): (SourceNode<i32>, SourceNode<u32>, SourceNode<i32>) = scope.batch(|| {
                 let count: SourceNode<i32> = effect!(0);
-                let kept_runs: SourceNode<u32> = effect!(0);
-                let scoped_runs: SourceNode<u32> = effect!(0);
-                let kept: DerivedNode<()> = effect!(|count| kept_runs.update(|n: &u32| n + 1));
-                let scoped: DerivedNode<()> = effect!(|count| scoped_runs.update(|n: &u32| n + 1));
-                (count, kept_runs, scoped_runs, kept, scoped)
+                let runs: SourceNode<u32> = effect!(0);
+                let local: SourceNode<i32> = effect!(0);
+                effect!(|count| runs.update(|n: &u32| n + 1));
+                effect!(|local| runs.update(|n: &u32| n + 1));
+                (count, runs, local)
             });
             scope.flush();
-            drop(scoped);
+            assert_eq!(scope.live(), 5);
+            drop(local);
+            scope.flush();
+            assert_eq!(scope.live(), 3);
             scope.batch(|| count.set(1));
             scope.flush();
-            assert_eq!((*kept_runs.get(), *scoped_runs.get()), (2, 1));
+            assert_eq!(*runs.get(), 3);
         });
     });
 }
@@ -602,6 +601,367 @@ fn case_g_a_write_stops_an_async_source() {
             assert_eq!((*slow.get(), *copy.get()), (2, 2));
             assert!(matches!(lithia::status(&slow), Status::Ready));
             assert!(model::quiet(&slow));
+        });
+    });
+}
+
+/// Pending until `flag` is set, yielding to loom while it waits.
+struct WaitFor(Arc<AtomicBool>);
+
+impl std::future::Future for WaitFor {
+    type Output = ();
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        if self.0.load(Ordering::SeqCst) {
+            return std::task::Poll::Ready(());
+        }
+        loom::thread::yield_now();
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    }
+}
+
+/// A last-handle drop on one thread races a top-level creation on the same node on another;
+/// both nodes are freed whichever lands first (spec §10.1, §11.4 step 1).
+#[test]
+fn a_last_handle_drop_races_a_creation() {
+    check(|| {
+        let scope: ModelScope = ModelScope::new();
+        let (n, seen): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| (effect!(1), effect!(0)));
+        let (other, seen_there): (SourceNode<u32>, SourceNode<u32>) = (n.clone(), seen.clone());
+        let creator: loom::thread::JoinHandle<ModelScope> = loom::thread::spawn(move || {
+            let there: ModelScope = ModelScope::new();
+            let made: DerivedNode<()> = there.batch(|| effect!(|other| seen_there.set(*other.get())));
+            drop(other);
+            drop(made);
+            there
+        });
+        drop(n);
+        let there: ModelScope = creator.join().unwrap();
+        scope.flush();
+        there.flush();
+        assert_eq!((scope.live(), there.live()), (1, 0));
+    });
+}
+
+/// A parent's and its child's last handles drop at once: both are examined, and both freed.
+#[test]
+fn a_parent_and_its_child_drop_their_last_handles_at_once() {
+    check(|| {
+        let scope: ModelScope = ModelScope::new();
+        let (p, c): (SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
+            let p: SourceNode<u32> = effect!(1);
+            let c: DerivedNode<u32> = effect!(|p| *p.get());
+            (p, c)
+        });
+        scope.flush();
+        let other: loom::thread::JoinHandle<()> = loom::thread::spawn(move || drop(c));
+        drop(p);
+        other.join().unwrap();
+        assert_eq!(scope.live(), 0);
+    });
+}
+
+/// A body anchors `m` for a moment on the worker while a sweep from upstream runs over `m`:
+/// `m`'s watcher is freed either way.
+#[test]
+fn anchors_cross_zero_while_a_sweep_runs() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (s, trigger): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
+                let s: SourceNode<u32> = effect!(1);
+                let trigger: SourceNode<u32> = effect!(0);
+                let m: DerivedNode<u32> = effect!(|s| *s.get());
+                effect!(|m| {
+                    let _ = m.get();
+                });
+                effect!(|trigger| {
+                    let _ = trigger.get();
+                    let _ = m.accessor(); // a temporary anchor on `m`
+                });
+                (s, trigger)
+            });
+            scope.flush();
+            assert_eq!(scope.live(), 5);
+            scope.batch(|| trigger.set(1));
+            drop(s);
+            scope.flush();
+            assert_eq!(scope.live(), 4); // the trigger's effect still holds `m`, and `m` holds `s`
+        });
+    });
+}
+
+/// One sweep's let-go races another sweep's walk over the same nodes; all are freed.
+#[test]
+fn a_let_go_races_another_sweeps_walk() {
+    check(|| {
+        let scope: ModelScope = ModelScope::new();
+        let (s, u): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
+            let s: SourceNode<u32> = effect!(1);
+            let u: SourceNode<u32> = effect!(2);
+            let m: DerivedNode<u32> = effect!(|s| *s.get());
+            effect!(|m, u| {
+                let _ = (m.get(), u.get());
+            });
+            (s, u)
+        });
+        scope.flush();
+        let other: loom::thread::JoinHandle<()> = loom::thread::spawn(move || drop(u));
+        drop(s);
+        other.join().unwrap();
+        scope.flush();
+        assert_eq!(scope.live(), 0);
+    });
+}
+
+/// A sweep starts inside an `update` closure, with the node's write lock held, and its drops
+/// raise further starting points for the same operation.
+#[test]
+fn a_sweep_inside_an_update_closure() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (x, held): (SourceNode<u32>, std::sync::Mutex<Option<SourceNode<u32>>>) = scope.batch(|| {
+                let x: SourceNode<u32> = effect!(0);
+                let t: SourceNode<u32> = effect!(1);
+                effect!(|x| {
+                    let _ = x.get();
+                });
+                effect!(|t| {
+                    let _ = t.get();
+                });
+                (x, std::sync::Mutex::new(Some(t)))
+            });
+            scope.flush();
+            scope.batch(|| {
+                x.update(|v: &u32| {
+                    drop(held.lock().unwrap().take());
+                    v + 1
+                })
+            });
+            scope.flush();
+            assert_eq!(scope.live(), 2);
+        });
+    });
+}
+
+/// A sweep copies a fragile child's parent list while the worker decides that child's
+/// fragility, which takes the two locks the other way round; neither waits on the other.
+#[test]
+fn a_sweep_alongside_a_fragile_decision() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (n, k): (SourceNode<i32>, SourceNode<i32>) = scope.batch(|| {
+                let n: SourceNode<i32> = effect!(1);
+                let k: SourceNode<i32> = effect!(1);
+                let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get());
+                effect!(|inv, k| *inv.get() + *k.get(), fragility = FRAGILE);
+                drop(inv);
+                (n, k)
+            });
+            scope.flush();
+            scope.batch(|| n.set(0));
+            drop(k); // a sweep from `k` over the fragile child
+            scope.flush();
+            assert_eq!(scope.live(), 4); // the child still hangs off `n` through `inv`
+        });
+    });
+}
+
+/// A `move` body takes the only handle to `b` while another thread's sweep runs over `b`'s
+/// watcher: the handle's count drops only once the body's writer edge exists (Case AS).
+#[test]
+fn case_as_a_move_body_takes_the_only_handle() {
+    check(|| {
+        let scope: ModelScope = ModelScope::new();
+        let (a, b, k, seen): (SourceNode<u32>, SourceNode<u32>, SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
+            let a: SourceNode<u32> = effect!(1);
+            let b: SourceNode<u32> = effect!(0);
+            let k: SourceNode<u32> = effect!(0);
+            let seen: SourceNode<u32> = effect!(0);
+            effect!(|b, k| {
+                let _ = k.get();
+                seen.set(*b.get());
+            });
+            (a, b, k, seen)
+        });
+        scope.flush();
+        let other: loom::thread::JoinHandle<()> = loom::thread::spawn(move || drop(k));
+        let from_a: SourceNode<u32> = a.clone();
+        scope.batch(move || {
+            effect!(move |from_a| b.set(*from_a.get() * 2));
+        });
+        other.join().unwrap();
+        scope.flush();
+        assert_eq!((scope.live(), *seen.get()), (6, 2));
+        scope.batch(|| a.set(3));
+        scope.flush();
+        assert_eq!(*seen.get(), 6);
+    });
+}
+
+/// A scoped node's last handle drops while a sweep from upstream runs over it: the node and
+/// the effect hanging off it are freed, though the effect has a second, long-lived parent (Case AT).
+#[test]
+fn case_at_a_scoped_nodes_last_handle_races_an_upstream_sweep() {
+    check(|| {
+        let scope: ModelScope = ModelScope::new();
+        let (rates, input, price): (SourceNode<u32>, SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
+            let rates: SourceNode<u32> = effect!(2);
+            let input: SourceNode<u32> = effect!(3);
+            let price: DerivedNode<u32> = effect!(|input, rates| *input.get() * *rates.get()).scoped();
+            effect!(|price, rates| {
+                let _ = (price.get(), rates.get());
+            });
+            (rates, input, price)
+        });
+        scope.flush();
+        let other: loom::thread::JoinHandle<()> = loom::thread::spawn(move || drop(price));
+        drop(input);
+        other.join().unwrap();
+        scope.flush();
+        assert_eq!(scope.live(), 1);
+        drop(rates);
+    });
+}
+
+/// An idle old child and its creator are decided in the same step: the child is freed before
+/// its task exists, so it never runs (Case AO).
+#[test]
+fn case_ao_an_idle_old_child_never_runs() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (a, inner_runs): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
+                let a: SourceNode<u32> = effect!(0);
+                let inner_runs: SourceNode<u32> = effect!(0);
+                effect!(|a| {
+                    let _ = a.get();
+                    effect!(|a| {
+                        let _ = a.get();
+                        inner_runs.update(|n: &u32| n + 1);
+                    });
+                });
+                (a, inner_runs)
+            });
+            scope.flush();
+            assert_eq!(*inner_runs.get(), 1);
+            scope.batch(|| a.set(1));
+            scope.flush();
+            assert_eq!((*inner_runs.get(), scope.live()), (2, 4));
+        });
+    });
+}
+
+/// A write supersedes a run while it is being polled: what the run created survives until it stops.
+#[test]
+fn a_superseded_run_keeps_its_creations_until_it_stops() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let created: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+            let lost: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+            let (id, _loader): (SourceNode<u32>, DerivedNode<()>) = scope.batch(|| {
+                let id: SourceNode<u32> = effect!(7);
+                let k: SourceNode<u32> = effect!(1);
+                let sc: ModelScope = scope.clone();
+                let loader: DerivedNode<()> = effect!(|id| {
+                    if *id.get() == 7 {
+                        let before: usize = sc.live();
+                        effect!(|k| {
+                            let _ = k.get();
+                        });
+                        created.store(true, Ordering::SeqCst);
+                        loom::thread::yield_now(); // the write may land here
+                        if sc.live() != before + 1 {
+                            lost.store(true, Ordering::SeqCst);
+                        }
+                    }
+                });
+                (id, loader)
+            });
+            wait_for(&created);
+            scope.batch(|| id.set(8));
+            scope.flush();
+            assert!(!lost.load(Ordering::SeqCst), "a run in flight lost a node it created");
+            assert_eq!(scope.live(), 3); // the rerun released it
+        });
+    });
+}
+
+/// A node is disposed while its body still creates: a creation nothing holds never runs, and
+/// one stored in a held node is seeded, runs, and the scope settles (Case AR).
+#[test]
+fn case_ar_creations_under_a_disposed_body() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let started: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+            let disposed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+            let (free_runs, held_runs, slot, body): (
+                SourceNode<u32>,
+                SourceNode<u32>,
+                SourceNode<Option<DerivedNode<()>>>,
+                DerivedNode<()>,
+            ) = scope.batch(|| {
+                let k: SourceNode<u32> = effect!(1);
+                let free_runs: SourceNode<u32> = effect!(0);
+                let held_runs: SourceNode<u32> = effect!(0);
+                let slot: SourceNode<Option<DerivedNode<()>>> = effect!(None);
+                let body: DerivedNode<()> = effect!(|k| {
+                    let _ = k.get();
+                    started.store(true, Ordering::SeqCst);
+                    wait_for(&disposed);
+                    effect!(|k| {
+                        let _ = k.get();
+                        free_runs.update(|n: &u32| n + 1);
+                    });
+                    slot.set(Some(effect!(|k| {
+                        let _ = k.get();
+                        held_runs.update(|n: &u32| n + 1);
+                    })));
+                });
+                (free_runs, held_runs, slot, body)
+            });
+            wait_for(&started);
+            lithia::dispose(&body);
+            disposed.store(true, Ordering::SeqCst);
+            // The body's write to `slot` is visible before its batch is delivered, so wait for
+            // the held creation's run itself; a creation that never ran would spin here.
+            while *held_runs.get() == 0 {
+                if !model::run_one() {
+                    loom::thread::yield_now();
+                }
+            }
+            scope.flush();
+            assert!(slot.get().is_some());
+            assert_eq!((*free_runs.get(), *held_runs.get()), (0, 1));
+        });
+    });
+}
+
+/// A write supersedes an async block that created a node: once the block has stopped, its
+/// creation is released and freed (Case AQ).
+#[test]
+fn case_aq_a_write_releases_a_superseded_blocks_creations() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let go: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+            let block: SourceNode<u32> = scope.batch(|| {
+                effect!(async {
+                    effect!(1u32);
+                    WaitFor(go.clone()).await;
+                    5u32
+                })
+            });
+            model::run_one();
+            scope.batch(|| block.set(9));
+            go.store(true, Ordering::SeqCst);
+            scope.settle(&block);
+            assert_eq!((*block.get(), scope.live()), (9, 1));
         });
     });
 }

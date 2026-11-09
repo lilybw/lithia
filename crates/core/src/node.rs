@@ -141,6 +141,8 @@ pub(crate) struct Sched {
     pub(crate) generation: Vec<NodeRef>,
     /// Disposed: creations under this node get no creator.
     pub(crate) closed: bool,
+    /// A stopped run's generation is being released; the node is not quiet until it is.
+    pub(crate) releasing: bool,
     /// Failed through fragility rather than its own panic.
     pub(crate) failed_by_fragility: bool,
 }
@@ -158,6 +160,7 @@ impl Sched {
             created: Vec::new(),
             generation: Vec::new(),
             closed: false,
+            releasing: false,
             failed_by_fragility: false,
         }
     }
@@ -179,7 +182,7 @@ impl Sched {
 
     /// Whether any run work is pending or in flight.
     pub(crate) fn busy(&self) -> bool {
-        self.run.is_some() || self.queued || !self.inherited.is_empty()
+        self.run.is_some() || self.queued || !self.inherited.is_empty() || self.releasing
     }
 }
 

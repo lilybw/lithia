@@ -1,7 +1,7 @@
 //! Support: what keeps top-level nodes alive without a handle, and the sweeps that let go of them.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::Ordering;
 
 use crate::ids::NodeId;
@@ -72,17 +72,19 @@ pub(crate) fn start(node: NodeRef) {
         return;
     }
     let mut node: Option<NodeRef> = Some(node);
-    let now: Result<bool, std::thread::AccessError> = OP.try_with(|op: &RefCell<Op>| {
-        let mut op = op.borrow_mut();
-        if let Some(node) = node.take() {
-            op.starts.push(node);
-        }
-        op.depth == 0 && !op.running
-    });
+    let now: Option<bool> = OP
+        .try_with(|op: &RefCell<Op>| {
+            let mut op = op.borrow_mut();
+            if let Some(node) = node.take() {
+                op.starts.push(node);
+            }
+            op.depth == 0 && !op.running
+        })
+        .ok();
     match now {
-        Ok(true) => run(),
-        Ok(false) => {}
-        Err(_) => {
+        Some(true) => run(),
+        Some(false) => {}
+        None => {
             // This thread is shutting down: sweep inline.
             if let Some(node) = node.take() {
                 drop(sweep(vec![node]));
@@ -156,7 +158,7 @@ fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     // The region: everything downstream of the starting points that lost support, up to
     // anchors. Outside it, a node support holds still counts as supported, since only nodes
     // downstream of a starting point can have lost support.
-    let mut region: HashMap<NodeId, NodeRef> = HashMap::new();
+    let mut region: BTreeMap<NodeId, NodeRef> = BTreeMap::new();
     let mut order: Vec<NodeRef> = Vec::new();
     let mut stack: Vec<NodeRef> = lost;
     while let Some(node) = stack.pop() {
@@ -254,13 +256,14 @@ fn parents(node: &NodeRef) -> Vec<NodeRef> {
     node.header().parents.lock().clone().unwrap_or_default()
 }
 
-/// Backward reachability from anchors, remembered for the rest of one sweep.
+/// Backward reachability from anchors, remembered for the rest of one sweep. Ordered maps keep
+/// the order of drops, and so loom models, deterministic.
 #[derive(Default)]
 struct Search {
-    supported: HashMap<NodeId, bool>,
-    blocked: HashMap<NodeId, bool>,
+    supported: BTreeMap<NodeId, bool>,
+    blocked: BTreeMap<NodeId, bool>,
     /// The walked region; with `trust`, any node support holds outside it counts as supported.
-    region: HashMap<NodeId, NodeRef>,
+    region: BTreeMap<NodeId, NodeRef>,
     trust: bool,
     /// Nodes left to visit; once spent, every answer is "unsupported".
     budget: Option<usize>,
@@ -274,7 +277,7 @@ impl Search {
             return *known;
         }
         let mut visited: Vec<NodeId> = Vec::new();
-        let mut seen: HashSet<NodeId> = HashSet::new();
+        let mut seen: BTreeSet<NodeId> = BTreeSet::new();
         let mut queue: VecDeque<NodeRef> = VecDeque::from([node.clone()]);
         let mut found: bool = false;
         while let Some(current) = queue.pop_front() {
@@ -328,7 +331,8 @@ impl Search {
 
     /// Whether `node` depends on a scoped node without handles, directly or through nodes without handles.
     fn blocked(&mut self, node: &NodeRef, keep: &mut Vec<NodeRef>) -> bool {
-        if !ANY_SCOPED.load(Ordering::SeqCst) {
+        // Loom models always take the full path, so models running side by side stay deterministic.
+        if !cfg!(lithia_loom) && !ANY_SCOPED.load(Ordering::SeqCst) {
             return false;
         }
         let mut stack: Vec<NodeRef> = vec![node.clone()];
