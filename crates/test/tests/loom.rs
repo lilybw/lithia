@@ -358,28 +358,37 @@ fn case_w_reflow_from_its_own_body() {
 }
 
 /// An effect lives while its parent can change: one on `count` keeps running, one on a dropped
-/// source is freed with it (Case J as rewritten for v0.3.0).
+/// source is freed with it, and a scoped one stops with its handle (Case J as rewritten for v0.3.0).
 #[test]
 fn case_j_an_effect_lives_while_its_parent_can_change() {
     check(|| {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
-            let (count, runs, local): (SourceNode<i32>, SourceNode<u32>, SourceNode<i32>) = scope.batch(|| {
+            let (count, runs, local, scoped_runs, scoped): (
+                SourceNode<i32>,
+                SourceNode<u32>,
+                SourceNode<i32>,
+                SourceNode<u32>,
+                DerivedNode<()>,
+            ) = scope.batch(|| {
                 let count: SourceNode<i32> = effect!(0);
                 let runs: SourceNode<u32> = effect!(0);
                 let local: SourceNode<i32> = effect!(0);
+                let scoped_runs: SourceNode<u32> = effect!(0);
                 effect!(|count| runs.update(|n: &u32| n + 1));
                 effect!(|local| runs.update(|n: &u32| n + 1));
-                (count, runs, local)
+                let scoped: DerivedNode<()> = effect!(|count| scoped_runs.update(|n: &u32| n + 1)).scoped();
+                (count, runs, local, scoped_runs, scoped)
             });
             scope.flush();
-            assert_eq!(scope.live(), 5);
+            assert_eq!(scope.live(), 7);
             drop(local);
+            drop(scoped); // a scoped effect stops when its last handle drops, as in v0.2.5
             scope.flush();
-            assert_eq!(scope.live(), 3);
+            assert_eq!(scope.live(), 4);
             scope.batch(|| count.set(1));
             scope.flush();
-            assert_eq!(*runs.get(), 3);
+            assert_eq!((*runs.get(), *scoped_runs.get()), (3, 1));
         });
     });
 }
