@@ -1,7 +1,7 @@
 # lithia implementation progress
 
-Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.2.5.md` (PDF alongside), which folds in
-everything implementation taught; v0.2.4, the spec the implementation started from, is kept for reference.
+Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.3.0.md` (PDF alongside), which folds in
+the v0.3.0 lifetime migration and everything its implementation taught; v0.2.5 and v0.2.4 are kept for reference.
 
 ## Layout
 
@@ -10,13 +10,14 @@ everything implementation taught; v0.2.4, the spec the implementation started fr
 | `crates/core` | `lithia-core` | Engine: nodes, handles, epochs, scheduling protocol, drops, diagnostics |
 | `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
 | `crates/public` | `lithia` | Public surface; re-exports core + macros; `lithia::test` utilities |
-| `crates/validation` | `lithia-validation` | Spec §13 cases, verbatim (`tests/cases.rs`, `tests/compile.rs`) |
+| `crates/validation` | `lithia-validation` | Spec §13 cases, verbatim (`tests/cases.rs` A–AG, `tests/support.rs` AI–BC, `tests/compile.rs` AH) |
 | `crates/test` | `lithia-test` | Edge-case unit and integration tests |
 | `crates/bench` | `lithia-bench` | Spec §15 benchmarks |
 
 ## Validation cases (spec §13)
 
-All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 single-core runs of A–AG.
+All of A–BC pass (55 cases). Stress for v0.3.0: every test binary (cases, both `support` files, and the
+seven other `lithia-test` files) 400/400 release runs, 200/200 debug runs, 250/250 single-core runs.
 
 | Case | Status | Case | Status |
 |---|---|---|---|
@@ -29,14 +30,21 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 | G async source | pass | X defer | pass |
 | H cycle sibling | pass | Y changes() | pass |
 | I returned memo | pass | Z modify | pass |
-| J handle lifetime | pass | AA spawn_blocking | pass |
+| J effect lives while its parent can change | pass | AA spawn_blocking | pass |
 | K generator | pass | AB SEMI_FRAGILE | pass |
 | L yield before await | pass | AC ghost survivor | pass |
 | M clamp via memo | pass | AD ALWAYS_PROPAGATE | pass |
 | N mid-propagation creation | pass | AE panic propagates writes | pass |
 | O yield nothing | pass | AF live_nodes | pass |
 | P unconditional write-back | pass | AG two runtimes | pass |
-| Q cut scoped to item | pass | AH must_use (trybuild) | pass |
+| Q cut scoped to item | pass | AH bare effect / scoped must_use (trybuild) | pass |
+
+Cases AI–BC (v0.3.0, `tests/support.rs`): AI motivating example, AJ writer keeps watcher, AK reader keeps
+nothing, AL children rebuilt, AM stored child outlives rerun, AN async blocks (discarded, aborted, bound
+feeder, loop on `cfg`), AO idle old child, AP captures internal, AQ supersede releases creations, AR
+creations under a disposed body, AS `move` bindings, AT per-request memos and `.scoped()`, AU effect on
+nothing held, AV support through a sent handle, AW self-support, AX child writing creator's parent, AY field
+paths, AZ escaping `Accessor`, BA scoped child in a value, BB scoped field, BC both kinds of source alike: all pass.
 
 ## Spec sections
 
@@ -50,11 +58,11 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 | §7 Propagation | done | see protocol notes below |
 | §8 Pending/async/generators | done | |
 | §9 Failure, fragility | done | |
-| §10 Lifetime, disposal, ghosts | done | |
+| §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/core/src/support.rs`, `capture.rs`) |
 | §11 Concurrency, scopes | done | fast path (§11.2) left out, as v0 allows |
-| §11.4 step 8 loom | done | 20 models, bound 3 by default; see "Model checking" below |
+| §11.4 step 8 loom | done | 32 models, bound 3 by default; see "Model checking" below |
 | §11.4 step 8 TLA+ | pending | open question in §17 |
-| §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 1000/s) |
+| §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 1000/s); first-run, growth and unread-memo warnings |
 | §15 Benchmarks | done | results and observations in `docs/BENCHMARKS.md` |
 
 ## Decisions and interpretations
@@ -72,7 +80,7 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 
 - Reflow of a source node re-emits its value to its children but sends nothing to `changes()`, since the value did not change.
 - Diagnostics raised while a scheduling lock is held are gathered and emitted after it is released (spec §11.4 step 1).
-- `lithia-test` holds 53 edge-case tests across values, propagation, async/generators, lifetime, capture, diagnostics and runtimes.
+- `lithia-test` holds 65 edge-case tests across values, propagation, async/generators, lifetime, capture, diagnostics, runtimes and support (`tests/support.rs`).
 
 ## Model checking (loom)
 
@@ -80,10 +88,18 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
   thread-locals, value cells and version clock for loom's through `crates/core/src/sync.rs`, and runs
   bodies on a model executor (`crates/core/src/model.rs`) instead of tokio.
 - Models live in `crates/test/tests/loom.rs`: Cases A, B, C, D, E, G, H, J, M, N, P, R, T, V, W, X,
-  plus concurrent outside writes, a write during a run, disposal during a run, and a generator.
-- Default preemption bound 3: ~260 000 interleavings in ~20 s. Bound 4: ~1.7 million in ~2 min, all pass.
-- Teeth: reintroducing the Case J race fixed earlier makes the Case J model fail at bound 3
-  (`(2, 2)` vs `(2, 1)`), matching what stress-testing found. Bound 2 was too shallow to catch it.
+  plus concurrent outside writes, a write during a run, disposal during a run, and a generator; and since
+  v0.3.0 twelve lifetime models (spec §11.4), which assert on `ModelScope::live()`.
+- Default preemption bound 3: all 32 explore ~310 000 interleavings in ~30 s on two test threads. Bound 4:
+  ~4.4 million in ~7 min, all pass.
+- Sweeps use ordered maps and loom builds always take the scoped path, so models stay deterministic when
+  several run in one process.
+- Mutation checks for v0.3.0 (spec §11.4 table): 19 mutations, each applied as a patch and reverted; each
+  fails a case, edge test or model. Dropping the walk's references under the sweep lock fails nothing (the
+  operation context defers the sweeps it raises), and the rewritten Case J model does not catch v0.2.5's
+  Case J race; both are noted in the spec.
+- Teeth (v0.2.5): reintroducing the Case J race made the then Case J model fail at bound 3
+  (`(2, 2)` vs `(2, 1)`); the v0.3.0 model checks live counts and a scoped effect instead, and does not.
 - Not modelled: `Arc`/`Weak` reference counts and tokio internals stay outside loom. Races that sit
   entirely between two loom-visible operations are collapsed; every refcount-sensitive path in the
   protocol is bracketed by locks or atomics loom does see, which is how the Case J mutation is caught.
@@ -107,20 +123,27 @@ All of A–AH pass. Stress: 400/400 release runs, 300/300 debug runs, 250/250 si
 - Code conventions applied in the same pass: every named binding and closure parameter is typed, and doc
   comments are at most two lines, with longer rationale moved into the spec.
 
+## Spec v0.3.0
+
+- Written after implementing and verifying the ownership migration on branch `v0.3.0-ownership`, merged
+  into `main`. Its "Changes since v0.2.5" table says for each change whether the migration or the
+  implementation found it; the migration doc's section 17 lists where the implementation corrected it.
+- Exported to `docs/spec/` as Markdown and PDF (pandoc + Chromium); the v0.2.5 Claude doc is not updated.
+
 ## Design migration to v0.3.0 (ownership)
 
-- `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc), revision 10. A node created in a run is
+- `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc), revision 12 plus its implementation notes. A node created in a run is
   held by that run's generation until its creator's next run is decided; any other node with a body is held
   by support: while an anchor (a node with an outside handle) reaches it along parent, creation and writer
   edges. Sweeps let go of nodes support no longer reaches. No identity, no declarations, no process-wide owner.
 - Eight independent review rounds (protocol, API, simplification); all three judged revision 9 ready to
   implement, and revision 10 makes their last wording fixes.
-- Status: waiting on Lily's answers to the doc's open questions (section 15: `.scoped()`, the unread-memo
-  warning, async source blocks living by their handles, captures by reference). Then implement on a branch
-  against the doc's verification plan (section 13); the spec stays at v0.2.5 until that passes.
+- Revision 12 answered the open questions (`.scoped()`, the unread-memo warning, async source blocks living
+  by their handles, captures by reference). Implemented, verified against section 13 and merged into spec
+  v0.3.0; section 17 records the corrections the implementation made.
 
 ## Next steps
 
-1. A TLA+ specification of the protocol (§11.4 step 8, §17).
+1. A TLA+ specification of the protocol and of lifetimes (§11.4 step 8, §16, §17).
 2. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
 3. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.

@@ -200,7 +200,7 @@ async fn case_am_a_stored_child_outlives_the_rerun() {
     assert_eq!(lithia::test::live_nodes().await, base);
 }
 
-// Case AN: a discarded async block is freed before it runs, with the warning.
+// Case AN: an async source block lives by its handles. A discarded one is freed before it runs, with the warning.
 #[lithia::test]
 async fn case_an_a_discarded_async_block_never_runs() {
     let _ = warnings(); // collect from the start
