@@ -437,7 +437,7 @@ fn handle_clone() -> Row {
 fn creation_and_sweep() -> Row {
     const COUNT: u64 = 10_000;
     let rt: tokio::runtime::Runtime = runtime(2);
-    let (bound, held, sweep): (Duration, Duration, Duration) = rt.block_on(lithia_task(async {
+    let (bound, held, sweep, freed): (Duration, Duration, Duration, Duration) = rt.block_on(lithia_task(async {
         let a: SourceNode<u64> = effect!(0);
         let start: Instant = Instant::now();
         let mut kept: Vec<DerivedNode<()>> = Vec::with_capacity(COUNT as usize);
@@ -460,16 +460,32 @@ fn creation_and_sweep() -> Row {
         lithia::flush().await;
         let start: Instant = Instant::now();
         drop(hub); // one sweep lets go of every watcher
-        (bound, held, start.elapsed())
+        let sweep: Duration = start.elapsed();
+        let hub: SourceNode<u64> = effect!(0);
+        let scoped: Vec<DerivedNode<()>> = (0..COUNT)
+            .map(|_| {
+                effect!(|hub| {
+                    let _ = hub.get();
+                })
+                .scoped()
+            })
+            .collect();
+        lithia::flush().await;
+        let start: Instant = Instant::now();
+        drop(scoped); // the same watchers freed by their handles, with no sweep
+        let freed: Duration = start.elapsed();
+        drop(hub);
+        (bound, held, sweep, freed)
     }));
     Row {
         name: "Creation and sweeps (v0.3.0)",
         result: format!(
-            "creating a bound effect {}, one held by support {}; dropping the hub's handle lets go of {} watchers in {}",
+            "creating a bound effect {}, one held by support {}; dropping the hub's handle lets go of {} watchers and frees them in {}, against {} to free as many scoped watchers by their handles",
             per(bound, COUNT),
             per(held, COUNT),
             COUNT,
-            per(sweep, 1)
+            per(sweep, 1),
+            per(freed, 1)
         ),
         informs: "The cost of support at creation and of a sweep over a hub's downstream (10.1)",
     }
