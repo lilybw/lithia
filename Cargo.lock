@@ -130,9 +130,15 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 name = "lithia"
 version = "0.1.0"
 dependencies = [
- "lithia-core",
+ "arc-swap",
+ "bitflags",
+ "futures-core",
  "lithia-macro",
+ "loom",
+ "parking_lot",
  "tokio",
+ "tokio-stream",
+ "tracing",
 ]
 
 [[package]]
@@ -141,20 +147,6 @@ version = "0.1.0"
 dependencies = [
  "lithia",
  "tokio",
-]
-
-[[package]]
-name = "lithia-core"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "bitflags",
- "futures-core",
- "loom",
- "parking_lot",
- "tokio",
- "tokio-stream",
- "tracing",
 ]
 
 [[package]]

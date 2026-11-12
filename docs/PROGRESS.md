@@ -7,9 +7,8 @@ the v0.3.0 lifetime migration and everything its implementation taught; v0.2.5 a
 
 | Crate (dir) | Package | Role |
 |---|---|---|
-| `crates/core` | `lithia-core` | Engine: nodes, handles, epochs, scheduling protocol, drops, diagnostics |
+| `crates/lithia` | `lithia` | Engine and public API: nodes, handles, epochs, scheduling protocol, drops, diagnostics; re-exports the macros; `lithia::test` utilities |
 | `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
-| `crates/public` | `lithia` | Public surface; re-exports core + macros; `lithia::test` utilities |
 | `crates/validation` | `lithia-validation` | Spec §13 cases, verbatim (`tests/cases.rs` A–AG, `tests/support.rs` AI–BC, `tests/compile.rs` AH) |
 | `crates/test` | `lithia-test` | Edge-case unit and integration tests |
 | `crates/bench` | `lithia-bench` | Spec §15 benchmarks |
@@ -58,7 +57,7 @@ paths, AZ escaping `Accessor`, BA scoped child in a value, BB scoped field, BC b
 | §7 Propagation | done | see protocol notes below |
 | §8 Pending/async/generators | done | |
 | §9 Failure, fragility | done | |
-| §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/core/src/support.rs`, `capture.rs`) |
+| §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/support.rs`, `capture.rs`) |
 | §11 Concurrency, scopes | done | fast path (§11.2) left out, as v0 allows |
 | §11.4 step 8 loom | done | 32 models, bound 3 by default; see "Model checking" below |
 | §11.4 step 8 TLA+ | pending | open question in §17 |
@@ -85,8 +84,8 @@ paths, AZ escaping `Accessor`, BA scoped child in a value, BB scoped field, BC b
 ## Model checking (loom)
 
 - `--cfg lithia_loom` (not `--cfg loom`, which tokio reacts to) swaps the engine's mutexes, atomics,
-  thread-locals, value cells and version clock for loom's through `crates/core/src/sync.rs`, and runs
-  bodies on a model executor (`crates/core/src/model.rs`) instead of tokio.
+  thread-locals, value cells and version clock for loom's through `crates/lithia/src/sync.rs`, and runs
+  bodies on a model executor (`crates/lithia/src/model.rs`) instead of tokio.
 - Models live in `crates/test/tests/loom.rs`: Cases A, B, C, D, E, G, H, J, M, N, P, R, T, V, W, X,
   plus concurrent outside writes, a write during a run, disposal during a run, and a generator; and since
   v0.3.0 twelve lifetime models (spec §11.4), which assert on `ModelScope::live()`.

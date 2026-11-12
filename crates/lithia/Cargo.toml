@@ -1,12 +1,13 @@
 [package]
-name = "lithia-core"
-description = "Engine of lithia: nodes, handles, propagation and diagnostics."
+name = "lithia"
+description = "Thread-safe, fine-grained reactive engine for Rust on tokio, after Solid 2.0's signal model."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+lithia-macro = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 futures-core = { workspace = true }

@@ -17,15 +17,14 @@ async fn main() {
 }
 ```
 
-The design is specified in [`docs/spec`](docs/spec/LITHIA_design_spec_v0.2.5.md) (v0.2.5, also as PDF); implementation status
+The design is specified in [`docs/spec`](docs/spec/LITHIA_design_spec_v0.3.0.md) (v0.3.0, also as PDF); implementation status
 and decisions are tracked in [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 ## Crates
 
 | Directory | Package | Role |
 |---|---|---|
-| `crates/public` | `lithia` | The public API; depend on this one |
-| `crates/core` | `lithia-core` | Engine internals |
+| `crates/lithia` | `lithia` | The engine and its public API; depend on this one |
 | `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
 | `crates/validation` | `lithia-validation` | The spec's validation cases, verbatim |
 | `crates/test` | `lithia-test` | Edge-case unit and integration tests |

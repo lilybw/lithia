@@ -1,5 +1,5 @@
-//! Engine of lithia: nodes, handles, propagation and diagnostics.
-//! Depend on the `lithia` crate, which re-exports this one together with `effect!`.
+//! LITHIA: a thread-safe, fine-grained reactive engine for Rust on tokio, after Solid 2.0's signals.
+//! `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);` creates a memo over `count`.
 
 mod api;
 mod capture;
@@ -30,6 +30,7 @@ mod model;
 pub use api::{defer, dispose, eq, flush, reflow, spawn, spawn_blocking, status, try_reflow};
 pub use changes::Changes;
 pub use handles::{Accessor, DerivedNode, Dispose, Readable, Reflow, Setter, SourceNode, Writable};
+pub use lithia_macro::{effect, main, test};
 pub use options::{
     ALWAYS_PROPAGATE, FRAGILE, Flags, Fragility, GhostPolicy, ON_GHOST_CAUSE_FAILURE, ON_GHOST_EMIT_LATEST,
     ON_GHOST_SET_AS_PENDING, SEMI_FRAGILE,
@@ -43,7 +44,7 @@ pub mod test {
     pub use crate::api::test_utils::{live_nodes, settled};
 }
 
-/// Items used by `effect!` and the attribute macros; not part of the public API.
+/// Items used by the macro expansions; not part of the public API.
 #[doc(hidden)]
 pub mod __private {
     pub use crate::api::{block_on_main, block_on_test};
@@ -56,6 +57,7 @@ pub mod __private {
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
     pub use crate::site::fn_path;
     pub use crate::value::{Capture, CaptureAny, FieldAny, InitDefault, MoveAny};
+    pub use tokio;
 
     /// Executor and harness for loom models; only under `--cfg lithia_loom`.
     #[cfg(lithia_loom)]

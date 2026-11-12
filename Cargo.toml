@@ -1,9 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/core",
+    "crates/lithia",
     "crates/macro",
-    "crates/public",
     "crates/validation",
     "crates/test",
     "crates/bench",
@@ -17,8 +16,7 @@ publish = false
 repository = "https://github.com/lilybw/lithia"
 
 [workspace.dependencies]
-lithia = { path = "crates/public" }
-lithia-core = { path = "crates/core" }
+lithia = { path = "crates/lithia" }
 lithia-macro = { path = "crates/macro" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

@@ -7,7 +7,7 @@ error[E0277]: `Token` is captured by an effect! body but is not `Clone`
    = note: the trait bound `Token: lithia::__private::Capture` is not satisfied
    = note: required for `Token` to implement `lithia::__private::Capture`
 note: required by a bound in `lithia::__private::CaptureAny::__lithia_capture`
-  --> $WORKSPACE/crates/core/src/value.rs
+  --> $WORKSPACE/crates/lithia/src/value.rs
    |
    |     fn __lithia_capture(&self) -> Self
    |        ---------------- required by a bound in this associated function

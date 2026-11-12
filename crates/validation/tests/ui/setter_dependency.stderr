@@ -7,7 +7,7 @@ error[E0277]: `Setter<i32>` cannot be read, so it cannot be a dependency
   = help: the trait `Readable` is not implemented for `Setter<i32>`
   = note: dependencies are nodes or `Accessor`s; a `Setter` is write-only, and being notified of changes would read it
 help: the following other types implement trait `Readable`
- --> $WORKSPACE/crates/core/src/handles.rs
+ --> $WORKSPACE/crates/lithia/src/handles.rs
   |
   |         impl<K: NodeValue> Readable for $ty<K> {
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -23,7 +23,7 @@ help: the following other types implement trait `Readable`
   | readable!(Accessor);
   | ------------------- in this macro invocation
 note: required by a bound in `lithia::__private::node_ref`
- --> $WORKSPACE/crates/core/src/create.rs
+ --> $WORKSPACE/crates/lithia/src/create.rs
   |
   | pub fn node_ref<R: Readable>(handle: &R) -> NodeHandle {
   |                    ^^^^^^^^ required by this bound in `node_ref`
