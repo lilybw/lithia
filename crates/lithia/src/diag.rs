@@ -1,6 +1,7 @@
 //! Diagnostics through `tracing` (spec §12).
 
-use std::sync::OnceLock;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use crate::Site;
@@ -10,25 +11,35 @@ use crate::sync::MutexGuard;
 /// Default rerun-rate threshold in runs per second; override with `LITHIA_RERUN_RATE`.
 pub(crate) const DEFAULT_RERUN_RATE: u64 = 1000;
 
-fn rerun_threshold() -> u64 {
-    static THRESHOLD: OnceLock<u64> = OnceLock::new();
-    *THRESHOLD.get_or_init(|| {
-        std::env::var("LITHIA_RERUN_RATE")
-            .ok()
-            .and_then(|raw: String| raw.trim().parse::<u64>().ok())
-            .filter(|rate: &u64| *rate > 0)
-            .unwrap_or(DEFAULT_RERUN_RATE)
-    })
-}
+/// Rerun-rate threshold, read from the environment once per process.
+static RERUN_THRESHOLD: LazyLock<u64> = LazyLock::new(|| {
+    std::env::var("LITHIA_RERUN_RATE")
+        .ok()
+        .and_then(|raw: String| raw.trim().parse::<u64>().ok())
+        .filter(|rate: &u64| *rate > 0)
+        .unwrap_or(DEFAULT_RERUN_RATE)
+});
+
+static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Support-held nodes per creating site, for the growth warning.
+static HELD: parking_lot::Mutex<BTreeMap<usize, usize>> = parking_lot::Mutex::new(BTreeMap::new());
+
+/// Sites already warned about an unread memo.
+static UNREAD_WARNED: parking_lot::Mutex<BTreeSet<usize>> = parking_lot::Mutex::new(BTreeSet::new());
 
 fn millis() -> u64 {
-    static START: OnceLock<Instant> = OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+    START.elapsed().as_millis() as u64
+}
+
+/// Identifies a site by its address; every site is a `static`.
+fn site_key(site: &'static Site) -> usize {
+    std::ptr::from_ref(site).addr()
 }
 
 /// Counts a run start and warns once per window when the node reruns too fast.
 pub(crate) fn count_run(header: &Header) {
-    let threshold: u64 = rerun_threshold();
+    let threshold: u64 = *RERUN_THRESHOLD;
     let now: u64 = millis();
     let mut guard: MutexGuard<'_, RateWindow> = header.rate.lock();
     let window: &mut RateWindow = &mut guard;
@@ -60,20 +71,14 @@ pub(crate) fn freed_before_first_run(site: &Site) {
     );
 }
 
-/// Support-held nodes per creating site, for the growth warning.
-fn held_counts() -> &'static std::sync::Mutex<std::collections::HashMap<usize, usize>> {
-    static COUNTS: OnceLock<std::sync::Mutex<std::collections::HashMap<usize, usize>>> = OnceLock::new();
-    COUNTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
-
 /// Counts a node support now holds, warning at 1 000, 10 000, … nodes from one site.
 pub(crate) fn support_held(site: &'static Site) {
-    let key: usize = site as *const Site as usize;
-    let mut counts = held_counts().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let count: &mut usize = counts.entry(key).or_insert(0);
-    *count += 1;
-    let reached: usize = *count;
-    drop(counts);
+    let reached: usize = {
+        let mut counts: parking_lot::MutexGuard<'_, BTreeMap<usize, usize>> = HELD.lock();
+        let count: &mut usize = counts.entry(site_key(site)).or_insert(0);
+        *count += 1;
+        *count
+    };
     if reached >= 1000 && power_of_ten(reached) {
         tracing::warn!(
             site = %site,
@@ -85,22 +90,14 @@ pub(crate) fn support_held(site: &'static Site) {
 
 /// Counts a node support let go of.
 pub(crate) fn support_released(site: &'static Site) {
-    let key: usize = site as *const Site as usize;
-    let mut counts = held_counts().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(count) = counts.get_mut(&key) {
+    if let Some(count) = HELD.lock().get_mut(&site_key(site)) {
         *count = count.saturating_sub(1);
     }
 }
 
 /// Warns once per site about a memo support keeps running though nothing reads it.
 pub(crate) fn unread_memo(site: &'static Site) {
-    static WARNED: OnceLock<std::sync::Mutex<std::collections::HashSet<usize>>> = OnceLock::new();
-    let key: usize = site as *const Site as usize;
-    let first: bool = WARNED
-        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(key);
+    let first: bool = UNREAD_WARNED.lock().insert(site_key(site));
     if first {
         tracing::warn!(
             site = %site,

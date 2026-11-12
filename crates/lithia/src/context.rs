@@ -1,9 +1,9 @@
 //! Where lithia is running on this thread: frames, batches and scopes (spec §6.2, §11.3).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Weak};
 
 use crate::epoch::{Epoch, Scope};
 use crate::ids::NodeId;
@@ -133,10 +133,12 @@ pub(crate) fn detached_scope() -> Arc<Scope> {
         .unwrap_or_else(|_| Scope::new())
 }
 
+/// Scopes of tasks lithia did not start, by task id.
+static TASK_SCOPES: parking_lot::Mutex<BTreeMap<tokio::task::Id, Weak<Scope>>> =
+    parking_lot::Mutex::new(BTreeMap::new());
+
 fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
-    static SCOPES: OnceLock<parking_lot::Mutex<HashMap<tokio::task::Id, Weak<Scope>>>> = OnceLock::new();
-    let mut map: parking_lot::MutexGuard<'_, HashMap<tokio::task::Id, Weak<Scope>>> =
-        SCOPES.get_or_init(|| parking_lot::Mutex::new(HashMap::new())).lock();
+    let mut map: parking_lot::MutexGuard<'_, BTreeMap<tokio::task::Id, Weak<Scope>>> = TASK_SCOPES.lock();
     if let Some(scope) = map.get(&id).and_then(Weak::upgrade) {
         return scope;
     }

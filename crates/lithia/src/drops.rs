@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 #[cfg(not(lithia_loom))]
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 #[cfg(not(lithia_loom))]
 use std::sync::mpsc;
 
@@ -90,26 +90,24 @@ fn run_drop(payload: Option<Box<dyn Any + Send>>) {
     }
 }
 
+/// lithia's drop thread, started on first use.
 #[cfg(not(lithia_loom))]
-fn drop_thread() -> &'static mpsc::Sender<Parcel> {
-    static SENDER: OnceLock<mpsc::Sender<Parcel>> = OnceLock::new();
-    SENDER.get_or_init(|| {
-        let (sender, receiver): (mpsc::Sender<Parcel>, mpsc::Receiver<Parcel>) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("lithia-drop".to_string())
-            .spawn(move || {
-                while let Ok(parcel) = receiver.recv() {
-                    parcel.run();
-                }
-            })
-            .expect("lithia: cannot start the drop thread");
-        sender
-    })
-}
+static DROP_THREAD: LazyLock<mpsc::Sender<Parcel>> = LazyLock::new(|| {
+    let (sender, receiver): (mpsc::Sender<Parcel>, mpsc::Receiver<Parcel>) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("lithia-drop".to_string())
+        .spawn(move || {
+            while let Ok(parcel) = receiver.recv() {
+                parcel.run();
+            }
+        })
+        .expect("lithia: cannot start the drop thread");
+    sender
+});
 
 #[cfg(not(lithia_loom))]
 fn send_to_drop_thread(parcel: Parcel) {
-    if let Err(mpsc::SendError(mut parcel)) = drop_thread().send(parcel) {
+    if let Err(mpsc::SendError(mut parcel)) = DROP_THREAD.send(parcel) {
         let payload: Option<Box<dyn Any + Send>> = parcel.payload.take();
         run_drop(payload);
         QUEUED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);

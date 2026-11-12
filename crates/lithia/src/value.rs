@@ -8,6 +8,7 @@
 )]
 pub trait NodeValue: Send + Sync + 'static {}
 
+#[diagnostic::do_not_recommend]
 impl<T: Send + Sync + 'static> NodeValue for T {}
 
 /// Supplies the initial value of a node without `init`, through `Default`.
@@ -37,6 +38,7 @@ impl<T: Default> InitDefault for T {
 )]
 pub trait Capture: Clone {}
 
+#[diagnostic::do_not_recommend]
 impl<T: Clone> Capture for T {}
 
 /// Clones a captured value; method syntax looks through one reference, so a capture of a

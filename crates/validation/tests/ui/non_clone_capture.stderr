@@ -2,10 +2,14 @@ error[E0277]: `Token` is captured by an effect! body but is not `Clone`
   --> tests/ui/non_clone_capture.rs:14:58
    |
 14 |     let _uses: DerivedNode<u32> = effect!(|n| *n.get() + token.id());
-   |                                                          ^^^^^ the trait `lithia::__private::Capture` is not implemented for `Token`
+   |                                                          ^^^^^ captured here
    |
-   = note: the trait bound `Token: lithia::__private::Capture` is not satisfied
-   = note: required for `Token` to implement `lithia::__private::Capture`
+help: the trait `lithia::__private::Capture` is not implemented for `Token`
+  --> tests/ui/non_clone_capture.rs:3:1
+   |
+ 3 | struct Token;
+   | ^^^^^^^^^^^^
+   = note: wrap the part that is not `Clone` in `Arc` and capture node handles beside it, or write `move` and manage the capture yourself
 note: required by a bound in `lithia::__private::CaptureAny::__lithia_capture`
   --> $WORKSPACE/crates/lithia/src/value.rs
    |
@@ -14,7 +18,3 @@ note: required by a bound in `lithia::__private::CaptureAny::__lithia_capture`
    |     where
    |         Self: Capture;
    |               ^^^^^^^ required by this bound in `CaptureAny::__lithia_capture`
-help: consider borrowing here
-   |
-14 |     let _uses: DerivedNode<u32> = effect!(|n| *n.get() + &token.id());
-   |                                                          +
