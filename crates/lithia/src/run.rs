@@ -145,8 +145,7 @@ pub(crate) struct RunFuture<K: NodeValue> {
 
 impl<K: NodeValue> RunFuture<K> {
     pub(crate) fn new(node: Weak<Node<K>>) -> RunFuture<K> {
-        let strong: Option<Arc<Node<K>>> = node.upgrade();
-        let (node_id, scope, expected): (NodeId, Arc<Scope>, u64) = match &strong {
+        let (node_id, scope, expected): (NodeId, Arc<Scope>, u64) = match node.upgrade() {
             Some(strong) => {
                 let header: &Header = &strong.header;
                 let expected: u64 = if header.kind == crate::node::Kind::AsyncSource { 1 } else { 0 };
@@ -154,14 +153,7 @@ impl<K: NodeValue> RunFuture<K> {
             }
             None => (0, Scope::new(), 0),
         };
-        let weak: WeakNodeRef = match &strong {
-            Some(strong) => {
-                let erased: NodeRef = strong.clone();
-                Arc::downgrade(&erased)
-            }
-            None => Weak::<Node<K>>::new(),
-        };
-        drop(strong);
+        let weak: WeakNodeRef = node.clone();
         RunFuture {
             node,
             shared: Arc::new(RunShared::new(weak, node_id, scope, expected)),

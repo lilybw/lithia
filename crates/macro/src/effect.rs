@@ -555,7 +555,7 @@ fn expand_async_source(
     }
     // A block without `move` runs once on its own clones; it sees them by reference, so a
     // handle cannot be moved out of it uncounted.
-    let mut shared: Vec<Ident> = if moved { Vec::new() } else { names.clone() };
+    let mut shared: Vec<Ident> = if moved { Vec::new() } else { names };
     if uses_self {
         shared.push(format_ident!("__self"));
     }
@@ -681,7 +681,7 @@ fn expand_derived(
     }
 
     // Async bodies and generators: captures live in one Arc, cloned once per run.
-    let mut bundle: Vec<Ident> = captured.clone();
+    let mut bundle: Vec<Ident> = captured;
     if uses_self && !moved {
         bundle.push(format_ident!("__self"));
     }

@@ -687,7 +687,7 @@ mod tests {
         assert_eq!(classes("println!(\"{:?}\", a.set(1))"), vec![("a".into(), write.clone())]);
         assert_eq!(classes("helper(&a)"), vec![("a".into(), write.clone())]);
         assert_eq!(classes("items.get(0).unwrap().set(5)"), vec![("items".into(), write.clone())]);
-        assert_eq!(classes("my_macro!(a.get())"), vec![("a".into(), write.clone())]);
+        assert_eq!(classes("my_macro!(a.get())"), vec![("a".into(), write)]);
         assert_eq!(classes("vec![a.get()]"), vec![("a".into(), read.clone())]);
         assert_eq!(classes("effect!(|a| b.get())"), vec![("a".into(), read.clone()), ("b".into(), read)]);
     }
