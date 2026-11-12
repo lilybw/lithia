@@ -1,6 +1,6 @@
 # LITHIA design spec v0.3.0
 
-2026-11-11 · Lily
+2026-11-12 · Lily
 
 ## Changes since v0.2.5
 
@@ -15,6 +15,7 @@ v0.3.0 changes how long nodes live. A node with a body no longer needs a handle:
 | 4.2 | Capture mode: the clones an expansion makes are internal handles, recorded with whether the body may write them. Read-only captures, and field paths that classify the handles of a value captured whole. Async source blocks see their captures by reference. `move` bodies are analysed by name, and the handles they take are flagged in place, so a moved binding keeps the user's `mut`. Arguments of macros other than formatting macros, `vec!` and `dbg!` count as possible writes. | migration; implementation |
 | 4.2 | An async body that ends in a `loop` it never leaves has its output typed `()`, so `effect!(async \|cfg\| loop { … })` compiles under the 2024 edition's never-type fallback; `-> T` on an async closure types its output. | implementation |
 | 4.5 | Expansion sketch: the capture session, and the recorded captures passed to creation. | migration |
+| 4.6 | A value that is neither `Send` nor `Sync` gets one error instead of two; a capture that is not `Clone` is labelled where it was captured and carries its fix. | release check |
 | 5 | `Header` gains the anchoring count, the captured count, the support self-reference, the scoped flag, the generation's back-link and the writer and target lists; `Sched` gains the generation, `closed` and `releasing`; handles gain the internal flag. | migration; implementation |
 | 6.2, 10.1 | Blocking work started by a run creates into that run's generation, or under no creator once the run's node is gone. | implementation |
 | 7.2, 7.3 | Releasing generations: when a node's next run is decided with no run in flight, at every run start, when a superseded run or an async block superseded by a write has stopped, at disposal and when the creator is freed. A node releasing a stopped run's generation is not quiet until the release is done. | migration; loom |
@@ -508,7 +509,7 @@ Each of these inputs gets a dedicated message instead of a generic parse or trai
 | `effect!(1, 2)` | "expected `name = value`; wrap tuple values in parentheses" |
 | `effect!(a = 3)` | "an assignment is not a value; write `effect!(3)`, or put options after a comma" |
 | `yield` inside a nested closure, async block or item | "`yield` publishes the enclosing effect! body's items and only works directly in that body" |
-| A value type that is not `Send + Sync + 'static` | "`T` cannot be a node value: values must be `Send + Sync + 'static`", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell` (11.1). rustc shows this `NodeValue` message. |
+| A value type that is not `Send + Sync + 'static` | "`T` cannot be a node value: values must be `Send + Sync + 'static`", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell` (11.1). rustc shows this `NodeValue` message, once even when both `Send` and `Sync` are missing. |
 | An unknown option | "unknown option `x`; expected one of init, equals, fragility, ghost, flags" |
 | A repeated option | "option `x` is given twice" |
 | `init` on a synchronous source node | "`init` applies to derived nodes and async source nodes; a source node starts with its value" |
@@ -517,7 +518,7 @@ Each of these inputs gets a dedicated message instead of a generic parse or trai
 | A parameter that is not a plain identifier, or one named twice | "dependencies are named by plain identifiers, each once" |
 | `init` missing where `K` has no `Default` | "`T` has no `Default`, so this node needs an initial value", labelled "add `init = …` to the effect! options". rustc shows this `InitDefault` message. |
 | A `Setter` as a dependency | "`Setter<K>` cannot be read, so it cannot be a dependency", noting that dependencies are nodes or `Accessor`s |
-| A captured value that is not `Clone` | "`T` is captured by an effect! body but is not `Clone`"; the fix, wrapping the part that is not `Clone` in `Arc` with node handles captured beside it, or `move`, is in 4.2 |
+| A captured value that is not `Clone` | "`T` is captured by an effect! body but is not `Clone`", labelled "captured here", with the fix as a note: wrap the part that is not `Clone` in `Arc` and capture node handles beside it, or write `move` (4.2) |
 | An annotated parameter of the wrong type | rustc's mismatched-types error at the annotation |
 | A bare `effect!(…).scoped();` | the `#[must_use]` lint: "a scoped node lives only while its handles do; bind this one" |
 | Moving a captured handle out of an async source block | rustc's mismatched-types error, `&SourceNode<K>` found, with its suggestion to clone (4.2) |

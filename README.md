@@ -20,6 +20,8 @@ async fn main() {
 The design is specified in [`docs/spec`](docs/spec/LITHIA_design_spec_v0.3.0.md) (v0.3.0, also as PDF); implementation status
 and decisions are tracked in [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
+Requires Rust 1.95 or newer (edition 2024).
+
 ## Crates
 
 | Directory | Package | Role |
@@ -43,7 +45,7 @@ scheduling protocol over the validation cases, up to a preemption bound (default
 
 ```sh
 RUSTFLAGS="--cfg lithia_loom" CARGO_TARGET_DIR=target/loom cargo test --release -p lithia-test --test loom
-LOOM_MAX_PREEMPTIONS=4 ...    # deeper: about 2 minutes instead of 20 seconds
+LOOM_MAX_PREEMPTIONS=4 ...    # deeper: about 7 minutes instead of 30 seconds
 ```
 
 `.cargo/config.toml` runs every `#[lithia::test]` under a timeout (`LITHIA_TEST_TIMEOUT_MS`), so a
