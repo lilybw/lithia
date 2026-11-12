@@ -141,8 +141,32 @@ paths, AZ escaping `Accessor`, BA scoped child in a value, BB scoped field, BC b
   by their handles, captures by reference). Implemented, verified against section 13 and merged into spec
   v0.3.0; section 17 records the corrections the implementation made.
 
+## Release check (2026-11-12, branch `release/v0.3.0`)
+
+Five passes from `TODO.md`, run in series:
+
+- Dependencies: `lithia-macro` on syn 3 (match guards now live in the arm's pattern); parking_lot 0.13,
+  which raises the MSRV to 1.95; tracing without default features, which drops the last syn 2. No duplicate
+  crates remain; every other dependency was already at its latest release. Toolchain checked: 1.97 only.
+- Simplification: `lithia-core` merged into `lithia` (five crates); one frame `Target` replaces three
+  enums; redundant clones gone. The scheduler itself was left as it is, by decision.
+- Modernization: `LazyLock` and const-initialised mutexes for statics, `ptr::from_ref(..).addr()` for site
+  keys, `#[diagnostic::do_not_recommend]` on the `NodeValue` and `Capture` blanket impls (spec 4.6).
+  `std::sync::nonpoison` is still unstable, so parking_lot stays. Solid 2.0 (beta/RC) makes writes visible
+  to reads only after `flush()`; lithia keeps immediate visibility (spec 6), a deliberate difference.
+- Spec sync: every 4.6 message, the 3.3/3.5 API and capability table, options, the 4.2 macro and method
+  lists, the section 12 table, all 55 cases and the stated test counts checked against the code; spec 4.6,
+  its date and change table, the PDF and the README updated.
+- Validation: 136 workspace tests, 32 loom models at bound 3 (31 s) and bound 4 (7.7 min); clippy (normal
+  and loom cfg), rustfmt and `cargo doc` clean with `-D warnings`; every test binary 100/100 release,
+  50/50 debug and 60/60 single-core runs; 21 mutations re-run: the 19 of spec 11.4's table are caught, and
+  the two the spec names as uncaught still are. Benchmarks A/B against `main`: no regression.
+- Not done: Miri and the 1.95 toolchain need downloads this container cannot make; the TLA+ model the
+  spec requires before shipping (11.4 step 8) is still open.
+
 ## Next steps
 
-1. A TLA+ specification of the protocol and of lifetimes (§11.4 step 8, §16, §17).
-2. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
-3. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
+1. Merge `release/v0.3.0` into `main`, then the release configuration and binaries from `TODO.md`.
+2. A TLA+ specification of the protocol and of lifetimes (§11.4 step 8, §16, §17), which the spec asks for before shipping.
+3. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
+4. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
