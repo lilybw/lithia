@@ -11,7 +11,7 @@ use tokio::runtime::Handle;
 use tokio::sync::futures::Notified;
 use tokio::task::JoinHandle;
 
-use crate::context::{self, Batch, BlockingTarget, Deferred, Frame, FrameGuard, FrameKind};
+use crate::context::{self, Batch, Deferred, Frame, FrameGuard, Target};
 use crate::epoch::{Epoch, Scope};
 use crate::handles::NodeHandle;
 use crate::ids::{self, NodeId};
@@ -21,31 +21,20 @@ use crate::run::{self, RunShared};
 use crate::sync::MutexGuard;
 use crate::{Dispose, Ghosted, Readable, Reflow, Status, dispose as disposal, protocol, settle_wait};
 
-/// What a flush waits for once its batch is delivered.
-enum Wait {
-    Scope(Arc<Scope>),
-    Epochs(Vec<Arc<Epoch>>),
+/// Takes the current frame's pending batch and target; outside lithia tasks, there is neither.
+fn take_pending() -> Option<(Batch, Target)> {
+    context::with_frame(|frame: Option<&Frame>| frame.map(|frame: &Frame| (frame.take_batch(), frame.target.clone())))
 }
 
-/// Takes the current frame's pending batch, or an empty one outside lithia tasks.
-fn take_pending() -> (Batch, Option<FrameTarget>) {
-    context::with_frame(|frame: Option<&Frame>| match frame {
-        None => (Batch::default(), None),
-        Some(frame) => {
-            let target: FrameTarget = match &frame.kind {
-                FrameKind::Task(scope) => FrameTarget::Scope(scope.clone()),
-                FrameKind::Run(run) => FrameTarget::Run(run.clone()),
-                FrameKind::Blocking(BlockingTarget::Run(run)) => FrameTarget::Run(run.clone()),
-                FrameKind::Blocking(BlockingTarget::Scope(scope)) => FrameTarget::Scope(scope.clone()),
-            };
-            (frame.take_batch(), Some(target))
+/// Delivers `batch` for `target`, returning the child epochs it opened for a run in flight.
+fn deliver(target: &Target, batch: Batch) -> Vec<Arc<Epoch>> {
+    match target {
+        Target::Scope(scope) => {
+            protocol::deliver_outside(batch, scope);
+            Vec::new()
         }
-    })
-}
-
-enum FrameTarget {
-    Scope(Arc<Scope>),
-    Run(Arc<RunShared>),
+        Target::Run(run) => deliver_for_run(run, batch),
+    }
 }
 
 /// The epochs a run serves, with their writer sets, if `run` is still in flight.
@@ -82,22 +71,22 @@ fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Vec<Arc<Epoch>> {
 /// Delivers the pending batch, then waits until every run in the caller's scope has ended or suspended.
 /// `lithia::flush().await;` never waits for async results; tests use `lithia::test::settled`.
 pub async fn flush() {
-    let (batch, target): (Batch, Option<FrameTarget>) = take_pending();
-    let wait: Wait = match target {
-        None => Wait::Scope(context::detached_scope()),
-        Some(FrameTarget::Scope(scope)) => {
-            protocol::deliver_outside(batch, &scope);
-            Wait::Scope(scope)
-        }
-        Some(FrameTarget::Run(run)) => Wait::Epochs(deliver_for_run(&run, batch)),
-    };
-    match wait {
-        Wait::Scope(scope) => scope.wait_settled().await,
-        Wait::Epochs(epochs) => {
-            for epoch in epochs {
-                epoch.wait_subtree().await;
+    let pending: Option<(Batch, Target)> = take_pending();
+    let (scope, epochs): (Option<Arc<Scope>>, Vec<Arc<Epoch>>) = match pending {
+        None => (Some(context::detached_scope()), Vec::new()),
+        Some((batch, target)) => {
+            let epochs: Vec<Arc<Epoch>> = deliver(&target, batch);
+            match target {
+                Target::Scope(scope) => (Some(scope), epochs),
+                Target::Run(_) => (None, epochs),
             }
         }
+    };
+    if let Some(scope) = scope {
+        scope.wait_settled().await;
+    }
+    for epoch in epochs {
+        epoch.wait_subtree().await;
     }
 }
 
@@ -166,28 +155,18 @@ pub fn spawn<F: Future<Output = ()> + Send + 'static>(fut: F) -> JoinHandle<()> 
 /// Runs blocking work on tokio's blocking pool in the caller's scope; from a body, its writes count as the run's.
 /// `lithia::spawn_blocking(move || count.set(heavy())).await?;`
 pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> JoinHandle<R> {
-    let target: BlockingTarget = context::with_frame(|frame: Option<&Frame>| match frame {
-        Some(frame) => match &frame.kind {
-            FrameKind::Run(run) => BlockingTarget::Run(run.clone()),
-            FrameKind::Blocking(target) => target.clone(),
-            FrameKind::Task(scope) => BlockingTarget::Scope(scope.clone()),
-        },
-        None => BlockingTarget::Scope(context::detached_scope()),
+    let target: Target = context::with_frame(|frame: Option<&Frame>| {
+        frame.map_or_else(|| Target::Scope(context::detached_scope()), |frame: &Frame| frame.target.clone())
     });
     tokio::task::spawn_blocking(move || {
-        let frame: Frame = Frame::new(FrameKind::Blocking(target.clone()));
+        let frame: Frame = Frame::new(target.clone());
         let result: std::thread::Result<R> = {
             let _entered: FrameGuard<'_> = context::enter(&frame);
             catch_unwind(AssertUnwindSafe(f))
         };
         let batch: Batch = frame.take_batch();
         drop(frame);
-        match &target {
-            BlockingTarget::Run(run) => {
-                deliver_for_run(run, batch);
-            }
-            BlockingTarget::Scope(scope) => protocol::deliver_outside(batch, scope),
-        }
+        deliver(&target, batch);
         match result {
             Ok(value) => value,
             Err(panic) => resume_unwind(panic),
@@ -202,13 +181,8 @@ pub mod test_utils {
     /// Delivers the pending batch, then waits until every run started in the node's subtree has ended.
     /// Unstable: may change in any release. `lithia::test::settled(&user).await;`
     pub async fn settled<N: Readable>(node: &N) {
-        let (batch, target): (Batch, Option<FrameTarget>) = take_pending();
-        match target {
-            None => {}
-            Some(FrameTarget::Scope(scope)) => protocol::deliver_outside(batch, &scope),
-            Some(FrameTarget::Run(run)) => {
-                deliver_for_run(&run, batch);
-            }
+        if let Some((batch, target)) = take_pending() {
+            deliver(&target, batch);
         }
         let root: NodeRef = node.__lithia_node().0;
         let waiter: settle_wait::Waiter = settle_wait::Waiter::new();

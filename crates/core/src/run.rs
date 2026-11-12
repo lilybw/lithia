@@ -11,7 +11,7 @@ use std::task::{Context, Poll, Waker};
 use crate::sync::{AtomicBool, AtomicU64, Mutex, MutexGuard};
 
 use crate::NodeValue;
-use crate::context::{self, Batch, ClosureGuard, Frame, FrameGuard, FrameKind};
+use crate::context::{self, Batch, ClosureGuard, Frame, FrameGuard, Target};
 use crate::epoch::{Epoch, Scope};
 use crate::ids::{self, NodeId};
 use crate::node::{Body, BoxFut, Header, Node, NodeRef, WeakNodeRef};
@@ -244,7 +244,7 @@ impl<K: NodeValue> RunFuture<K> {
                 self.stop();
                 return (Poll::Ready(()), closes);
             }
-            let frame: Frame = Frame::new(FrameKind::Run(self.shared.clone()));
+            let frame: Frame = Frame::new(Target::Run(self.shared.clone()));
             let prepared: Result<RunState<K>, Box<dyn Any + Send>> = {
                 let _entered: FrameGuard<'_> = context::enter(&frame);
                 catch_unwind(AssertUnwindSafe(|| self.prepare(&node)))
@@ -270,7 +270,7 @@ impl<K: NodeValue> RunFuture<K> {
         }
 
         self.shared.begin_poll();
-        let frame: Frame = Frame::new(FrameKind::Run(self.shared.clone()));
+        let frame: Frame = Frame::new(Target::Run(self.shared.clone()));
         let outcome: Outcome = {
             let _entered: FrameGuard<'_> = context::enter(&frame);
             let state: &mut RunState<K> = &mut self.state;
@@ -448,7 +448,7 @@ impl<F: Future> Future for TaskFuture<F> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
         let this: &mut TaskFuture<F> = self.get_mut();
-        let frame: Frame = Frame::new(FrameKind::Task(this.scope.clone()));
+        let frame: Frame = Frame::new(Target::Scope(this.scope.clone()));
         struct Deliver<'a> {
             frame: &'a Frame,
             scope: &'a Arc<Scope>,

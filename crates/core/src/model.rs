@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Waker};
 
-use crate::context::{self, Frame, FrameGuard, FrameKind};
+use crate::context::{self, Frame, FrameGuard, Target};
 use crate::epoch::Scope;
 use crate::ids::NodeId;
 use crate::node::{NodeRef, Sched};
@@ -61,7 +61,7 @@ impl ModelScope {
 
     /// Runs `f` as one poll of a lithia task in this scope: its writes form one batch.
     pub fn batch<R>(&self, f: impl FnOnce() -> R) -> R {
-        let frame: Frame = Frame::new(FrameKind::Task(self.0.clone()));
+        let frame: Frame = Frame::new(Target::Scope(self.0.clone()));
         let result: R = {
             let _entered: FrameGuard<'_> = context::enter(&frame);
             f()

@@ -41,34 +41,24 @@ impl Batch {
     }
 }
 
-/// Where blocking work delivers its batch.
+/// Whom a frame's batch is delivered for.
 #[derive(Clone)]
-pub(crate) enum BlockingTarget {
-    /// A body's run: child epochs while it is in flight, an outside batch after.
-    Run(Arc<RunShared>),
-    /// An outside batch in this scope.
+pub(crate) enum Target {
+    /// An outside batch in this scope: a lithia task, or blocking work it started.
     Scope(Arc<Scope>),
-}
-
-/// What is being polled on this thread.
-pub(crate) enum FrameKind {
-    /// A task started by `lithia::spawn`, `#[lithia::main]` or `#[lithia::test]`.
-    Task(Arc<Scope>),
-    /// One poll of a node's run.
+    /// A node's run, polled or doing blocking work: child epochs while in flight, an outside batch after.
     Run(Arc<RunShared>),
-    /// A `lithia::spawn_blocking` closure.
-    Blocking(BlockingTarget),
 }
 
 /// One batch being collected.
 pub(crate) struct Frame {
-    pub(crate) kind: FrameKind,
+    pub(crate) target: Target,
     pub(crate) batch: RefCell<Batch>,
 }
 
 impl Frame {
-    pub(crate) fn new(kind: FrameKind) -> Frame {
-        Frame { kind, batch: RefCell::new(Batch::default()) }
+    pub(crate) fn new(target: Target) -> Frame {
+        Frame { target, batch: RefCell::new(Batch::default()) }
     }
 
     pub(crate) fn take_batch(&self) -> Batch {
@@ -76,11 +66,9 @@ impl Frame {
     }
 
     pub(crate) fn scope(&self) -> Arc<Scope> {
-        match &self.kind {
-            FrameKind::Task(scope) => scope.clone(),
-            FrameKind::Run(run) => run.scope(),
-            FrameKind::Blocking(BlockingTarget::Run(run)) => run.scope(),
-            FrameKind::Blocking(BlockingTarget::Scope(scope)) => scope.clone(),
+        match &self.target {
+            Target::Scope(scope) => scope.clone(),
+            Target::Run(run) => run.scope(),
         }
     }
 }
@@ -121,8 +109,8 @@ pub(crate) fn with_frame<R>(f: impl FnOnce(Option<&Frame>) -> R) -> R {
 
 /// The run that creates here: the one being polled, or the one whose blocking work this is.
 pub(crate) fn creating_run() -> Option<Arc<RunShared>> {
-    with_frame(|frame: Option<&Frame>| match frame.map(|f: &Frame| &f.kind) {
-        Some(FrameKind::Run(run)) | Some(FrameKind::Blocking(BlockingTarget::Run(run))) => Some(run.clone()),
+    with_frame(|frame: Option<&Frame>| match frame.map(|f: &Frame| &f.target) {
+        Some(Target::Run(run)) => Some(run.clone()),
         _ => None,
     })
 }
