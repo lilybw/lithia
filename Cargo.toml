@@ -12,7 +12,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 publish = false
 repository = "https://github.com/lilybw/lithia"
 
@@ -24,10 +24,10 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "m
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-core = "0.3"
 arc-swap = "1"
-parking_lot = "0.12"
-tracing = "0.1"
+parking_lot = "0.13"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 bitflags = "2"
-syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
+syn = { version = "3", features = ["full", "visit", "visit-mut", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 trybuild = "1"

@@ -302,9 +302,6 @@ impl Captures {
                 for arm in &matched.arms {
                     self.push();
                     self.pat(&arm.pat);
-                    if let Some((_, guard)) = &arm.guard {
-                        self.expr(guard);
-                    }
                     self.expr(&arm.body);
                     self.pop();
                 }
@@ -459,6 +456,11 @@ impl Captures {
             Pat::Reference(reference) => self.pat(&reference.pat),
             Pat::Type(typed) => self.pat(&typed.pat),
             Pat::Paren(paren) => self.pat(&paren.pat),
+            // A match guard sees the bindings of the pattern it follows.
+            Pat::Guard(guarded) => {
+                self.pat(&guarded.pat);
+                self.expr(&guarded.guard);
+            }
             _ => {}
         }
     }
@@ -638,6 +640,12 @@ mod tests {
     fn sees_into_nested_effects() {
         assert_eq!(captured("Some(effect!(|n| n.update(|v: &u32| v + 1)))"), vec!["n"]);
         assert_eq!(captured("effect!(async |id| { cache.set(id.get()); })"), vec!["id", "cache"]);
+    }
+
+    #[test]
+    fn sees_match_guards() {
+        assert_eq!(captured("match x { Some(v) if v > limit.get() => v, w => w }"), vec!["x", "limit"]);
+        assert_eq!(classes("match 1 { _ if a.set(1) => 0, _ => 1 }"), vec![("a".into(), Class::Write)]);
     }
 
     fn classes(src: &str) -> Vec<(String, Class)> {
