@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::NodeValue;
-use crate::keyed::{Inputs, KeyValue, Keyed, Reuse};
+use crate::keyed::{Inputs, Keyed, NodeKey, Reuse};
 
 /// How a derived node reacts to failed parents (spec §9.2); not set means never.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -101,7 +101,7 @@ impl<K> Options<K> {
     }
 
     /// Sets the key, with what the lookup by key found and the captures to keep (spec §4.7).
-    pub fn keyed<T: KeyValue>(mut self, reuse: Reuse<K>, key: T, inputs: Inputs) -> Self
+    pub fn keyed<T>(mut self, reuse: Reuse<K>, key: NodeKey<T>, inputs: Inputs) -> Self
     where
         K: NodeValue,
     {

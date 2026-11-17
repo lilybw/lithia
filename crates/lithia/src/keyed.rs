@@ -66,8 +66,31 @@ impl Key {
     }
 }
 
+/// A key value, checked against `KeyValue` once, where the key is written.
+/// `let key: NodeKey<u64> = NodeKey::new(row.id);`
+#[doc(hidden)]
+pub struct NodeKey<T> {
+    value: T,
+    erase: fn(&T) -> &dyn DynKey,
+    boxed: fn(T) -> Box<dyn DynKey>,
+}
+
+impl<T> NodeKey<T> {
+    /// Wraps a key value.
+    pub fn new(value: T) -> NodeKey<T>
+    where
+        T: KeyValue,
+    {
+        NodeKey { value, erase: |value: &T| value, boxed: |value: T| Box::new(value) }
+    }
+
+    fn into_box(self) -> Box<dyn DynKey> {
+        (self.boxed)(self.value)
+    }
+}
+
 /// A key looked up before anything is created; borrows the key value.
-/// `KeyRef::new(&__LITHIA_SITE, &row.id)`
+/// `KeyRef::new(&__LITHIA_SITE, &__lithia_key)`
 #[doc(hidden)]
 pub struct KeyRef<'a> {
     site: &'static Site,
@@ -76,9 +99,10 @@ pub struct KeyRef<'a> {
 }
 
 impl<'a> KeyRef<'a> {
-    /// Hashes `value` with its site.
-    pub fn new<T: KeyValue>(site: &'static Site, value: &'a T) -> KeyRef<'a> {
-        KeyRef { site, hash: key_hash(site, value), value }
+    /// Hashes the key with its site.
+    pub fn new<T>(site: &'static Site, key: &'a NodeKey<T>) -> KeyRef<'a> {
+        let value: &'a dyn DynKey = (key.erase)(&key.value);
+        KeyRef { site, hash: value.hash_at(site), value }
     }
 }
 
@@ -259,12 +283,12 @@ pub(crate) struct Keyed {
 }
 
 impl Keyed {
-    pub(crate) fn new<K: NodeValue, T: KeyValue>(reuse: Reuse<K>, key: T, inputs: Inputs) -> Keyed {
+    pub(crate) fn new<K: NodeValue, T>(reuse: Reuse<K>, key: NodeKey<T>, inputs: Inputs) -> Keyed {
         let reclaimed: Option<NodeRef> = match reuse {
             Reuse::Same(Reused(node)) | Reuse::Changed(Reused(node)) => Some(node),
             Reuse::Fresh => None,
         };
-        Keyed { reclaimed, value: Box::new(key), inputs }
+        Keyed { reclaimed, value: key.into_box(), inputs }
     }
 
     pub(crate) fn key(self, site: &'static Site) -> (Key, Inputs) {

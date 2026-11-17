@@ -144,26 +144,26 @@ impl KeyArg {
         Ok(KeyArg::Closure { params, body: (*closure.body).clone() })
     }
 
-    /// The key looked up by reference, spanned on the key so a key that is not `KeyValue` is named there.
+    /// The key looked up by reference.
     fn lookup(&self) -> TokenStream {
-        let span: Span = match self {
-            KeyArg::Expr(expr) => expr.span(),
-            KeyArg::Closure { body, .. } => body.span(),
-        };
-        quote_spanned!(span=> &::lithia::__private::KeyRef::new(&__LITHIA_SITE, &__lithia_key))
+        quote!(&::lithia::__private::KeyRef::new(&__LITHIA_SITE, &__lithia_key))
     }
 
-    /// The key's value: the expression, or the closure's body with each parameter bound by reference.
+    /// The key's value, wrapped where it is written so a key that is not `KeyValue` is named
+    /// there once: the expression, or the closure's body with each parameter bound by reference.
     fn value(&self) -> TokenStream {
         match self {
-            KeyArg::Expr(expr) => quote_spanned!(expr.span()=> #expr),
-            KeyArg::Closure { params, body } => quote_spanned! {body.span()=> {
-                #(
-                    #[allow(unused_variables)]
-                    let #params = &#params;
-                )*
-                #body
-            }},
+            KeyArg::Expr(expr) => quote_spanned!(expr.span()=> ::lithia::__private::NodeKey::new(#expr)),
+            KeyArg::Closure { params, body } => {
+                let wrap: TokenStream = quote_spanned!(body.span()=> ::lithia::__private::NodeKey::new);
+                quote! {{
+                    #(
+                        #[allow(unused_variables)]
+                        let #params = &#params;
+                    )*
+                    #wrap(#body)
+                }}
+            }
         }
     }
 }

@@ -55,8 +55,8 @@ pub mod __private {
     };
     pub use crate::handles::NodeHandle;
     pub use crate::keyed::{
-        HandleId, Inputs, KeyRef, KeyValue, Probe, ProbeViaArc, ProbeViaEq, ProbeViaHandle, ProbeViaOpaque, Probed,
-        Reuse, Reused, reuse_derived, reuse_source, reuse_source_async,
+        HandleId, Inputs, KeyRef, KeyValue, NodeKey, Probe, ProbeViaArc, ProbeViaEq, ProbeViaHandle, ProbeViaOpaque,
+        Probed, Reuse, Reused, reuse_derived, reuse_source, reuse_source_async,
     };
     pub use crate::options::Options;
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
