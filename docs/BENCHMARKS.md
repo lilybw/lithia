@@ -20,6 +20,7 @@ show orders of magnitude and relative costs only; re-run on your own machine bef
 | Sweep over a hub (v0.3.0) | letting go of and freeing 10 000 handle-less watchers: 219–294 ms, vs 216–284 ms to free as many scoped watchers by their handles | The sweep's share of a large let-go (10.1) |
 | Rebuilding children (v0.3.0) | 100 children rebuilt: 2.8–3.5 ms per rerun | Generations against value-held children (10.1) |
 | Last-handle drops (v0.3.0) | the `helper(&x.accessor())` idiom: 250–570 ns per drop on one thread, 1.0–3.7 µs on each of two | The 1 µs drop budget and the one sweep lock (10.1, 11.4) |
+| Keyed rows (v0.3.1) | 100 rows per list rerun, rebuilt against `key = row.id`, median of ten runs: no row changed 2.73 ms vs 78 µs; one changed 2.76 ms vs 90 µs; reversed 2.86 ms vs 81 µs; all changed 2.77 ms vs 2.34 ms | What reclaiming by key saves (10.1, Keyed nodes) |
 
 ## Observations
 
@@ -37,3 +38,9 @@ show orders of magnitude and relative costs only; re-run on your own machine bef
   let-go is lost in the cost of freeing. Concurrent drops contend on the one sweep lock (spec §16).
 - **The eight-way mesh** took 13–15 runs under v0.3.0 against 8 under v0.2.5, run alternately; nothing in
   v0.3.0 changes propagation, so this is an open question (spec §17).
+- **Keys pay off when few rows change.** A list rerun that keeps its rows is 30 to 35 times cheaper keyed,
+  reordered or not: a reclaim with equal captures costs under 1 µs against ~27 µs to rebuild a row. When
+  every row changes, refreshing in place is still slightly cheaper than rebuilding.
+- **v0.3.1 against v0.3.0** (2026-11-17, ten alternated runs each): every median of v0.3.1's common
+  benchmarks falls within v0.3.0's range, so unkeyed nodes pay nothing for keys. That container ran faster
+  than the one behind the table above, so compare within a session only.

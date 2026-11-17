@@ -76,7 +76,7 @@ Solid 2.0 behaviour as described in RFC 01: reactivity, batching and effects.
 | Derived node | A `DerivedNode<K>`: one or more dependencies, value produced by its body. Covers memos, and effects when `K = ()`. |
 | Parent | A node listed as a dependency of another node. |
 | Child (subscriber) | A node that lists another node as a dependency. |
-| Creator | The node whose run created another node. Recorded for diagnostics (5.1) and for `lithia::test::settled` (11.3); its run's generation holds what it created until its next run is decided (10.1). |
+| Creator | The node whose run created another node. Recorded for diagnostics (5.1) and for `lithia::test::settled` (11.3); its run's generation holds what it created until its next run is decided, and its holdover keeps the keyed nodes among them until a later run has had the chance to reclaim them (10.1). |
 | Body | The closure a derived node runs. |
 | Run | One execution of a body, one write to a source node, or the async block or generator feeding one. Every run is a stream of items. |
 | Item | One value a run produces: a yielded value, or the return value of a body that never yields. A node's value is its latest item. |
@@ -989,7 +989,7 @@ An anchor is a node that is not a ghost and has an outside handle, other than an
 Support flows along three kinds of edge:
 
 - from a parent to each of its children;
-- from a run's node to each node in its generation, until the generation releases it;
+- from a run's node to each node in its generation or its holdover, until that holder lets go of it;
 - from a node with a body to each node it captured through a `SourceNode`, `Setter` or `DerivedNode` handle, unless that capture is read-only (4.2), whether or not a run actually writes it.
 
 A node is supported when an anchor reaches it along these edges, with two exceptions for scoped nodes: a scoped node is supported only while it is an anchor itself, and a node that depends on a scoped node with no outside handles, directly or through nodes that have none either, is not supported (10.2). Support is the least fixpoint of this rule, so a cycle that no anchor reaches supports nothing. Support holds every top-level node with parents through a self-reference from its creation until a sweep finds it unsupported. Nodes without parents are never held by support, but they pass it on whenever an anchor reaches them.
@@ -1026,7 +1026,7 @@ In practice:
 - Freeing runs bottom-up: a node is freed when its last strong reference goes, which may in turn free its parents. Strong references are plain `Arc`s and weak ones `Weak`s, so the count is `Arc`'s own. A node's `Drop` moves its parents onto a thread-local worklist instead of dropping them recursively, so dropping the end of a long chain cannot overflow the stack. A freed node also removes itself from each parent's subscriber list, so creating nodes on every run does not grow those lists. `lithia::dispose` still frees top-down (10.4).
 - A body holds the handles it captured, so they are released when the body is dropped, which happens off the dropping thread (10.3). A node held only by another node's body is therefore freed shortly after that body, not at the same instant.
 - Dropping the last handle of a top-level node with parents does not stop it while support holds it. To stop it with its handle, scope it; to stop it whatever holds it, dispose it (10.2).
-- A node created in a body is held by the run's generation until the creator's next run is decided, and is freed then unless a handle escapes: into a collection, another node's value or a return value. Nothing accumulates across reruns unless a handle is kept (Case AM).
+- A node created in a body is held by the run's generation until the creator's next run is decided, and is freed then unless a handle escapes: into a collection, another node's value or a return value. A keyed node waits in the holdover until that run ends instead, unless the run reclaims it. Nothing accumulates across reruns unless a handle is kept (Case AM).
 - A function can return a derived node: the node keeps its parents alive (Case I).
 
 ### 10.2 Keeping effects alive, and stopping them early
@@ -1053,7 +1053,7 @@ effect!(|rows| {
 
 **`.scoped()`.** `SourceNode::scoped` and `DerivedNode::scoped` take the handle and return it, `fn scoped(self) -> Self`, marked `#[must_use]` with "a scoped node lives only while its handles do; bind this one", since `effect!(…).scoped();` frees the node at once. From then on:
 
-- the node lives by its handles, children and captures alone, as in v0.2.5: support and any run's generation let go of it at once;
+- the node lives by its handles, children and captures alone, as in v0.2.5: support, any run's generation and any holdover let go of it at once;
 - support from upstream stops at it: it is supported only while it has outside handles itself;
 - what depends on it needs it: while it has no outside handles, a node that depends on it, directly or through nodes that have none either, is not supported, so a dependent with a second, long-lived parent cannot keep it alive and computing;
 - clones of the handle are ordinary handles, and nothing is disposed, so no ghost appears (Case BB);
@@ -3501,6 +3501,17 @@ Lifetime costs, added by v0.3.0, from the same runs:
 
 - Two threads dropping temporary anchors at once each pay several times as much as one, through the one sweep lock and the shared atomics; finer-grained locking stays on the roadmap until a real workload shows it (16).
 - Freeing many children of one node costs time quadratic in their number, since each leaves the parent's subscriber list on its own; this predates v0.3.0, and only a sweep or a value that frees thousands at once shows it.
+
+Keyed rows, added by v0.3.1, from ten runs on 2026-11-17 alternated with ten runs of v0.3.0, as the median with the range in brackets:
+
+| Benchmark | Measures | Result | Informs |
+| --- | --- | --- | --- |
+| Keyed rows | A list node that maps 100 rows to a derived node each, rerun 50 times with one kind of edit, with every row rebuilt as in v0.3.0 against `key = row.id`; the time per list rerun, children included | no row changed: 2.73 ms [2.01–3.40] rebuilt, 78 µs [64–95] keyed; one row changed: 2.76 ms [2.47–3.48] against 90 µs [83–96]; rows reversed: 2.86 ms [2.25–3.06] against 81 µs [76–107]; every row changed: 2.77 ms [2.34–3.27] against 2.34 ms [1.74–2.57] | What reclaiming by key saves over rebuilding (10.1, Keyed nodes) |
+
+- Reclaiming a row whose captures are equal costs under 1 µs, a lookup and a probe of each capture, against about 27 µs to create a row, run it and release the old one. A list rerun that changes few rows is therefore 30 to 35 times cheaper keyed.
+- A reordered list costs no more than an unchanged one, since a key follows its row wherever it moves.
+- When every row changed, each keyed row is refreshed and reruns in place, which still costs a little less than a new node: about 23 µs against 28 µs per row.
+- Nodes created without a key pay nothing measurable: in the same session, every median of v0.3.1's common benchmarks falls within the range of v0.3.0's ten runs. Both ran faster than the figures above, on a different container, so only the comparison between them carries over.
 
 ## 16. Roadmap
 

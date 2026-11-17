@@ -17,6 +17,8 @@ nodes to v0.3.0's lifetime rule; v0.3.0, v0.2.5 and v0.2.4 are kept for referenc
 
 All of A–BK pass (63 cases). Stress for v0.3.0: every test binary (cases, both `support` files, and the
 seven other `lithia-test` files) 400/400 release runs, 200/200 debug runs, 250/250 single-core runs.
+Stress for v0.3.1: all 12 binaries, both `keyed` files included, 100/100 release, 50/50 debug and 60/60
+single-core runs; 155 workspace tests; 35 loom models at bounds 3 and 4.
 
 | Case | Status | Case | Status |
 |---|---|---|---|
