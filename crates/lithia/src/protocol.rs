@@ -243,7 +243,7 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     let waits_for_run: bool = entry.reflow && !entry.first && !entry.force && !changed;
     match sched.run.as_mut() {
         None => {
-            work.released.append(&mut sched.generation);
+            sched.release_generation(&mut work.released);
             if !sched.queued {
                 sched.queued = true;
                 work.spawns.push(node.clone());
@@ -417,11 +417,12 @@ pub(crate) fn deliver_into(
     writer: Option<NodeId>,
     own: Option<OwnItem<'_>>,
 ) {
-    let Batch { writes, reflows, creations, reruns, defers } = batch;
+    let Batch { writes, reflows, creations, reruns, refreshes, defers } = batch;
     let writes: Vec<(NodeRef, u64)> = upgrade_sorted(writes);
     let reflows: Vec<(NodeRef, u64)> = upgrade_sorted(reflows);
     let creations: Vec<NodeRef> = upgrade_nodes(creations);
     let reruns: Vec<NodeRef> = upgrade_nodes(reruns);
+    let refreshes: Vec<NodeRef> = upgrade_nodes(refreshes);
     let mut work: Work = Work::default();
 
     // Framing: the whole downstream region opens its entries before anything is released.
@@ -434,6 +435,10 @@ pub(crate) fn deliver_into(
         for node in &reruns {
             // Disposal is no write: survivors rerun unattributed, so nothing can cut them.
             seed(node, epoch, &WriterSet::new(), Seed::Rerun, &mut work);
+        }
+        for node in &refreshes {
+            // A reclaimed node reruns on new captures, seeded like a creation.
+            seed(node, epoch, &seed_writers, Seed::Rerun, &mut work);
         }
         for (node, _) in &writes {
             frame(node, epoch, &mut work);
@@ -465,7 +470,7 @@ pub(crate) fn deliver_into(
             release_children(item.node, epoch, item.stamp, base, None, &mut work);
         }
     }
-    for node in creations.iter().chain(reruns.iter()) {
+    for node in creations.iter().chain(reruns.iter()).chain(refreshes.iter()) {
         evaluate(node, &mut work);
     }
     for (node, _) in &reflows {
@@ -482,6 +487,7 @@ pub(crate) fn deliver_into(
     work.keep.extend(reflows.into_iter().map(|(node, _)| node));
     work.keep.extend(creations);
     work.keep.extend(reruns);
+    work.keep.extend(refreshes);
     drain(work);
 }
 
@@ -668,7 +674,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 header.failure.store(None);
                 sched.failed_by_fragility = false;
                 sched.run = Some(RunSlot { id, shared: shared.clone(), served, restart: false });
-                work.released.append(&mut sched.generation);
+                sched.release_generation(&mut work.released);
                 true
             }
         }
@@ -820,8 +826,14 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
             }
         };
         let restart: bool = slot.restart && end == End::Finished && !header.is_ghost();
-        if (restart || shared.is_cancelled()) && !sched.generation.is_empty() {
-            work.released.append(&mut sched.generation);
+        if restart || shared.is_cancelled() {
+            sched.release_generation(&mut work.released);
+        }
+        if !restart {
+            // The run ended without a successor: keyed nodes it did not reclaim are let go.
+            sched.holdover.drain_into(&mut work.released);
+        }
+        if !work.released.is_empty() {
             sched.releasing = true;
         }
         if restart {

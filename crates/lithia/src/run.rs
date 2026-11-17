@@ -148,7 +148,11 @@ impl<K: NodeValue> RunFuture<K> {
         let (node_id, scope, expected): (NodeId, Arc<Scope>, u64) = match node.upgrade() {
             Some(strong) => {
                 let header: &Header = &strong.header;
-                let expected: u64 = if header.kind == crate::node::Kind::AsyncSource { 1 } else { 0 };
+                let expected: u64 = if header.kind == crate::node::Kind::AsyncSource {
+                    header.block_run.load(Ordering::SeqCst)
+                } else {
+                    0
+                };
                 (header.id, header.scope.clone(), expected)
             }
             None => (0, Scope::new(), 0),

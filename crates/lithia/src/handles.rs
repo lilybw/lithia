@@ -362,6 +362,21 @@ kind_of!(SourceNode, true);
 kind_of!(DerivedNode, true);
 kind_of!(Accessor, false);
 
+macro_rules! handle_id {
+    ($ty:ident) => {
+        impl<K: NodeValue> crate::keyed::HandleId for $ty<K> {
+            fn __lithia_node_id(&self) -> crate::ids::NodeId {
+                self.node.header.id
+            }
+        }
+    };
+}
+
+handle_id!(SourceNode);
+handle_id!(DerivedNode);
+handle_id!(Accessor);
+handle_id!(Setter);
+
 readable!(SourceNode);
 readable!(DerivedNode);
 readable!(Accessor);

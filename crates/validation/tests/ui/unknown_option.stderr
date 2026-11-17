@@ -1,4 +1,4 @@
-error: unknown option `colour`; expected one of init, equals, fragility, ghost, flags
+error: unknown option `colour`; expected one of init, equals, fragility, ghost, flags, key
  --> tests/ui/unknown_option.rs:4:24
   |
 4 |     let _ = effect!(0, colour = 1);

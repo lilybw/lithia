@@ -12,6 +12,7 @@ mod drops;
 mod epoch;
 mod handles;
 mod ids;
+mod keyed;
 mod node;
 mod options;
 mod protocol;
@@ -53,6 +54,10 @@ pub mod __private {
         derived, derived_async, derived_gen, move_dep, node_ref, output, source, source_async, source_gen,
     };
     pub use crate::handles::NodeHandle;
+    pub use crate::keyed::{
+        HandleId, Inputs, KeyRef, KeyValue, Probe, ProbeViaArc, ProbeViaEq, ProbeViaHandle, ProbeViaOpaque, Probed,
+        Reuse, Reused, reuse_derived, reuse_source, reuse_source_async,
+    };
     pub use crate::options::Options;
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
     pub use crate::site::fn_path;

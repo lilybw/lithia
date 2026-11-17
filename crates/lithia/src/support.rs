@@ -100,7 +100,7 @@ fn needs_sweep(node: &NodeRef) -> bool {
         return true;
     }
     let guard: MutexGuard<'_, crate::node::Sched> = header.sched.lock();
-    !guard.subscribers.is_empty() || !guard.generation.is_empty()
+    !guard.subscribers.is_empty() || guard.holds_creations()
 }
 
 /// Sweeps until no starting point is left; references are dropped outside the sweep lock.
@@ -224,7 +224,7 @@ fn unread(node: &NodeRef) -> Option<&'static crate::Site> {
 fn successors(node: &NodeRef, keep: &mut Vec<NodeRef>) -> Vec<NodeRef> {
     let header: &Header = node.header();
     let mut out: Vec<NodeRef> = header.subscribers();
-    out.extend(header.sched.lock().generation.iter().cloned());
+    out.extend(header.sched.lock().creations().cloned());
     out.extend(header.targets.iter().filter_map(|weak: &WeakNodeRef| weak.upgrade()));
     keep.extend(out.iter().cloned());
     out
@@ -389,11 +389,8 @@ pub(crate) fn scope(node: &NodeRef) {
         crate::diag::support_released(header.site);
     }
     let creator: Option<NodeRef> = header.held_by.lock().take().and_then(|weak: WeakNodeRef| weak.upgrade());
-    let released: Option<NodeRef> = creator.as_ref().and_then(|creator: &NodeRef| {
-        let mut guard: MutexGuard<'_, crate::node::Sched> = creator.header().sched.lock();
-        let at: Option<usize> = guard.generation.iter().position(|member: &NodeRef| member.header().id == header.id);
-        at.map(|at: usize| guard.generation.swap_remove(at))
-    });
+    let released: Option<NodeRef> =
+        creator.as_ref().and_then(|creator: &NodeRef| creator.header().sched.lock().remove_creation(header.id));
     start(node.clone());
     drop(released);
     drop(creator);

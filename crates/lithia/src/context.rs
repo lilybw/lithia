@@ -28,6 +28,8 @@ pub(crate) struct Batch {
     pub(crate) creations: Vec<WeakNodeRef>,
     /// Surviving children of a disposed node, which rerun.
     pub(crate) reruns: Vec<WeakNodeRef>,
+    /// Reclaimed keyed nodes whose captures changed, which rerun.
+    pub(crate) refreshes: Vec<WeakNodeRef>,
     pub(crate) defers: Vec<Deferred>,
 }
 
@@ -37,6 +39,7 @@ impl Batch {
             && self.reflows.is_empty()
             && self.creations.is_empty()
             && self.reruns.is_empty()
+            && self.refreshes.is_empty()
             && self.defers.is_empty()
     }
 }
@@ -206,6 +209,12 @@ impl Drop for ClosureCreations {
 /// Records a change to a source node in the current batch, or delivers it at once.
 pub(crate) fn record_write(node: &NodeRef, stamp: u64) {
     record(|batch: &mut Batch| batch.writes.push((Arc::downgrade(node), node.header().id, stamp)));
+}
+
+/// Records a reclaimed keyed node that reruns on new captures (spec §10.1, Keyed nodes).
+pub(crate) fn record_refresh(node: &NodeRef) {
+    let weak: WeakNodeRef = Arc::downgrade(node);
+    record(move |batch: &mut Batch| batch.refreshes.push(weak));
 }
 
 /// Records a reflow in the current batch, or delivers it at once.

@@ -144,6 +144,16 @@ fn fragility_failed(site: &Site, parent: &str) {
     tracing::debug!(site = %site, parent, "lithia: child failed through fragility");
 }
 
+/// A run created two nodes with equal keys at one site; they are matched in creation order.
+pub(crate) fn duplicate_key(site: &Site) {
+    tracing::debug!(site = %site, "lithia: a run created two nodes with the same key at one site");
+}
+
+/// A keyed node was created outside any run, where no earlier creation can be reclaimed.
+pub(crate) fn key_outside_run(site: &Site) {
+    tracing::debug!(site = %site, "lithia: `key` has no effect outside a body; the node is created as usual");
+}
+
 pub(crate) fn ghost_read(site: &Site, policy: crate::GhostPolicy) {
     tracing::debug!(site = %site, policy = ?policy, "lithia: read of a disposed node");
 }

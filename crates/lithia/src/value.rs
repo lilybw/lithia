@@ -54,6 +54,12 @@ pub trait CaptureAny {
     fn __lithia_capture_ro(&self) -> Self
     where
         Self: Capture;
+
+    /// The value a capture would clone, borrowed, for a keyed node's probe.
+    #[inline]
+    fn __lithia_capture_ref(&self) -> &Self {
+        self
+    }
 }
 
 impl<T> CaptureAny for T {

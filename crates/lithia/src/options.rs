@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+use crate::NodeValue;
+use crate::keyed::{Inputs, KeyValue, Keyed, Reuse};
+
 /// How a derived node reacts to failed parents (spec §9.2); not set means never.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fragility {
@@ -58,11 +61,12 @@ pub struct Options<K> {
     pub(crate) fragility: Option<Fragility>,
     pub(crate) ghost: GhostPolicy,
     pub(crate) flags: Flags,
+    pub(crate) keyed: Option<Keyed>,
 }
 
 impl<K> Default for Options<K> {
     fn default() -> Self {
-        Options { equals: None, fragility: None, ghost: GhostPolicy::CauseFailure, flags: Flags::empty() }
+        Options { equals: None, fragility: None, ghost: GhostPolicy::CauseFailure, flags: Flags::empty(), keyed: None }
     }
 }
 
@@ -93,6 +97,15 @@ impl<K> Options<K> {
     /// Sets the flags.
     pub fn flags(mut self, flags: Flags) -> Self {
         self.flags = flags;
+        self
+    }
+
+    /// Sets the key, with what the lookup by key found and the captures to keep (spec §4.7).
+    pub fn keyed<T: KeyValue>(mut self, reuse: Reuse<K>, key: T, inputs: Inputs) -> Self
+    where
+        K: NodeValue,
+    {
+        self.keyed = Some(Keyed::new(reuse, key, inputs));
         self
     }
 

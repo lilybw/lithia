@@ -13,6 +13,7 @@ use tokio::sync::watch;
 
 use crate::epoch::{Epoch, Scope};
 use crate::ids::{EpochId, NodeId};
+use crate::keyed::{Inputs, Key, KeyedSet};
 use crate::options::{Equals, Flags, Fragility, GhostPolicy};
 use crate::run::{RunShared, Yielder};
 use crate::sets::{ParentMask, WriterSet};
@@ -116,6 +117,14 @@ pub(crate) struct Header {
     pub(crate) warn_first_run: bool,
     /// The first run finished, yielded an item or was polled a second time.
     pub(crate) under_way: AtomicBool,
+    /// The value type, for reclaiming a keyed node.
+    pub(crate) value_type: TypeId,
+    /// The `key` option's value; set at creation, never changed.
+    pub(crate) key: Option<Key>,
+    /// What a keyed node's body last captured, to compare a reclaiming creation against.
+    pub(crate) inputs: Mutex<Option<Inputs>>,
+    /// The run id an async source block may run under; a write or a new block moves `runs` past it.
+    pub(crate) block_run: AtomicU64,
 }
 
 /// Scheduler state of one node, guarded by its scheduling lock.
@@ -136,8 +145,12 @@ pub(crate) struct Sched {
     pub(crate) subscribers: Vec<(NodeId, WeakNodeRef)>,
     /// Nodes created by this node's runs, held weakly, for `lithia::test::settled`.
     pub(crate) created: Vec<WeakNodeRef>,
-    /// The generation: nodes the runs created, held until the next run is decided.
+    /// The generation: nodes the runs created without a key, held until the next run is decided.
     pub(crate) generation: Vec<NodeRef>,
+    /// The generation's keyed nodes; a release hands them to the holdover.
+    pub(crate) keyed: KeyedSet,
+    /// Keyed nodes of released generations, held until a run ends without being superseded.
+    pub(crate) holdover: KeyedSet,
     /// Disposed: creations under this node get no creator.
     pub(crate) closed: bool,
     /// A stopped run's generation is being released; the node is not quiet until it is.
@@ -158,10 +171,45 @@ impl Sched {
             subscribers: Vec::new(),
             created: Vec::new(),
             generation: Vec::new(),
+            keyed: KeyedSet::default(),
+            holdover: KeyedSet::default(),
             closed: false,
             releasing: false,
             failed_by_fragility: false,
         }
+    }
+
+    /// Releases the generation: unkeyed nodes into `out`, keyed ones into the holdover.
+    pub(crate) fn release_generation(&mut self, out: &mut Vec<NodeRef>) {
+        out.append(&mut self.generation);
+        let keyed: KeyedSet = std::mem::take(&mut self.keyed);
+        self.holdover.merge(keyed);
+    }
+
+    /// Releases everything the node's runs hold: generation, keyed nodes and holdover.
+    pub(crate) fn release_all(&mut self) -> Vec<NodeRef> {
+        let mut out: Vec<NodeRef> = std::mem::take(&mut self.generation);
+        self.keyed.drain_into(&mut out);
+        self.holdover.drain_into(&mut out);
+        out
+    }
+
+    /// Whether the node's runs hold any node.
+    pub(crate) fn holds_creations(&self) -> bool {
+        !self.generation.is_empty() || !self.keyed.is_empty() || !self.holdover.is_empty()
+    }
+
+    /// Every node the node's runs hold.
+    pub(crate) fn creations(&self) -> impl Iterator<Item = &NodeRef> {
+        self.generation.iter().chain(self.keyed.iter()).chain(self.holdover.iter())
+    }
+
+    /// Removes one held node, wherever it is held.
+    pub(crate) fn remove_creation(&mut self, id: NodeId) -> Option<NodeRef> {
+        if let Some(at) = self.generation.iter().position(|member: &NodeRef| member.header().id == id) {
+            return Some(self.generation.swap_remove(at));
+        }
+        self.keyed.remove(id).or_else(|| self.holdover.remove(id))
     }
 
     /// The unreleased record a run, or the handover to the next run, holds for `epoch`.
@@ -358,11 +406,17 @@ pub(crate) trait AnyNode: Send + Sync + 'static {
     fn spawn_run(self: Arc<Self>);
     /// Drops the value where the ghost policy says so, and the body.
     fn release_payload(&self);
+    /// The node as `Any`, to recover its value type.
+    fn into_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync>;
 }
 
 impl<K: NodeValue> AnyNode for Node<K> {
     fn header(&self) -> &Header {
         &self.header
+    }
+
+    fn into_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync> {
+        self
     }
 
     fn spawn_run(self: Arc<Self>) {
@@ -435,7 +489,7 @@ impl<K: NodeValue> Drop for Node<K> {
         }
         sched.subscribers.clear();
         sched.created.clear();
-        let generation: Vec<NodeRef> = std::mem::take(&mut sched.generation);
+        let generation: Vec<NodeRef> = sched.release_all();
         let parents: Option<Vec<NodeRef>> = header.parents.get_mut().take();
         if let Some(list) = parents.as_ref() {
             for parent in list {

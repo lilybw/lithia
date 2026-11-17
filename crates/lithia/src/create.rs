@@ -12,6 +12,7 @@ use crate::context;
 use crate::epoch::Scope;
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
 use crate::ids::{self, NodeId};
+use crate::keyed::{self, Inputs, Key, Keyed};
 use crate::node::{Body, BoxFut, Header, Kind, Node, NodeRef, RateWindow, Sched, WeakNodeRef, phase};
 use crate::options::Options;
 use crate::run::{RunShared, Yielder};
@@ -52,6 +53,55 @@ fn runtime_for(kind: Kind, site: &Site) -> Option<Handle> {
     }
 }
 
+/// Whether a reclaimed node's body may write the same nodes the new captures would.
+fn same_targets(header: &Header, captured: &Captured) -> bool {
+    let mut wanted: Vec<NodeId> = captured
+        .0
+        .iter()
+        .filter(|(_, writes): &&(NodeRef, bool)| *writes)
+        .map(|(node, _): &(NodeRef, bool)| node.header().id)
+        .collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    let mut held: Vec<NodeId> =
+        header.targets.iter().filter_map(WeakNodeRef::upgrade).map(|node: NodeRef| node.header().id).collect();
+    held.sort_unstable();
+    held.dedup();
+    wanted == held
+}
+
+/// Hands a reclaimed node what the new creation brought: a source node its value, a body its
+/// captures, then a rerun (spec §10.1, Keyed nodes). Counts the returned handle as an anchor.
+fn refresh<K: NodeValue>(node: &Arc<Node<K>>, value: K, body: Option<Body<K>>, inputs: Inputs) {
+    let header: &Header = &node.header;
+    header.anchors.fetch_add(1, Ordering::SeqCst);
+    let runtime: Option<Handle> = header.runtime.clone();
+    match header.kind {
+        Kind::Source => {
+            // A write the node's `equals` may still find equal; a ghost is left alone.
+            let _ = node.write(false, move |_: &K| value);
+            return;
+        }
+        Kind::Derived => {}
+        Kind::AsyncSource => {
+            // The running block stops, and the new one runs under the next run id.
+            let next: u64 = header.runs.fetch_add(1, Ordering::SeqCst) + 1;
+            header.block_run.store(next, Ordering::SeqCst);
+        }
+    }
+    let old: Option<Body<K>> = std::mem::replace(&mut *node.body.lock(), body);
+    *header.inputs.lock() = Some(inputs);
+    let erased: NodeRef = node.clone();
+    if header.kind == Kind::AsyncSource {
+        protocol::kill_run(&erased);
+    }
+    context::record_refresh(&erased);
+    if let Some(old) = old {
+        crate::drops::drop_later(old, runtime.as_ref());
+    }
+    crate::drops::drop_later(value, runtime.as_ref());
+}
+
 fn new_node<K: NodeValue>(
     site: &'static Site,
     kind: Kind,
@@ -59,9 +109,27 @@ fn new_node<K: NodeValue>(
     captured: &Captured,
     value: K,
     body: Option<Body<K>>,
-    options: Options<K>,
+    mut options: Options<K>,
 ) -> Arc<Node<K>> {
     options.validate(site);
+    let (key, inputs): (Option<Key>, Option<Inputs>) = match options.keyed.take() {
+        None => (None, None),
+        Some(mut keyed) => {
+            if let Some(reclaimed) = keyed.reclaimed.take() {
+                let node: Arc<Node<K>> = keyed::typed(reclaimed);
+                if same_targets(&node.header, captured) {
+                    let (_, inputs): (Key, Inputs) = keyed.key(site);
+                    refresh(&node, value, body, inputs);
+                    return node;
+                }
+                // Its body would write other nodes now: a new node takes the key instead.
+                let erased: NodeRef = node;
+                keyed::unclaim(&erased);
+            }
+            let (key, inputs): (Key, Inputs) = Keyed::key(keyed, site);
+            (Some(key), Some(inputs))
+        }
+    };
     let runtime: Option<Handle> = runtime_for(kind, site);
     let mut parents: Vec<NodeRef> = Vec::with_capacity(deps.len());
     for dep in deps {
@@ -125,6 +193,10 @@ fn new_node<K: NodeValue>(
             writers: Mutex::new(Vec::new()),
             warn_first_run,
             under_way: AtomicBool::new(false),
+            value_type: std::any::TypeId::of::<K>(),
+            key,
+            inputs: Mutex::new(inputs),
+            block_run: AtomicU64::new(if kind == Kind::AsyncSource { 1 } else { 0 }),
         },
         value: ArcCell::new(Some(Arc::new(value))),
         body: Mutex::new(body),
@@ -140,15 +212,27 @@ fn new_node<K: NodeValue>(
         target.header().writers.lock().push(Arc::downgrade(&erased));
     }
     drop(targets);
+    let keyed: bool = erased.header().key.is_some();
+    if keyed && top_level {
+        crate::diag::key_outside_run(site);
+    }
     if let Some(creator) = creator_node.as_ref() {
         let mut guard: MutexGuard<'_, Sched> = creator.header().sched.lock();
         guard.created.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
         guard.created.push(Arc::downgrade(&erased));
+        let mut duplicate: bool = false;
         if !guard.closed {
             *erased.header().held_by.lock() = Some(Arc::downgrade(creator));
-            guard.generation.push(erased.clone());
+            if keyed {
+                duplicate = keyed::note_fresh(&mut guard, &erased);
+            } else {
+                guard.generation.push(erased.clone());
+            }
         }
         drop(guard);
+        if duplicate {
+            crate::diag::duplicate_key(site);
+        }
         settle_wait::bump();
     }
     drop(creator_node);

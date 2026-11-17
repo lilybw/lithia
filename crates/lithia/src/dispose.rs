@@ -100,7 +100,7 @@ fn teardown(node: &NodeRef) {
     let generation: Vec<NodeRef> = {
         let mut guard: MutexGuard<'_, crate::node::Sched> = header.sched.lock();
         guard.closed = true;
-        std::mem::take(&mut guard.generation)
+        guard.release_all()
     };
     let me: Option<NodeRef> = header.support.lock().take();
     if me.is_some() {

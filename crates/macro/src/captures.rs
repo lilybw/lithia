@@ -648,6 +648,16 @@ mod tests {
         assert_eq!(classes("match 1 { _ if a.set(1) => 0, _ => 1 }"), vec![("a".into(), Class::Write)]);
     }
 
+    #[test]
+    fn sees_keys_of_nested_effects() {
+        // A key closure's parameters name variables of the enclosing body, read by reference.
+        assert_eq!(
+            captured("effect!(|tick| *tick.get(), key = |row, user| (row.id, user.0))"),
+            vec!["tick", "row", "user"]
+        );
+        assert_eq!(captured("effect!(title.clone(), key = row.id)"), vec!["title", "row"]);
+    }
+
     fn classes(src: &str) -> Vec<(String, Class)> {
         let expr: Expr = syn::parse_str(src).expect("parses");
         let mut captures: Captures = Captures::new();
