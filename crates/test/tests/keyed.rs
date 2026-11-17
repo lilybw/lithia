@@ -62,6 +62,34 @@ async fn disposing_the_creator_frees_its_keyed_children() {
 }
 
 #[lithia::test]
+async fn disposing_a_creator_mid_run_frees_its_holdover() {
+    let make: SourceNode<bool> = effect!(true);
+    let gate: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
+    let parked: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let base: usize = lithia::test::live_nodes().await;
+    let creator: DerivedNode<()> = effect!(async |make| {
+        if *make.get() {
+            effect!(1u32, key = 0u8);
+        } else {
+            parked.fetch_add(1, Ordering::SeqCst);
+            gate.notified().await;
+        }
+    });
+    lithia::flush().await;
+    lithia::test::settled(&creator).await;
+    assert_eq!(lithia::test::live_nodes().await, base + 2);
+    make.set(false);
+    lithia::flush().await;
+    while count(&parked) == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    // The parked run did not reclaim the child, which waits in the holdover.
+    assert_eq!(lithia::test::live_nodes().await, base + 2);
+    lithia::dispose(&creator);
+    assert_eq!(lithia::test::live_nodes().await, base);
+}
+
+#[lithia::test]
 async fn a_scoped_keyed_child_is_never_reclaimed() {
     let tick: SourceNode<u32> = effect!(0);
     let rerun: SourceNode<u32> = effect!(0);
