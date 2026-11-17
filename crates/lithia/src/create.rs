@@ -99,7 +99,10 @@ fn refresh<K: NodeValue>(node: &Arc<Node<K>>, value: K, body: Option<Body<K>>, i
     if let Some(old) = old {
         crate::drops::drop_later(old, runtime.as_ref());
     }
-    crate::drops::drop_later(value, runtime.as_ref());
+    // The unused initial value; only one whose drop does something leaves this thread.
+    if std::mem::needs_drop::<K>() {
+        crate::drops::drop_later(value, runtime.as_ref());
+    }
 }
 
 fn new_node<K: NodeValue>(

@@ -522,6 +522,73 @@ fn rebuild_children() -> Row {
     }
 }
 
+/// One row of the keyed benchmark.
+#[derive(Clone, PartialEq)]
+struct Item {
+    id: u64,
+    value: u64,
+}
+
+/// A list node mapping 100 rows to a derived node each, rerun with one kind of edit, with and
+/// without `key = row.id`: the time per list rerun, children included.
+fn keyed_list(keyed: bool, edit: fn(&mut Vec<Item>)) -> Duration {
+    const ROWS: u64 = 100;
+    const ROUNDS: u64 = 50;
+    let rt: tokio::runtime::Runtime = runtime(2);
+    rt.block_on(lithia_task(async move {
+        let mut data: Vec<Item> = (0..ROWS).map(|id: u64| Item { id, value: id }).collect();
+        let rows: SourceNode<Vec<Item>> = effect!(data.clone());
+        let k: SourceNode<u64> = effect!(1);
+        let list: DerivedNode<Vec<DerivedNode<u64>>> = if keyed {
+            effect!(|rows| {
+                rows.get()
+                    .iter()
+                    .map(|item: &Item| effect!(|k| item.value * *k.get(), key = item.id))
+                    .collect::<Vec<DerivedNode<u64>>>()
+            })
+        } else {
+            effect!(|rows| rows
+                .get()
+                .iter()
+                .map(|item: &Item| effect!(|k| item.value * *k.get()))
+                .collect::<Vec<DerivedNode<u64>>>())
+        };
+        lithia::flush().await;
+        let start: Instant = Instant::now();
+        for _ in 0..ROUNDS {
+            edit(&mut data);
+            rows.set(data.clone());
+            lithia::flush().await;
+        }
+        let elapsed: Duration = start.elapsed();
+        drop(list);
+        elapsed / ROUNDS as u32
+    }))
+}
+
+/// Keyed rows against rows rebuilt on every list rerun, for four kinds of edit (10.1, Keyed nodes).
+fn keyed_rows() -> Row {
+    let edits: [(&str, fn(&mut Vec<Item>)); 4] = [
+        ("unchanged", |_: &mut Vec<Item>| {}),
+        ("one changed", |rows: &mut Vec<Item>| rows[50].value += 1),
+        ("reversed", |rows: &mut Vec<Item>| rows.reverse()),
+        ("all changed", |rows: &mut Vec<Item>| rows.iter_mut().for_each(|item: &mut Item| item.value += 1)),
+    ];
+    let parts: Vec<String> = edits
+        .iter()
+        .map(|(name, edit): &(&str, fn(&mut Vec<Item>))| {
+            let rebuilt: Duration = keyed_list(false, *edit);
+            let keyed: Duration = keyed_list(true, *edit);
+            format!("{name}: {} rebuilt, {} keyed", per(rebuilt, 1), per(keyed, 1))
+        })
+        .collect();
+    Row {
+        name: "Keyed rows (v0.3.1)",
+        result: format!("100 rows, per list rerun: {}", parts.join("; ")),
+        informs: "What reclaiming children by key saves over rebuilding them (10.1, Keyed nodes)",
+    }
+}
+
 /// The latency of a last-handle drop on a node support still holds, through the helper idiom
 /// `helper(&x.accessor())`, on one thread and on two at once (sweep-lock contention).
 fn last_handle_drops() -> Row {
@@ -595,6 +662,7 @@ fn main() {
         creation_and_sweep(),
         rebuild_children(),
         last_handle_drops(),
+        keyed_rows(),
     ];
     println!("| Benchmark | Result | Informs |");
     println!("|---|---|---|");
