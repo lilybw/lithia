@@ -17,7 +17,7 @@ async fn main() {
 }
 ```
 
-The design is specified in [`docs/spec`](docs/spec/LITHIA_design_spec_v0.3.0.md) (v0.3.0, also as PDF); implementation status
+The design is specified in [`docs/spec`](docs/spec/LITHIA_design_spec_v0.3.1.md) (v0.3.1, also as PDF); implementation status
 and decisions are tracked in [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 Requires Rust 1.95 or newer (edition 2024).

@@ -1,7 +1,7 @@
 # lithia implementation progress
 
-Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.3.0.md` (PDF alongside), which folds in
-the v0.3.0 lifetime migration and everything its implementation taught; v0.2.5 and v0.2.4 are kept for reference.
+Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.3.1.md` (PDF alongside), which adds keyed
+nodes to v0.3.0's lifetime rule; v0.3.0, v0.2.5 and v0.2.4 are kept for reference.
 
 ## Layout
 
@@ -9,13 +9,13 @@ the v0.3.0 lifetime migration and everything its implementation taught; v0.2.5 a
 |---|---|---|
 | `crates/lithia` | `lithia` | Engine and public API: nodes, handles, epochs, scheduling protocol, drops, diagnostics; re-exports the macros; `lithia::test` utilities |
 | `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
-| `crates/validation` | `lithia-validation` | Spec §13 cases, verbatim (`tests/cases.rs` A–AG, `tests/support.rs` AI–BC, `tests/compile.rs` AH) |
+| `crates/validation` | `lithia-validation` | Spec §13 cases, verbatim (`tests/cases.rs` A–AG, `tests/support.rs` AI–BC, `tests/keyed.rs` BD–BK, `tests/compile.rs` AH) |
 | `crates/test` | `lithia-test` | Edge-case unit and integration tests |
 | `crates/bench` | `lithia-bench` | Spec §15 benchmarks |
 
 ## Validation cases (spec §13)
 
-All of A–BC pass (55 cases). Stress for v0.3.0: every test binary (cases, both `support` files, and the
+All of A–BK pass (63 cases). Stress for v0.3.0: every test binary (cases, both `support` files, and the
 seven other `lithia-test` files) 400/400 release runs, 200/200 debug runs, 250/250 single-core runs.
 
 | Case | Status | Case | Status |
@@ -45,6 +45,10 @@ creations under a disposed body, AS `move` bindings, AT per-request memos and `.
 nothing held, AV support through a sent handle, AW self-support, AX child writing creator's parent, AY field
 paths, AZ escaping `Accessor`, BA scoped child in a value, BB scoped field, BC both kinds of source alike: all pass.
 
+Cases BD–BK (v0.3.1, `tests/keyed.rs`): BD rows keep their nodes, BE keyed source nodes take new values, BF new
+parents make a new node, BG duplicate keys, BH keyed async nodes, BI a superseded creator hands its keyed nodes on,
+BJ a key outside a body, BK captures without `PartialEq`: all pass.
+
 ## Spec sections
 
 | Section | Status | Notes |
@@ -52,14 +56,15 @@ paths, AZ escaping `Accessor`, BA scoped child in a value, BB scoped field, BC b
 | §3 Public API | done | all handles, views, traits, free functions, `lithia::test` |
 | §4.1–4.5 effect! expansion | done | deps, capture, site, init, generator lowering |
 | §4.6 compile errors | done | every message covered by `tests/ui` (trybuild) |
+| §4.7 keyed creation | done | v0.3.1: probes, lookup, `NodeKey` (`crates/lithia/src/keyed.rs`, `crates/macro/src/effect.rs`) |
 | §5 Node model | done | |
 | §6 Writes, batching, defer, equals | done | |
 | §7 Propagation | done | see protocol notes below |
 | §8 Pending/async/generators | done | |
 | §9 Failure, fragility | done | |
-| §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/support.rs`, `capture.rs`) |
+| §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/support.rs`, `capture.rs`); v0.3.1: keyed nodes, holdover (`keyed.rs`, `create.rs`) |
 | §11 Concurrency, scopes | done | fast path (§11.2) left out, as v0 allows |
-| §11.4 step 8 loom | done | 32 models, bound 3 by default; see "Model checking" below |
+| §11.4 step 8 loom | done | 35 models, bound 3 by default; see "Model checking" below |
 | §11.4 step 8 TLA+ | pending | open question in §17 |
 | §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 1000/s); first-run, growth and unread-memo warnings |
 | §15 Benchmarks | done | results and observations in `docs/BENCHMARKS.md` |
@@ -79,7 +84,7 @@ paths, AZ escaping `Accessor`, BA scoped child in a value, BB scoped field, BC b
 
 - Reflow of a source node re-emits its value to its children but sends nothing to `changes()`, since the value did not change.
 - Diagnostics raised while a scheduling lock is held are gathered and emitted after it is released (spec §11.4 step 1).
-- `lithia-test` holds 65 edge-case tests across values, propagation, async/generators, lifetime, capture, diagnostics, runtimes and support (`tests/support.rs`).
+- `lithia-test` holds 75 edge-case tests across values, propagation, async/generators, lifetime, capture, diagnostics, runtimes, support (`tests/support.rs`) and keyed nodes (`tests/keyed.rs`).
 
 ## Model checking (loom)
 
@@ -88,11 +93,14 @@ paths, AZ escaping `Accessor`, BA scoped child in a value, BB scoped field, BC b
   bodies on a model executor (`crates/lithia/src/model.rs`) instead of tokio.
 - Models live in `crates/test/tests/loom.rs`: Cases A, B, C, D, E, G, H, J, M, N, P, R, T, V, W, X,
   plus concurrent outside writes, a write during a run, disposal during a run, and a generator; and since
-  v0.3.0 twelve lifetime models (spec §11.4), which assert on `ModelScope::live()`.
-- Default preemption bound 3: all 32 explore ~310 000 interleavings in ~30 s on two test threads. Bound 4:
-  ~4.4 million in ~7 min, all pass.
+  v0.3.0 twelve lifetime models (spec §11.4), which assert on `ModelScope::live()`; v0.3.1 adds three for keyed
+  nodes (a reclaim racing a last-handle drop, a disposal during a reclaim, a supersede handing keyed nodes on).
+- Default preemption bound 3: all 35 explore ~340 000 interleavings in ~31 s on two test threads. Bound 4:
+  ~4.7 million in ~7 min, all pass.
 - Sweeps use ordered maps and loom builds always take the scoped path, so models stay deterministic when
   several run in one process.
+- Mutation checks for v0.3.1 keyed nodes: 10 mutations; nine are caught (spec §11.4 table), and leaving the
+  holdover out of support's edges is not, as the spec explains (it can only delay a let-go).
 - Mutation checks for v0.3.0 (spec §11.4 table): 19 mutations, each applied as a patch and reverted; each
   fails a case, edge test or model. Dropping the walk's references under the sweep lock fails nothing (the
   operation context defers the sweeps it raises), and the rewritten Case J model does not catch v0.2.5's
@@ -128,6 +136,17 @@ paths, AZ escaping `Accessor`, BA scoped child in a value, BB scoped field, BC b
   into `main`. Its "Changes since v0.2.5" table says for each change whether the migration or the
   implementation found it; the migration doc's section 17 lists where the implementation corrected it.
 - Exported to `docs/spec/` as Markdown and PDF (pandoc + Chromium); the v0.2.5 Claude doc is not updated.
+
+## Spec v0.3.1 (keyed nodes)
+
+- `key = expr` or `key = |a, b| expr` on `effect!` inside a body: the creator's next run reclaims the node with
+  the same key, site, kind, value type and parents instead of creating one, and reruns it only if a capture
+  changed. Keyed nodes of a released generation wait in the creator's holdover until a run ends unsuperseded.
+- Captures are probed by reference before any clone (handle by node, `PartialEq` by value, `Arc` by pointer,
+  else opaque); a changed derived node is refreshed in place and seeded to rerun, an async block restarts,
+  a plain source node is written. Different write targets give a new node. Options stay as first created.
+- Implemented on branch `v0.3.1-keyed`, then written into the spec, which says what the implementation settled.
+- Parked: option C, a keyed collection node (spec §16).
 
 ## Design migration to v0.3.0 (ownership)
 
@@ -166,7 +185,8 @@ Five passes from `TODO.md`, run in series:
 
 ## Next steps
 
-1. Merge `release/v0.3.0` into `main`, then the release configuration and binaries from `TODO.md`.
+1. Merge `v0.3.1-keyed` (which builds on `release/v0.3.0`) into `main`, then the release configuration and binaries from `TODO.md`.
 2. A TLA+ specification of the protocol and of lifetimes (§11.4 step 8, §16, §17), which the spec asks for before shipping.
 3. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
 4. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
+5. Decide the keyed open questions (§17): options of a later creation, and whether duplicate keys warn.
