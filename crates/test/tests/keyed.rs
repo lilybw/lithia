@@ -94,9 +94,9 @@ async fn a_new_write_target_makes_a_new_node() {
     let to_x: SourceNode<bool> = effect!(true);
     let tick: SourceNode<u32> = effect!(0);
     let firsts: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let _writer: DerivedNode<()> = effect!(|to_x| {
+    let writer: DerivedNode<Option<DerivedNode<()>>> = effect!(|to_x| {
         let target: SourceNode<u32> = if *to_x.get() { x.clone() } else { y.clone() };
-        effect!(
+        Some(effect!(
             |tick| {
                 if *tick.get() == 0 {
                     firsts.fetch_add(1, Ordering::SeqCst);
@@ -104,16 +104,19 @@ async fn a_new_write_target_makes_a_new_node() {
                 target.set(*tick.get());
             },
             key = 0u8
-        );
+        ))
     });
     lithia::flush().await;
+    let first: DerivedNode<()> = (*writer.get()).clone().expect("writer");
     to_x.set(false);
     lithia::flush().await;
-    // Its body would write `y` now, a node it has no edge to: a new node was created.
+    // Its body would write `y` now, a node it has no edge to: a new node took the key, and the
+    // first one, held here, still writes `x`.
     assert_eq!(count(&firsts), 2);
     tick.set(5);
     lithia::flush().await;
-    assert_eq!((*x.get(), *y.get()), (0, 5));
+    assert_eq!((*x.get(), *y.get()), (5, 5));
+    drop(first);
 }
 
 #[lithia::test]
@@ -179,14 +182,21 @@ fn keyed_source<T: Clone + PartialEq + Send + Sync + 'static>(value: T) -> Sourc
 async fn one_site_with_two_value_types_never_mixes_them() {
     let rerun: SourceNode<u32> = effect!(0);
     let pair: DerivedNode<Option<(SourceNode<u32>, SourceNode<String>)>> = effect!(|rerun| {
-        let _ = rerun.get();
-        Some((keyed_source(1u32), keyed_source("x".to_string())))
+        // The second run creates them the other way round, so only the value type tells them apart.
+        if *rerun.get() == 0 {
+            let number: SourceNode<u32> = keyed_source(1u32);
+            Some((number, keyed_source("x".to_string())))
+        } else {
+            let text: SourceNode<String> = keyed_source("x".to_string());
+            Some((keyed_source(1u32), text))
+        }
     });
     lithia::flush().await;
     let (number, text): (SourceNode<u32>, SourceNode<String>) = (*pair.get()).clone().expect("pair");
     let (number_value, text_value): (Arc<u32>, Arc<String>) = (number.get(), text.get());
     rerun.set(1);
     lithia::flush().await;
+    assert!(matches!(lithia::status(&pair), lithia::Status::Ready));
     let (again_number, again_text): (SourceNode<u32>, SourceNode<String>) = (*pair.get()).clone().expect("pair");
     assert!(Arc::ptr_eq(&number_value, &again_number.get()));
     assert!(Arc::ptr_eq(&text_value, &again_text.get()));
