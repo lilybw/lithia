@@ -854,6 +854,34 @@ fn a_replacement_run_is_not_replaced_before_its_item() {
     });
 }
 
+/// A writer cut on its own write reruns once the epoch has settled, wherever its runs land: it
+/// ends on the settled value and writes nothing more (spec §7.4).
+#[test]
+fn a_cut_writer_reruns_after_its_epoch() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (x, over): (SourceNode<i32>, DerivedNode<bool>) = scope.batch(|| {
+                let x: SourceNode<i32> = effect!(0);
+                let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
+                let over: DerivedNode<bool> = effect!(|doubled| {
+                    let over: bool = *doubled.get() > 20;
+                    if over {
+                        x.set(10);
+                    }
+                    over
+                });
+                (x, over)
+            });
+            scope.flush();
+            scope.batch(|| x.set(15));
+            scope.flush();
+            assert_eq!((*x.get(), *over.get()), (10, false));
+            assert!(model::quiet(&x));
+        });
+    });
+}
+
 /// A parent's and its child's last handles drop at once: both are examined, and both freed.
 #[test]
 fn a_parent_and_its_child_drop_their_last_handles_at_once() {

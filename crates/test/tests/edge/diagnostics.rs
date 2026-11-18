@@ -114,8 +114,12 @@ async fn cuts_warn_for_value_holders_and_debug_for_effects() {
 async fn an_unattributed_loop_triggers_the_rerun_rate_warning() {
     let _ = events();
     let n: SourceNode<u32> = effect!(0);
+    // A task the body spawns writes with an empty writer set, so nothing attributes this loop.
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let holder: DerivedNode<Option<DerivedNode<()>>> = effect!(|n| Some(effect!(|n| n.update(|v: &u32| v + 1))));
+    let holder: DerivedNode<()> = effect!(|n| {
+        let again: SourceNode<u32> = (*n).clone();
+        lithia::spawn(async move { again.update(|v: &u32| v + 1) });
+    });
     let _ = tokio::time::timeout(Duration::from_millis(100), lithia::flush()).await;
     let event: Option<Captured> =
         find(Level::WARN, &["reran faster than the configured rate", &line], Duration::from_secs(5)).await;

@@ -34,6 +34,10 @@ pub(crate) struct RunShared {
     yielded: AtomicBool,
     /// Newest change stamp of the node's own items during the current poll.
     stamp: AtomicU64,
+    /// Creations so far at each site, by site address: an unkeyed node's place in its lineage.
+    creations: Mutex<Vec<(usize, u64)>>,
+    /// Nodes this run's writes and reflows leave alone: a cut writer's rerun (spec §7.4).
+    suppress: Mutex<Vec<NodeId>>,
 }
 
 impl RunShared {
@@ -49,6 +53,33 @@ impl RunShared {
             first_done: AtomicBool::new(false),
             yielded: AtomicBool::new(false),
             stamp: AtomicU64::new(0),
+            creations: Mutex::new(Vec::new()),
+            suppress: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn set_suppress(&self, nodes: Vec<NodeId>) {
+        *self.suppress.lock() = nodes;
+    }
+
+    /// Whether this run leaves writes to `node` alone.
+    pub(crate) fn suppresses(&self, node: NodeId) -> bool {
+        self.suppress.lock().contains(&node)
+    }
+
+    /// The place of the next node this run creates at `site` among its creations there.
+    pub(crate) fn place(&self, site: &'static crate::Site) -> u64 {
+        let at: usize = std::ptr::from_ref(site).addr();
+        let mut guard: MutexGuard<'_, Vec<(usize, u64)>> = self.creations.lock();
+        match guard.iter_mut().find(|(known, _): &&mut (usize, u64)| *known == at) {
+            Some((_, count)) => {
+                *count += 1;
+                *count - 1
+            }
+            None => {
+                guard.push((at, 1));
+                0
+            }
         }
     }
 

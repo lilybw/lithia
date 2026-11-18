@@ -47,6 +47,16 @@ pub(crate) struct Work {
     released: Vec<NodeRef>,
     /// Created nodes their creator gated, to start again once it has moved on.
     resumes: Vec<crate::node::WeakNodeRef>,
+    /// Writers cut in an epoch, to rerun once it has settled.
+    cut_reruns: Vec<CutRerun>,
+}
+
+/// A writer the writer check refused in `epoch`: it reruns once the epoch has settled, leaving
+/// alone what it wrote on the chain (spec §7.4).
+struct CutRerun {
+    node: crate::node::WeakNodeRef,
+    epoch: std::sync::Weak<Epoch>,
+    writers: WriterSet,
 }
 
 /// Carries out gathered work: releases, spawns and wakes, then token closes.
@@ -73,6 +83,11 @@ pub(crate) fn drain_deferred(mut work: Work) -> Vec<Arc<Epoch>> {
     }
     for diag in std::mem::take(&mut work.diags) {
         diag.emit();
+    }
+    for rerun in std::mem::take(&mut work.cut_reruns) {
+        if let Some(epoch) = rerun.epoch.upgrade() {
+            epoch.on_settle(Box::new(move || rerun_cut(rerun)));
+        }
     }
     {
         // The step's other references and its released generations go before its spawns,
@@ -165,6 +180,35 @@ pub(crate) fn frame(root: &NodeRef, epoch: &Arc<Epoch>, work: &mut Work) {
     }
 }
 
+/// Reruns a cut writer in a child of the settled epoch, as a forced rerun on the chain without
+/// itself, leaving alone what it wrote there; one cut again reruns once more, with more left alone.
+fn rerun_cut(rerun: CutRerun) {
+    let (Some(node), Some(parent)) = (rerun.node.upgrade(), rerun.epoch.upgrade()) else {
+        return;
+    };
+    let header: &Header = node.header();
+    if header.is_ghost() {
+        return;
+    }
+    let written: Vec<NodeId> = parent.written_by(header.writer);
+    let epoch: Arc<Epoch> = Epoch::child(&parent);
+    {
+        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        for id in written {
+            if !guard.suppress.contains(&id) {
+                guard.suppress.push(id);
+            }
+        }
+    }
+    let mut work: Work = Work::default();
+    seed(&node, &epoch, &rerun.writers.without(Some(header.writer)), Seed::Rerun, &mut work);
+    evaluate(&node, &mut work);
+    work.keep.push(node);
+    drop(parent);
+    drain(work);
+    epoch.close_token();
+}
+
 /// Releases every child of `from` that waits on it in `epoch`.
 fn release_children(
     from: &NodeRef,
@@ -189,7 +233,7 @@ fn release_children(
                 if origin.is_some() {
                     entry.origin = origin;
                 }
-                if entry.writers.contains(header.id) {
+                if entry.writers.contains(header.writer) {
                     entry.cut = true;
                 }
                 if entry.waiting.is_empty() {
@@ -263,6 +307,11 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     };
     if entry.cut {
         work.diags.push(Diag::Cut { writer: header.site, is_unit: header.is_unit, written: entry.origin });
+        work.cut_reruns.push(CutRerun {
+            node: Arc::downgrade(node),
+            epoch: Arc::downgrade(&entry.epoch),
+            writers: entry.writers.clone(),
+        });
         settle(node, sched, epoch, work);
         return;
     }
@@ -382,6 +431,9 @@ enum Seed {
 
 fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, work: &mut Work) {
     let header: &Header = node.header();
+    // The writer check: a node whose lineage already wrote on the chain does not run on it, so a
+    // loop through creation is cut like any other (7.4).
+    let cut: bool = writers.contains(header.writer);
     let created: bool = {
         let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
@@ -398,6 +450,7 @@ fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, wor
                     Seed::Rerun => entry.force = true,
                 }
                 entry.writers.union(writers);
+                entry.cut |= cut;
                 false
             }
             None => {
@@ -409,6 +462,7 @@ fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, wor
                     Seed::Rerun => entry.force = true,
                 }
                 entry.writers = writers.clone();
+                entry.cut = cut;
                 sched.entries.insert(epoch.id, entry);
                 !owes
             }
@@ -427,7 +481,7 @@ fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet, stamp: u64
         if header.is_ghost() {
             return;
         }
-        let cut: bool = chain.contains(header.id);
+        let cut: bool = chain.contains(header.writer);
         match sched.entries.get_mut(&epoch.id) {
             Some(entry) => {
                 entry.reflow = true;
@@ -496,6 +550,13 @@ pub(crate) fn deliver_into(
     let reruns: Vec<NodeRef> = upgrade_nodes(reruns);
     let refreshes: Vec<NodeRef> = upgrade_nodes(refreshes);
     let mut work: Work = Work::default();
+    if let Some(writer) = writer {
+        for (epoch, _) in targets {
+            for (node, _) in writes.iter().chain(reflows.iter()) {
+                epoch.record_write(writer, node.header().id);
+            }
+        }
+    }
 
     // Framing: the whole downstream region opens its entries before anything is released.
     for (epoch, base) in targets {
@@ -597,7 +658,7 @@ pub(crate) fn deliver_children(
         .map(|(epoch, writers): &(Arc<Epoch>, WriterSet)| (Epoch::child(epoch), writers.clone()))
         .collect();
     let own: Option<OwnItem<'_>> = (own_stamp > 0).then_some(OwnItem { node, stamp: own_stamp });
-    deliver_into(batch, &children, Some(node.header().id), own);
+    deliver_into(batch, &children, Some(node.header().writer), own);
     children.into_iter().map(|(epoch, _)| epoch).collect()
 }
 
@@ -804,6 +865,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 };
                 shared.set_id(id);
                 shared.set_scope(served[0].epoch.scope.clone());
+                shared.set_suppress(std::mem::take(&mut sched.suppress));
                 header.set_bits(phase::PENDING);
                 header.clear_bits(phase::FAILED);
                 header.failure.store(None);
@@ -886,7 +948,7 @@ pub(crate) fn after_poll(
     let mut pending: Vec<Arc<Epoch>> = Vec::new();
     if first {
         shared.set_first_done();
-        deliver_into(batch, &served, Some(header.id), None);
+        deliver_into(batch, &served, Some(header.writer), None);
     } else {
         let stamp: u64 = if cancelled { 0 } else { own_stamp };
         pending.extend(deliver_children(node, &served, batch, stamp));

@@ -5,6 +5,8 @@
 
 #![allow(clippy::type_complexity)]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use lithia::{Accessor, DerivedNode, SourceNode, effect};
@@ -234,4 +236,82 @@ async fn concurrent_writers_reach_eventual_consistency() {
     }
     let expected: u64 = (1..=8u64).map(|k: u64| 200 * k).sum();
     assert_eq!(*total.get(), expected, "once writes stop, every value matches its inputs");
+}
+
+#[lithia::test]
+async fn siblings_from_one_site_write_as_separate_lineages() {
+    let go: SourceNode<u32> = effect!(0);
+    let shared: SourceNode<u32> = effect!(0);
+    let out: SourceNode<u32> = effect!(0);
+    let _creator: DerivedNode<()> = effect!(|go| {
+        let _ = go.get();
+        for first in [true, false] {
+            // One site, two places in each run: the second reruns on the first's write.
+            effect!(|go, shared| {
+                if *first {
+                    shared.set(*go.get() + 1);
+                } else {
+                    out.set(*shared.get() * 10);
+                }
+            });
+        }
+    });
+    lithia::flush().await;
+    go.set(5);
+    lithia::test::settled(&go).await;
+    assert_eq!((*shared.get(), *out.get()), (6, 60));
+}
+
+#[lithia::test]
+async fn a_loop_through_creation_is_cut_at_the_lineage() {
+    let n: SourceNode<u32> = effect!(0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _holder: DerivedNode<()> = effect!(|n| {
+        runs.fetch_add(1, Ordering::SeqCst);
+        effect!(|n| n.update(|v: &u32| v + 1));
+    });
+    lithia::flush().await;
+    // The first child's write reruns the holder once; the child that run makes is the same
+    // lineage, so its first run is cut.
+    assert_eq!((*n.get(), runs.load(Ordering::SeqCst)), (1, 2));
+}
+
+#[lithia::test]
+async fn a_cut_writer_reruns_once_its_epoch_settles() {
+    let x: SourceNode<i32> = effect!(0);
+    let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let over: DerivedNode<bool> = effect!(|doubled| {
+        runs.fetch_add(1, Ordering::SeqCst);
+        let over: bool = *doubled.get() > 20;
+        if over {
+            x.set(10); // without `equals`, every write propagates: a loop the writer check cuts
+        }
+        over
+    });
+    lithia::flush().await;
+    x.set(15);
+    lithia::flush().await;
+    // Cut on its own write, it reran once the epoch settled, saw 20, and wrote nothing.
+    assert_eq!((*x.get(), *doubled.get(), *over.get()), (10, 20, false));
+    assert_eq!(runs.load(Ordering::SeqCst), 3);
+}
+
+#[lithia::test]
+async fn a_cut_writer_s_rerun_leaves_alone_what_it_wrote() {
+    let x: SourceNode<i32> = effect!(0);
+    let writes: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let bump: DerivedNode<i32> = effect!(|x| {
+        let seen: i32 = *x.get();
+        if seen > 0 {
+            writes.fetch_add(1, Ordering::SeqCst);
+            x.set(seen + 1); // always writes: the rerun's write is left alone, so the loop ends
+        }
+        seen
+    });
+    lithia::flush().await;
+    x.set(1);
+    lithia::flush().await;
+    assert_eq!((*x.get(), *bump.get()), (2, 2));
+    assert_eq!(writes.load(Ordering::SeqCst), 2);
 }

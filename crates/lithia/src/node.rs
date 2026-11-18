@@ -128,6 +128,9 @@ pub(crate) struct Header {
     pub(crate) inputs: Mutex<Option<Inputs>>,
     /// The run id an async source block may run under; a write or a new block moves `runs` past it.
     pub(crate) block_run: AtomicU64,
+    /// The identity it writes under in writer sets: its id, or for a node created in a run, its
+    /// lineage, which the same creation in the creator's next run shares (spec §7.4).
+    pub(crate) writer: NodeId,
     /// Whether support holds the node while an anchor reaches it: a top-level node with parents.
     pub(crate) supportable: bool,
     /// A node its creator has yet to finish deciding: being let go of, in the holdover, or being
@@ -171,6 +174,8 @@ pub(crate) struct Sched {
     pub(crate) failed_by_fragility: bool,
     /// Nodes this node created that wait for it to decide them before they run.
     pub(crate) gated: Vec<(NodeId, WeakNodeRef)>,
+    /// Nodes the next run must not write: what a cut writer already wrote in the epoch (spec §7.4).
+    pub(crate) suppress: Vec<NodeId>,
 }
 
 impl Sched {
@@ -192,6 +197,7 @@ impl Sched {
             releasing: false,
             failed_by_fragility: false,
             gated: Vec::new(),
+            suppress: Vec::new(),
         }
     }
 

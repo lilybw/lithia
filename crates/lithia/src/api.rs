@@ -108,6 +108,10 @@ pub fn try_reflow<N: Reflow>(node: &N) -> Result<(), Ghosted> {
     context::assert_not_in_closure("lithia::reflow");
     let handle: NodeHandle = node.__lithia_reflow_node();
     let header: &Header = handle.0.header();
+    if context::suppressed(header.id) {
+        // A cut writer's rerun: it reflowed this node already in the epoch it was cut in.
+        return if header.is_ghost() { Err(Ghosted) } else { Ok(()) };
+    }
     let stamp: u64 = {
         let _write: MutexGuard<'_, ()> = header.write.lock();
         if header.is_ghost() {

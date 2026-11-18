@@ -130,6 +130,17 @@ fn refresh<K: NodeValue>(
     }
 }
 
+/// A lineage's writer identity: the creator's, the site, and the key or place among the site's
+/// creations in a run; the top bit keeps it apart from node ids.
+fn lineage(creator: NodeId, site: &'static Site, place: (u8, u64)) -> NodeId {
+    use std::hash::{Hash, Hasher};
+    let mut hasher: std::hash::DefaultHasher = std::hash::DefaultHasher::new();
+    creator.hash(&mut hasher);
+    std::ptr::from_ref(site).addr().hash(&mut hasher);
+    place.hash(&mut hasher);
+    hasher.finish() | (1 << 63)
+}
+
 fn new_node<K: NodeValue>(
     site: &'static Site,
     kind: Kind,
@@ -179,6 +190,17 @@ fn new_node<K: NodeValue>(
         }
     }
     let creator_node: Option<NodeRef> = run.as_ref().and_then(|r: &Arc<RunShared>| r.node.upgrade());
+    let id: NodeId = ids::next_node_id();
+    let writer: NodeId = match (&run, &creator_node) {
+        (Some(run), Some(creator)) => {
+            let place: (u8, u64) = match &key {
+                Some(key) => (1, key.hash),
+                None => (0, run.place(site)),
+            };
+            lineage(creator.header().writer, site, place)
+        }
+        _ => id,
+    };
     let closed: bool = creator_node.as_ref().is_some_and(|c: &NodeRef| c.header().sched.lock().closed);
     let held: bool = creator_node.is_some() && !closed;
     let top_level: bool = run.is_none();
@@ -189,7 +211,8 @@ fn new_node<K: NodeValue>(
     scope.live.fetch_add(1, Ordering::SeqCst);
     let node: Arc<Node<K>> = Arc::new(Node {
         header: Header {
-            id: ids::next_node_id(),
+            id,
+            writer,
             site,
             creator,
             kind,

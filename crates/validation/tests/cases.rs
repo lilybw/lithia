@@ -372,15 +372,13 @@ async fn case_r_equal_parent_stops_propagation() {
     assert_eq!(*runs.get(), 1); // `_e` was released as unchanged
 }
 
-// Case S: a loop through node creation spins.
+// Case S: a loop through node creation is cut.
 #[lithia::test]
 async fn case_s_loop_through_creation() {
     let n: SourceNode<u32> = effect!(0);
     let _holder: DerivedNode<Option<DerivedNode<()>>> = effect!(|n| { Some(effect!(|n| n.update(|v: &u32| v + 1))) });
-    let spun: Result<(), tokio::time::error::Elapsed> =
-        tokio::time::timeout(Duration::from_millis(50), lithia::flush()).await;
-    assert!(spun.is_err()); // creating a node is not a write, so nothing cuts this loop
-    assert!(*n.get() > 1); // it keeps going, and the rerun-rate warning fires (12)
+    lithia::flush().await; // returns: the child the rerun makes writes under the first child's lineage
+    assert_eq!(*n.get(), 1);
 }
 
 // Case T: a refused writer releases its children.

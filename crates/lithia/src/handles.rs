@@ -123,8 +123,12 @@ impl<K: NodeValue> Node<K> {
     /// Applies a write to a source node: a run whose only item is the new value (spec §6.1).
     pub(crate) fn write(self: &Arc<Self>, guarded: bool, compute: impl FnOnce(&K) -> K) -> Result<(), Ghosted> {
         context::assert_not_in_closure("a lithia write");
-        let _creations: ClosureCreations = ClosureCreations::new();
         let header: &Header = &self.header;
+        if context::suppressed(header.id) {
+            // A cut writer's rerun: it wrote this node already in the epoch it was cut in.
+            return if header.is_ghost() { Err(Ghosted) } else { Ok(()) };
+        }
+        let _creations: ClosureCreations = ClosureCreations::new();
         let mut replaced: Option<Arc<K>> = None;
         let mut discarded: Option<K> = None;
         let stamp: Option<u64> = {

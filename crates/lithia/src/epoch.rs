@@ -10,7 +10,7 @@ use crate::sync::{AtomicUsize, Mutex, MutexGuard};
 use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
 
-use crate::ids::{EpochId, next_epoch_id, next_scope_id};
+use crate::ids::{EpochId, NodeId, next_epoch_id, next_scope_id};
 
 /// Root of a subtree of epochs: a lithia task, or any other task or thread.
 pub(crate) struct Scope {
@@ -90,6 +90,8 @@ pub(crate) struct Epoch {
     sub: AtomicUsize,
     notify: Notify,
     hooks: Mutex<Hooks>,
+    /// Writes runs delivered into this epoch, as (writer, written node), for cut reruns (spec §7.4).
+    writes: Mutex<Vec<(NodeId, NodeId)>>,
 }
 
 impl Epoch {
@@ -114,7 +116,31 @@ impl Epoch {
             sub: AtomicUsize::new(1),
             notify: Notify::new(),
             hooks: Mutex::new(Hooks { settled: false, list: Vec::new() }),
+            writes: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Records that `writer`'s run wrote `written` in this epoch.
+    pub(crate) fn record_write(&self, writer: NodeId, written: NodeId) {
+        let mut guard: MutexGuard<'_, Vec<(NodeId, NodeId)>> = self.writes.lock();
+        if !guard.contains(&(writer, written)) {
+            guard.push((writer, written));
+        }
+    }
+
+    /// The nodes `writer` wrote in this epoch and the epochs it descends from.
+    pub(crate) fn written_by(&self, writer: NodeId) -> Vec<NodeId> {
+        let mut out: Vec<NodeId> = Vec::new();
+        let mut at: Option<&Epoch> = Some(self);
+        while let Some(epoch) = at {
+            for (by, written) in epoch.writes.lock().iter() {
+                if *by == writer && !out.contains(written) {
+                    out.push(*written);
+                }
+            }
+            at = epoch.parent.as_deref();
+        }
+        out
     }
 
     /// Counts one more open entry.

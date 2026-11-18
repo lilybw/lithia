@@ -239,6 +239,14 @@ fn note_written(node: &NodeRef) {
     }
 }
 
+/// Whether the running body's writes to `node` are left alone: a cut writer's rerun (spec §7.4).
+pub(crate) fn suppressed(node: NodeId) -> bool {
+    with_frame(|frame: Option<&Frame>| match frame.map(|f: &Frame| &f.target) {
+        Some(Target::Run(run)) => run.suppresses(node),
+        _ => false,
+    })
+}
+
 /// Records a reclaimed keyed node that reruns on new captures (spec §10.1, Keyed nodes).
 pub(crate) fn record_refresh(node: &NodeRef) {
     let weak: WeakNodeRef = Arc::downgrade(node);
