@@ -181,8 +181,8 @@ pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static)
 pub mod test_utils {
     use super::*;
 
-    /// Delivers the pending batch, then waits until every run started in the node's subtree has ended.
-    /// Unstable: may change in any release. `lithia::test::settled(&user).await;`
+    /// Delivers the pending batch, then waits until every run in the node's subtree, which follows
+    /// its runs' creations and writes, has ended. Unstable. `lithia::test::settled(&user).await;`
     pub async fn settled<N: Readable>(node: &N) {
         if let Some((batch, target)) = take_pending() {
             deliver(&target, batch);
@@ -228,7 +228,7 @@ pub mod test_utils {
         scope.live.load(Ordering::SeqCst)
     }
 
-    /// Whether `root`, its descendants and the nodes their runs created have no work left,
+    /// Whether `root`, its descendants and the nodes their runs created or wrote have no work left,
     /// checked parents first so an idle parent has already delivered to its children.
     fn subtree_quiet(root: &NodeRef) -> bool {
         let mut closure: BTreeMap<NodeId, NodeRef> = BTreeMap::new();
@@ -238,12 +238,13 @@ pub mod test_utils {
             if closure.contains_key(&header.id) {
                 continue;
             }
-            let created: Vec<NodeRef> = {
+            let reached: Vec<NodeRef> = {
                 let guard: MutexGuard<'_, Sched> = header.sched.lock();
-                guard.created.iter().filter_map(|weak: &WeakNodeRef| weak.upgrade()).collect()
+                guard.created.iter().chain(&guard.wrote).filter_map(|weak: &WeakNodeRef| weak.upgrade()).collect()
             };
             stack.extend(header.subscribers());
-            stack.extend(created);
+            stack.extend(reached);
+            stack.extend(header.targets.iter().filter_map(WeakNodeRef::upgrade));
             closure.insert(header.id, node);
         }
         closure.values().all(|node: &NodeRef| {

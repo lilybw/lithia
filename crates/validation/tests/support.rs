@@ -662,7 +662,7 @@ async fn case_ax_a_child_writing_its_creators_parent() {
             let _ = p.get();
             effect!(|p| {
                 if *p.get() > 100 {
-                    reset(&p); // passed to a function: a possible write
+                    reset(p); // passed to a function: a possible write
                 }
             });
         });
@@ -711,7 +711,7 @@ impl Themed {
         effect!(|count| {
             total.set(*count.get());
             println!("theme {}", theme.get());
-            notify(&tx, *count.get()); // captures are owned clones
+            notify(tx, *count.get()); // the body sees its captures by reference
         });
     }
 }

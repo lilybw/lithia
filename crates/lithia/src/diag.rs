@@ -137,7 +137,7 @@ impl Diag {
 fn cut(writer: &Site, is_unit: bool, written: Option<&'static Site>) {
     let written: String = written.map_or_else(|| "<unknown>".to_string(), |site: &Site| site.to_string());
     if is_unit {
-        tracing::trace!(writer = %writer, written = %written, "lithia: a cycle cut an effect");
+        tracing::debug!(writer = %writer, written = %written, "lithia: a cycle cut an effect");
     } else {
         tracing::warn!(writer = %writer, written = %written, "lithia: a cycle cut a writer that holds a value");
     }
@@ -149,7 +149,7 @@ fn fragility_failed(site: &Site, parent: &str) {
 
 /// A run created two nodes with equal keys at one site; they are matched in creation order.
 pub(crate) fn duplicate_key(site: &Site) {
-    tracing::debug!(site = %site, "lithia: a run created two nodes with the same key at one site");
+    tracing::warn!(site = %site, "lithia: a run created two nodes with the same key at one site");
 }
 
 /// A keyed node was created outside any run, where no earlier creation can be reclaimed.

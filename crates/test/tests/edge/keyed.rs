@@ -196,7 +196,7 @@ async fn self_is_compared_by_value() {
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let made: DerivedNode<Option<DerivedNode<String>>> = effect!(|rerun| {
         let _ = rerun.get();
-        Some(label.node(&tick, &runs))
+        Some(label.node(tick, runs))
     });
     lithia::flush().await;
     rerun.set(1);
@@ -274,4 +274,70 @@ async fn keys_of_other_sites_never_meet() {
     lithia::flush().await;
     let (one, two): (SourceNode<u32>, SourceNode<u32>) = (*made.get()).clone().expect("made");
     assert_eq!((*one.get(), *two.get()), (1, 2));
+}
+
+#[lithia::test]
+async fn a_different_shape_makes_a_new_node() {
+    let fragile: SourceNode<bool> = effect!(true);
+    let rerun: SourceNode<u32> = effect!(0);
+    let tick: SourceNode<u32> = effect!(0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _creator: DerivedNode<()> = effect!(|fragile, rerun| {
+        let _ = rerun.get();
+        effect!(
+            |tick| {
+                let _ = tick.get();
+                runs.fetch_add(1, Ordering::SeqCst);
+            },
+            key = 0u8,
+            fragility = if *fragile.get() { FRAGILE } else { SEMI_FRAGILE }
+        );
+    });
+    lithia::flush().await;
+    assert_eq!(count(&runs), 1);
+    rerun.set(1);
+    lithia::flush().await;
+    // Same captures, same shape: reclaimed without a run.
+    assert_eq!(count(&runs), 1);
+    fragile.set(false);
+    lithia::flush().await;
+    // Same captures, other fragility: a new node, which runs.
+    assert_eq!(count(&runs), 2);
+}
+
+#[lithia::test]
+async fn a_reclaimed_node_takes_the_new_comparator() {
+    let input: SourceNode<u32> = effect!(0);
+    let coarse: SourceNode<bool> = effect!(false);
+    let made: DerivedNode<Option<DerivedNode<u32>>> = effect!(|coarse| {
+        let by_tens: bool = *coarse.get();
+        Some(effect!(|input| *input.get(), key = 0u8, equals = move |a: &u32, b: &u32| by_tens && a / 10 == b / 10))
+    });
+    lithia::flush().await;
+    let child: DerivedNode<u32> = (*made.get()).clone().expect("made");
+    coarse.set(true);
+    lithia::flush().await;
+    // Reclaimed unchanged, with the comparator that compares by tens: 5 equals 0.
+    assert!(Arc::ptr_eq(&child.get(), &(*made.get()).clone().expect("made").get()));
+    input.set(5);
+    lithia::flush().await;
+    assert_eq!(*child.get(), 0);
+    input.set(12);
+    lithia::flush().await;
+    assert_eq!(*child.get(), 12);
+}
+
+#[lithia::test]
+async fn a_refreshed_source_is_written_with_the_new_comparator() {
+    let config: SourceNode<(bool, u32)> = effect!((false, 5));
+    let made: DerivedNode<Option<SourceNode<u32>>> = effect!(|config| {
+        let (by_tens, value): (bool, u32) = *config.get();
+        Some(effect!(value, key = 0u8, equals = move |a: &u32, b: &u32| by_tens && a / 10 == b / 10))
+    });
+    lithia::flush().await;
+    // The value changes along with the comparator: 0 is written with the new one, which finds it
+    // equal to 5, so the node keeps 5.
+    config.set((true, 0));
+    lithia::flush().await;
+    assert_eq!(*(*made.get()).clone().expect("made").get(), 5);
 }

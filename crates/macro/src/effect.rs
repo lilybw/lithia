@@ -352,16 +352,18 @@ fn typed_future(ty: Option<TokenStream>, future: TokenStream) -> TokenStream {
 /// Validated options, as token streams ready for the expansion.
 struct Resolved {
     init: Option<Expr>,
-    chain: TokenStream,
+    /// The `Shape` of the node: fragility, ghost policy and flags.
+    shape: TokenStream,
+    /// `.equals(…)`, or nothing.
+    equals: TokenStream,
     key: Option<KeyArg>,
 }
 
 fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Result<Resolved> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut init: Option<Expr> = None;
-    let mut chain: TokenStream = quote!(::lithia::__private::Options::new());
-    let mut has_equals: bool = false;
-    let mut always_propagate: Option<Span> = None;
+    let mut shape: TokenStream = quote!(::lithia::__private::Shape::new());
+    let mut equals: TokenStream = TokenStream::new();
     let mut key: Option<KeyArg> = None;
     for option in &input.options {
         let name: String = option.name.to_string();
@@ -390,8 +392,7 @@ fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Result<Resolved
                 init = Some(value.clone());
             }
             "equals" => {
-                has_equals = true;
-                chain = quote!(#chain.equals(#value));
+                equals = quote!(.equals(#value));
             }
             "fragility" => {
                 if !matches!(form, Form::Derived(_)) {
@@ -400,29 +401,19 @@ fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Result<Resolved
                         "`fragility` applies to derived nodes only; a source node has no parents",
                     ));
                 }
-                chain = quote!(#chain.fragility({ #consts #value }));
+                shape = quote!(#shape.fragility({ #consts #value }));
             }
             "ghost" => {
-                chain = quote!(#chain.ghost({ #consts #value }));
+                shape = quote!(#shape.ghost({ #consts #value }));
             }
             "flags" => {
-                if value
-                    .to_token_stream()
-                    .into_iter()
-                    .any(|token: proc_macro2::TokenTree| token.to_string() == "ALWAYS_PROPAGATE")
-                {
-                    always_propagate = Some(option.name.span());
-                }
-                chain = quote!(#chain.flags({ #consts #value }));
+                shape = quote!(#shape.flags({ #consts #value }));
             }
             "key" => key = Some(KeyArg::parse(value)?),
             _ => unreachable!(),
         }
     }
-    if let (Some(span), false) = (always_propagate, has_equals) {
-        return Err(syn::Error::new(span, "`ALWAYS_PROPAGATE` without `equals` does nothing; add `equals = …`"));
-    }
-    Ok(Resolved { init, chain, key })
+    Ok(Resolved { init, shape, equals, key })
 }
 
 fn site(tokens: &str) -> TokenStream {
@@ -449,6 +440,9 @@ fn capture_take(ident: &Ident, class: &Class, moved: bool, dependency: bool) -> 
     let read_only: bool = *class == Class::ReadOnly;
     if let (Class::Paths { all, written }, false, false) = (class, moved, dependency) {
         return path_take(&quote!(#ident), ident, all, written);
+    }
+    if let (Class::Paths { all, written }, true, false) = (class, moved, dependency) {
+        return moved_paths_take(ident, all, written);
     }
     if moved {
         // The body moves the value as written; a handle is flagged internal in place, and a
@@ -511,6 +505,39 @@ fn path_take(base: &TokenStream, binding: &Ident, all: &[Vec<Ident>], written: &
     }
 }
 
+/// Flags the handles of a moved value used only through field paths: when every path is a
+/// handle, each is flagged internal in place, read-only or not by its own uses.
+fn moved_paths_take(ident: &Ident, all: &[Vec<Ident>], written: &[Vec<Ident>]) -> TokenStream {
+    let checks: Vec<TokenStream> =
+        all.iter().map(|fields: &Vec<Ident>| quote!(&& (#ident #(.#fields)*).__lithia_is_handle())).collect();
+    let flags: Vec<TokenStream> = all
+        .iter()
+        .map(|fields: &Vec<Ident>| {
+            if written.contains(fields) {
+                quote!((&#ident #(.#fields)*).__lithia_move();)
+            } else {
+                quote!((&#ident #(.#fields)*).__lithia_move_ro();)
+            }
+        })
+        .collect();
+    quote_spanned! {ident.span()=>
+        let __lithia_paths: bool = {
+            #[allow(unused_imports)]
+            use ::lithia::__private::FieldAny as _;
+            true #(#checks)*
+        };
+        __lithia_cap.take(false, || {
+            #[allow(unused_imports)]
+            use ::lithia::__private::MoveAny as _;
+            if __lithia_paths {
+                #(#flags)*
+            } else {
+                (&#ident).__lithia_move();
+            }
+        });
+    }
+}
+
 fn self_clone(class: &Class) -> TokenStream {
     let binding: Ident = format_ident!("__self");
     if let Class::Paths { all, written } = class {
@@ -536,7 +563,7 @@ fn session_end() -> TokenStream {
     quote!(let __lithia_captured: ::lithia::__private::Captured = __lithia_cap.finish();)
 }
 
-/// Rebinds each capture by reference inside a body that runs once (an async source block).
+/// Rebinds each capture by reference at the top of a body.
 fn by_reference(names: &[Ident]) -> TokenStream {
     quote! {
         #(
@@ -616,31 +643,57 @@ fn probes(names: &[Ident], uses_self: bool) -> TokenStream {
     }
 }
 
-/// Wraps a creation in the lookup by key: an equal reclaimed node is returned as it is,
-/// otherwise `create` runs with the lookup's result in its options (spec §4.7).
-fn keyed(lookup: TokenStream, same: TokenStream, create: TokenStream) -> TokenStream {
+/// Wraps a creation in the lookup by key, which `__lithia_shape` joins: an equal reclaimed node is
+/// returned with the comparator of `same_options`, otherwise `create` runs (spec §4.7).
+fn keyed(lookup: TokenStream, same: TokenStream, same_options: &TokenStream, create: TokenStream) -> TokenStream {
+    // The creation is checked first, so the value type is known where the comparator is.
     quote! {
         let __lithia_reuse = #lookup;
         match __lithia_reuse {
-            ::lithia::__private::Reuse::Same(__lithia_node) => __lithia_node.#same(),
-            __lithia_reuse => {
+            __lithia_reuse @ (::lithia::__private::Reuse::Changed(_) | ::lithia::__private::Reuse::Fresh) => {
                 let __lithia_inputs: ::lithia::__private::Inputs = ::lithia::__private::Inputs::of(&__lithia_probes);
                 #create
             }
+            ::lithia::__private::Reuse::Same(__lithia_node) => __lithia_node.#same(#same_options),
         }
     }
 }
 
-/// The options chain with the lookup's result added, for a keyed creation.
-fn keyed_options(options: &TokenStream) -> TokenStream {
-    quote!(#options.keyed(__lithia_reuse, __lithia_key, __lithia_inputs))
+/// The options chains of a creation: `create` for a new node, `same` for a reclaimed one; a keyed
+/// creation evaluates its shape once, in `bind`, before the lookup.
+struct Chains {
+    bind: TokenStream,
+    create: TokenStream,
+    same: TokenStream,
+}
+
+impl Chains {
+    fn of(resolved: &Resolved) -> Chains {
+        let Resolved { shape, equals, key, .. }: &Resolved = resolved;
+        match key {
+            None => Chains {
+                bind: TokenStream::new(),
+                create: quote!(::lithia::__private::Options::new(#shape) #equals),
+                same: TokenStream::new(),
+            },
+            Some(_) => {
+                let same: TokenStream = quote!(::lithia::__private::Options::new(__lithia_shape) #equals);
+                Chains {
+                    bind: quote!(let __lithia_shape: ::lithia::__private::Shape = #shape;),
+                    create: quote!(#same.keyed(__lithia_reuse, __lithia_key, __lithia_inputs)),
+                    same,
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn expand(input: EffectInput) -> syn::Result<TokenStream> {
     let form: Form<'_> = input.form()?;
     let resolved: Resolved = resolve_options(&input, &form)?;
     let site: TokenStream = site(&input.tokens);
-    let options: &TokenStream = &resolved.chain;
+    let chains: Chains = Chains::of(&resolved);
+    let Chains { bind, create: options, same: same_options }: &Chains = &chains;
     let init: TokenStream = match &resolved.init {
         Some(init) => init.to_token_stream(),
         None => quote!(<_ as ::lithia::__private::InitDefault>::__lithia_init()),
@@ -654,15 +707,16 @@ pub(crate) fn expand(input: EffectInput) -> syn::Result<TokenStream> {
         (Form::Source(value), Some(key)) => {
             let key_value: TokenStream = key.value();
             let key_ref: TokenStream = key.lookup();
-            let keyed_options: TokenStream = keyed_options(options);
             let body: TokenStream = keyed(
-                quote!(::lithia::__private::reuse_source(#key_ref, &__lithia_probe)),
+                quote!(::lithia::__private::reuse_source(#key_ref, &__lithia_shape, &__lithia_probe)),
                 quote!(source),
-                quote!(::lithia::__private::source(&__LITHIA_SITE, __lithia_value, #keyed_options)),
+                same_options,
+                quote!(::lithia::__private::source(&__LITHIA_SITE, __lithia_value, #options)),
             );
             quote! {{
                 #site
                 let __lithia_key = #key_value;
+                #bind
                 let __lithia_value = #value;
                 let __lithia_probe = {
                     #[allow(unused_imports)]
@@ -673,8 +727,8 @@ pub(crate) fn expand(input: EffectInput) -> syn::Result<TokenStream> {
                 #body
             }}
         }
-        (Form::AsyncSource(block), key) => expand_async_source(block, &site, &init, options, key)?,
-        (Form::Derived(closure), key) => expand_derived(closure, &site, &init, options, key)?,
+        (Form::AsyncSource(block), key) => expand_async_source(block, &site, &init, &chains, key)?,
+        (Form::Derived(closure), key) => expand_derived(closure, &site, &init, &chains, key)?,
     };
     Ok(expansion)
 }
@@ -683,9 +737,10 @@ fn expand_async_source(
     block: &ExprAsync,
     site: &TokenStream,
     init: &TokenStream,
-    options: &TokenStream,
+    chains: &Chains,
     key: Option<&KeyArg>,
 ) -> syn::Result<TokenStream> {
+    let options: &TokenStream = &chains.create;
     let generator: bool = scan_yields(|scan: &mut YieldScan| scan.visit_block(&block.block))?;
     let moved: bool = block.capture.is_some();
     let mut body: syn::Block = block.block.clone();
@@ -709,8 +764,8 @@ fn expand_async_source(
     if uses_self {
         body_tokens = rewrite_self(body_tokens);
     }
-    // A block without `move` runs once on its own clones; it sees them by reference, so a
-    // handle cannot be moved out of it uncounted.
+    // A block without `move` sees its clones by reference, as every body does; a `move` block runs
+    // once and owns what it moved in, so it can consume it.
     let mut shared: Vec<Ident> = if moved { Vec::new() } else { names };
     if uses_self {
         shared.push(format_ident!("__self"));
@@ -718,14 +773,6 @@ fn expand_async_source(
     let rebind: TokenStream = by_reference(&shared);
     let begin: TokenStream = session_begin();
     let end: TokenStream = session_end();
-    let keyed_chain: TokenStream;
-    let options: &TokenStream = match key {
-        Some(_) => {
-            keyed_chain = keyed_options(options);
-            &keyed_chain
-        }
-        None => options,
-    };
     let call: TokenStream = if generator {
         quote! {
             ::lithia::__private::source_gen(
@@ -764,11 +811,17 @@ fn expand_async_source(
     };
     let key_value: TokenStream = key.value();
     let key_ref: TokenStream = key.lookup();
-    let body: TokenStream =
-        keyed(quote!(::lithia::__private::reuse_source_async(#key_ref, &__lithia_probes)), quote!(source), create);
+    let body: TokenStream = keyed(
+        quote!(::lithia::__private::reuse_source_async(#key_ref, &__lithia_shape, &__lithia_probes)),
+        quote!(source),
+        &chains.same,
+        create,
+    );
+    let bind: &TokenStream = &chains.bind;
     Ok(quote! {{
         #site
         let __lithia_key = #key_value;
+        #bind
         #probed
         #body
     }})
@@ -778,9 +831,10 @@ fn expand_derived(
     closure: &ExprClosure,
     site: &TokenStream,
     init: &TokenStream,
-    options: &TokenStream,
+    chains: &Chains,
     key: Option<&KeyArg>,
 ) -> syn::Result<TokenStream> {
+    let options: &TokenStream = &chains.create;
     // Dependencies: plain identifiers, each once (spec §4.1).
     let mut params: Vec<Ident> = Vec::new();
     let mut checks: Vec<TokenStream> = Vec::new();
@@ -814,14 +868,6 @@ fn expand_derived(
     let Analysis { names: captured, classes, self_class }: Analysis = analyse(&closure.body);
     let uses_self: bool = self_class.is_some();
     let probed: TokenStream = probes(&captured, uses_self);
-    let keyed_chain: TokenStream;
-    let options: &TokenStream = match key {
-        Some(_) => {
-            keyed_chain = keyed_options(options);
-            &keyed_chain
-        }
-        None => options,
-    };
     // A keyed node is looked up first, so a reclaimed one with equal captures clones nothing.
     let wrap = |create: TokenStream| -> TokenStream {
         let Some(key) = key else {
@@ -835,15 +881,18 @@ fn expand_derived(
         let key_value: TokenStream = key.value();
         let key_ref: TokenStream = key.lookup();
         let body: TokenStream = keyed(
-            quote!(::lithia::__private::reuse_derived(#key_ref, &__lithia_deps, &__lithia_probes)),
+            quote!(::lithia::__private::reuse_derived(#key_ref, &__lithia_shape, &__lithia_deps, &__lithia_probes)),
             quote!(derived),
+            &chains.same,
             create,
         );
+        let bind: &TokenStream = &chains.bind;
         quote! {{
             #site
             #deps
             #(#checks)*
             let __lithia_key = #key_value;
+            #bind
             #probed
             #body
         }}
@@ -859,8 +908,8 @@ fn expand_derived(
     let begin: TokenStream = session_begin();
     let end: TokenStream = session_end();
     let mut body_tokens: TokenStream = body.to_token_stream();
-    if is_async || generator {
-        // Spliced after the unpacking, so a one-expression block does not trip `unused_braces`.
+    {
+        // Spliced after the rebinding, so a one-expression block does not trip `unused_braces`.
         if let Expr::Block(block) = &body
             && block.attrs.is_empty()
             && block.label.is_none()
@@ -878,10 +927,16 @@ fn expand_derived(
     };
 
     if !is_async && !generator {
-        // Synchronous body: captures are cloned into the closure, which lives in one Arc.
+        // Synchronous body: captures live in the closure, which lives in one Arc; each run sees
+        // them by reference, as every other body form does.
+        let mut shared: Vec<Ident> = captured;
+        if uses_self && !moved {
+            shared.push(format_ident!("__self"));
+        }
+        let rebind: TokenStream = by_reference(&shared);
         let closure_tokens: TokenStream = match &closure.output {
-            syn::ReturnType::Type(arrow, ty) => quote!(move || #arrow #ty #body_tokens),
-            syn::ReturnType::Default => quote!(move || #body_tokens),
+            syn::ReturnType::Type(arrow, ty) => quote!(move || #arrow #ty { #rebind #body_tokens }),
+            syn::ReturnType::Default => quote!(move || { #rebind #body_tokens }),
         };
         return Ok(wrap(quote! {
             #begin

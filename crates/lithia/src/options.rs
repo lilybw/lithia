@@ -46,43 +46,30 @@ bitflags::bitflags! {
     /// `effect!(0, equals = lithia::eq, flags = ALWAYS_PROPAGATE)`
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
     pub struct Flags: u32 {
-        /// Keeps the old value on an equal write, but propagates anyway.
+        /// Keeps the old value on an equal write, but propagates anyway; without `equals`, a no-op.
         const ALWAYS_PROPAGATE = 1;
     }
 }
 
-/// Keeps the old value on an equal write, but propagates anyway.
+/// Keeps the old value on an equal write, but propagates anyway; without `equals`, a no-op.
 pub const ALWAYS_PROPAGATE: Flags = Flags::ALWAYS_PROPAGATE;
 
 /// Comparator for the `equals` option, where `true` means equal.
 pub(crate) type Equals<K> = Arc<dyn Fn(&K, &K) -> bool + Send + Sync>;
 
-/// Options of one node, as resolved by `effect!`.
+/// The options that shape how a node behaves: part of a keyed node's identity (spec §10.1).
 #[doc(hidden)]
-pub struct Options<K> {
-    pub(crate) equals: Option<Equals<K>>,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shape {
     pub(crate) fragility: Option<Fragility>,
     pub(crate) ghost: GhostPolicy,
     pub(crate) flags: Flags,
-    pub(crate) keyed: Option<Keyed>,
 }
 
-impl<K> Default for Options<K> {
-    fn default() -> Self {
-        Options { equals: None, fragility: None, ghost: GhostPolicy::CauseFailure, flags: Flags::empty(), keyed: None }
-    }
-}
-
-impl<K> Options<K> {
+impl Shape {
     /// Starts from the defaults.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Sets the comparator; `true` means equal.
-    pub fn equals(mut self, equals: impl Fn(&K, &K) -> bool + Send + Sync + 'static) -> Self {
-        self.equals = Some(Arc::new(equals));
-        self
     }
 
     /// Sets the fragility.
@@ -102,6 +89,27 @@ impl<K> Options<K> {
         self.flags = flags;
         self
     }
+}
+
+/// Options of one node, as resolved by `effect!`.
+#[doc(hidden)]
+pub struct Options<K> {
+    pub(crate) equals: Option<Equals<K>>,
+    pub(crate) shape: Shape,
+    pub(crate) keyed: Option<Keyed>,
+}
+
+impl<K> Options<K> {
+    /// Starts from `shape`, with no comparator and no key.
+    pub fn new(shape: Shape) -> Self {
+        Options { equals: None, shape, keyed: None }
+    }
+
+    /// Sets the comparator; `true` means equal.
+    pub fn equals(mut self, equals: impl Fn(&K, &K) -> bool + Send + Sync + 'static) -> Self {
+        self.equals = Some(Arc::new(equals));
+        self
+    }
 
     /// Sets the key, with what the lookup by key found and the captures to keep (spec §4.7).
     pub fn keyed<T>(mut self, reuse: Reuse<K>, key: NodeKey<T>, inputs: Inputs) -> Self
@@ -110,12 +118,5 @@ impl<K> Options<K> {
     {
         self.keyed = Some(Keyed::new(reuse, key, inputs));
         self
-    }
-
-    /// Panics where the options would do nothing, as `effect!` rejects at compile time.
-    pub(crate) fn validate(&self, site: &crate::Site) {
-        if self.flags.contains(Flags::ALWAYS_PROPAGATE) && self.equals.is_none() {
-            panic!("lithia: ALWAYS_PROPAGATE without equals does nothing ({site})");
-        }
     }
 }

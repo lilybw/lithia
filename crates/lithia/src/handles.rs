@@ -50,6 +50,30 @@ pub trait Readable: sealed::Sealed {
     fn __lithia_move_dep(&self, read_only: bool);
 }
 
+impl<T: Readable + ?Sized> sealed::Sealed for &T {}
+
+/// A reference reads as its handle does, so a body's captures, which it sees by reference, can be
+/// dependencies of the nodes it creates.
+#[diagnostic::do_not_recommend]
+impl<T: Readable + ?Sized> Readable for &T {
+    type Value = T::Value;
+    fn get(&self) -> Arc<T::Value> {
+        (**self).get()
+    }
+    fn try_get(&self) -> Result<Arc<T::Value>, Ghosted> {
+        (**self).try_get()
+    }
+    fn changes(&self) -> Changes<T::Value> {
+        (**self).changes()
+    }
+    fn __lithia_node(&self) -> NodeHandle {
+        (**self).__lithia_node()
+    }
+    fn __lithia_move_dep(&self, read_only: bool) {
+        (**self).__lithia_move_dep(read_only)
+    }
+}
+
 /// Write access; implemented by `SourceNode` and `Setter`.
 /// `fn reset(n: &impl Writable<Value = u32>) { n.set(0); }`
 pub trait Writable: sealed::Sealed {
@@ -116,7 +140,7 @@ impl<K: NodeValue> Node<K> {
             } else {
                 compute(&current)
             };
-            let equal: bool = match &self.equals {
+            let equal: bool = match self.comparator() {
                 Some(equals) => {
                     let _guard: ClosureGuard = ClosureGuard::enter();
                     equals(&current, &next)
@@ -337,10 +361,13 @@ fn take_moved<K: NodeValue>(node: &Arc<Node<K>>, internal: &AtomicBool, writes: 
     }
 }
 
-/// Releases a handle; dropping the last anchoring handle starts a sweep.
+/// Releases a handle; dropping the last anchoring handle starts a sweep, and the last captured
+/// one may leave a memo unread (spec §12).
 fn drop_ref<K: NodeValue>(node: &Arc<Node<K>>, internal: bool, anchoring: bool) {
     if internal {
-        node.header.captured.fetch_sub(1, Ordering::SeqCst);
+        if node.header.captured.fetch_sub(1, Ordering::SeqCst) == 1 {
+            crate::support::check_unread(&node.header);
+        }
     } else if anchoring && node.header.anchors.fetch_sub(1, Ordering::SeqCst) == 1 {
         let erased: NodeRef = node.clone();
         crate::support::start(erased);

@@ -211,7 +211,32 @@ impl Drop for ClosureCreations {
 
 /// Records a change to a source node in the current batch, or delivers it at once.
 pub(crate) fn record_write(node: &NodeRef, stamp: u64) {
+    note_written(node);
     record(|batch: &mut Batch| batch.writes.push((Arc::downgrade(node), node.header().id, stamp)));
+}
+
+/// Notes, on the running node, a node it writes without an edge, so `lithia::test::settled`
+/// follows the write (spec §11.3).
+fn note_written(node: &NodeRef) {
+    let writer: Option<NodeRef> = with_frame(|frame: Option<&Frame>| match frame.map(|f: &Frame| &f.target) {
+        Some(Target::Run(run)) => run.node.upgrade(),
+        _ => None,
+    });
+    let Some(writer) = writer else {
+        return;
+    };
+    let header: &crate::node::Header = writer.header();
+    let target: *const () = Arc::as_ptr(node).cast::<()>();
+    let edge: bool = std::ptr::eq(Arc::as_ptr(&writer).cast::<()>(), target)
+        || header.targets.iter().any(|weak: &WeakNodeRef| std::ptr::eq(weak.as_ptr().cast::<()>(), target));
+    if edge {
+        return;
+    }
+    let mut guard: crate::sync::MutexGuard<'_, crate::node::Sched> = header.sched.lock();
+    guard.wrote.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
+    if !guard.wrote.iter().any(|weak: &WeakNodeRef| std::ptr::eq(weak.as_ptr().cast::<()>(), target)) {
+        guard.wrote.push(Arc::downgrade(node));
+    }
 }
 
 /// Records a reclaimed keyed node that reruns on new captures (spec §10.1, Keyed nodes).
@@ -222,6 +247,7 @@ pub(crate) fn record_refresh(node: &NodeRef) {
 
 /// Records a reflow in the current batch, or delivers it at once.
 pub(crate) fn record_reflow(node: &NodeRef, stamp: u64) {
+    note_written(node);
     record(|batch: &mut Batch| batch.reflows.push((Arc::downgrade(node), node.header().id, stamp)));
 }
 

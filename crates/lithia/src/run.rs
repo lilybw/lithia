@@ -395,7 +395,7 @@ impl<K: NodeValue> Node<K> {
             if run.is_cancelled() || header.runs.load(Ordering::SeqCst) != run.id() || header.is_ghost() {
                 discarded = Some(value);
             } else if let Some(current) = current {
-                let equal: bool = match &self.equals {
+                let equal: bool = match self.comparator() {
                     Some(equals) => {
                         let _guard: ClosureGuard = ClosureGuard::enter();
                         equals(&current, &value)

@@ -16,6 +16,11 @@ use crate::sync::MutexGuard;
 /// Frees `root` and every descendant with no live parent outside the freed branch.
 pub(crate) fn dispose(root: &NodeRef) {
     context::assert_not_in_closure("lithia::dispose");
+    dispose_unchecked(root);
+}
+
+/// `dispose`, also from inside a closure: for a new node whose parents are all ghosts.
+pub(crate) fn dispose_unchecked(root: &NodeRef) {
     if root.header().is_ghost() {
         return;
     }
@@ -58,9 +63,24 @@ pub(crate) fn dispose(root: &NodeRef) {
     for node in &freed {
         mark_ghost(node);
     }
+    // Children linked after the walk but before their parent closed are handled here, as the
+    // walk would have; a child linked later finds the parent closed and handles itself.
+    let mut late: Vec<NodeRef> = Vec::new();
     for node in &freed {
-        teardown(node);
+        for child in teardown(node) {
+            let id: NodeId = child.header().id;
+            if !closure.contains_key(&id) && !late.iter().any(|known: &NodeRef| known.header().id == id) {
+                late.push(child);
+            }
+        }
     }
+    let (orphans, late): (Vec<NodeRef>, Vec<NodeRef>) = late.into_iter().partition(|node: &NodeRef| {
+        node.header()
+            .parent_ids
+            .iter()
+            .all(|parent: &NodeId| freed_ids.contains(parent) || is_ghost_parent(node, *parent))
+    });
+    survivors.extend(late);
     // Support may be lost downstream: by the freed nodes' targets, generations and surviving children.
     for node in &freed {
         for target in node.header().targets.iter().filter_map(WeakNodeRef::upgrade) {
@@ -79,6 +99,9 @@ pub(crate) fn dispose(root: &NodeRef) {
     drop(survivors);
     context::record_reruns(reruns);
     drop(freed);
+    for orphan in orphans {
+        dispose_unchecked(&orphan);
+    }
 }
 
 fn is_ghost_parent(node: &NodeRef, parent: NodeId) -> bool {
@@ -97,13 +120,18 @@ fn mark_ghost(node: &NodeRef) {
     header.clear_bits(phase::PENDING);
 }
 
-fn teardown(node: &NodeRef) {
+/// Tears a ghost down; returns the children linked when it closed.
+fn teardown(node: &NodeRef) -> Vec<NodeRef> {
     let header: &Header = node.header();
     protocol::retire(node);
-    let generation: Vec<NodeRef> = {
+    // The children linked by the time it closes, under the lock `link` takes: a child linked later
+    // finds the node closed.
+    let (generation, linked): (Vec<NodeRef>, Vec<NodeRef>) = {
         let mut guard: MutexGuard<'_, crate::node::Sched> = header.sched.lock();
         guard.closed = true;
-        guard.release_all()
+        let linked: Vec<NodeRef> =
+            guard.subscribers.iter().filter_map(|(_, weak): &(NodeId, WeakNodeRef)| weak.upgrade()).collect();
+        (guard.release_all(), linked)
     };
     let me: Option<NodeRef> = header.support.lock().take();
     if me.is_some() {
@@ -126,4 +154,5 @@ fn teardown(node: &NodeRef) {
         crate::drops::release_parents(list);
     }
     drop(me);
+    linked
 }

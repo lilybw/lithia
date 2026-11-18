@@ -317,7 +317,7 @@ fn meshes() -> Row {
                 bindings.push(effect!(|me| {
                     counter.fetch_add(1, Ordering::Relaxed);
                     let value: u64 = *me.get();
-                    for other in &others {
+                    for other in others {
                         other.set(value);
                     }
                 }));

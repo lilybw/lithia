@@ -86,7 +86,7 @@ async fn reads_make_no_edge_and_other_uses_do() {
             let (k, t): (SourceNode<u32>, SourceNode<u32>) = (k.clone(), t.clone());
             effect!(|k| {
                 let _ = k.get();
-                pass_along(&t); // a function may write it
+                pass_along(t); // a function may write it
             });
         })
         .await,
@@ -181,12 +181,47 @@ async fn generic_code_self_and_field_paths() {
             let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
             effect!(|k| {
                 let _ = k.get();
-                let held: &Pair = &pair; // a use of the name itself
+                let held: &Pair = pair; // a use of the name itself
                 let _ = held.t.get();
             });
         })
         .await,
         "the name used whole"
+    );
+}
+
+#[lithia::test]
+async fn move_bodies_classify_field_paths_too() {
+    assert!(
+        !keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
+            let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
+            effect!(move |k| {
+                let _ = (k.get(), pair.t.get());
+            });
+        })
+        .await,
+        "a field path only read"
+    );
+    assert!(
+        keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
+            let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
+            effect!(move |k| {
+                let _ = k.get();
+                pair.t.set(1);
+            });
+        })
+        .await,
+        "a field path written"
+    );
+    assert!(
+        keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
+            let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
+            effect!(move |k| {
+                let _ = (k.get(), pair.t.get(), pair.label.len()); // `label` is not a handle
+            });
+        })
+        .await,
+        "a field path that is not a handle"
     );
 }
 

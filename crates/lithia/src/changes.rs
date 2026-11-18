@@ -66,6 +66,17 @@ impl<K: NodeValue> Stream for Changes<K> {
     }
 }
 
+impl<K: NodeValue> Drop for Changes<K> {
+    fn drop(&mut self) {
+        // The last stream of a memo may leave it unread (spec §12).
+        if self.inner.take().is_some()
+            && let Some(node) = self.node.upgrade()
+        {
+            crate::support::check_unread(&node.header);
+        }
+    }
+}
+
 impl<K: NodeValue> std::fmt::Debug for Changes<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Changes").field("ended", &self.inner.is_none()).finish()

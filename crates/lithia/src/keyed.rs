@@ -12,6 +12,7 @@ use crate::context;
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
 use crate::ids::NodeId;
 use crate::node::{Header, Kind, Node, NodeRef};
+use crate::options::{Options, Shape};
 use crate::run::RunShared;
 use crate::sync::MutexGuard;
 use crate::{NodeValue, Site};
@@ -256,14 +257,22 @@ impl Inputs {
 pub struct Reused<K: NodeValue>(pub(crate) Arc<Node<K>>);
 
 impl<K: NodeValue> Reused<K> {
-    /// A new outside handle to the reclaimed derived node.
-    pub fn derived(self) -> DerivedNode<K> {
+    /// A new outside handle to the reclaimed derived node, which takes the creation's comparator.
+    pub fn derived(self, options: Options<K>) -> DerivedNode<K> {
+        self.adopt(options);
         DerivedNode::outside(&self.0)
     }
 
-    /// A new outside handle to the reclaimed source node.
-    pub fn source(self) -> SourceNode<K> {
+    /// A new outside handle to the reclaimed source node, which takes the creation's comparator.
+    pub fn source(self, options: Options<K>) -> SourceNode<K> {
+        self.adopt(options);
         SourceNode::outside(&self.0)
+    }
+
+    fn adopt(&self, options: Options<K>) {
+        if let Some(old) = self.0.adopt_equals(options.equals) {
+            crate::drops::drop_later(old, self.0.header.runtime.as_ref());
+        }
     }
 }
 
@@ -375,9 +384,9 @@ fn creator() -> Option<NodeRef> {
     run.node.upgrade()
 }
 
-/// Reclaims the creator's held-over node with this key, site, kind, value type and parents, and
-/// moves it into the current generation's keyed set (spec §10.1, Keyed nodes).
-fn reclaim(key: &KeyRef<'_>, kind: Kind, value_type: TypeId, parent_ids: &[NodeId]) -> Option<NodeRef> {
+/// Reclaims the creator's held-over node with this key, site, kind, value type, shape and parents,
+/// and moves it into the current generation's keyed set (spec §10.1, Keyed nodes).
+fn reclaim(key: &KeyRef<'_>, kind: Kind, value_type: TypeId, shape: &Shape, parent_ids: &[NodeId]) -> Option<NodeRef> {
     let creator: NodeRef = creator()?;
     let header: &Header = creator.header();
     let mut guard: MutexGuard<'_, crate::node::Sched> = header.sched.lock();
@@ -390,6 +399,9 @@ fn reclaim(key: &KeyRef<'_>, kind: Kind, value_type: TypeId, parent_ids: &[NodeI
         std::ptr::eq(candidate.site, site)
             && candidate.kind == kind
             && candidate.value_type == value_type
+            && candidate.fragility == shape.fragility
+            && candidate.ghost == shape.ghost
+            && candidate.flags == shape.flags
             && !candidate.is_ghost()
             && *candidate.parent_ids == *parent_ids
     });
@@ -432,8 +444,14 @@ pub(crate) fn typed<K: NodeValue>(node: NodeRef) -> Arc<Node<K>> {
     }
 }
 
-fn reuse<K: NodeValue>(key: &KeyRef<'_>, kind: Kind, parent_ids: &[NodeId], probes: &[&dyn Probe]) -> Reuse<K> {
-    let Some(node) = reclaim(key, kind, TypeId::of::<K>(), parent_ids) else {
+fn reuse<K: NodeValue>(
+    key: &KeyRef<'_>,
+    kind: Kind,
+    shape: &Shape,
+    parent_ids: &[NodeId],
+    probes: &[&dyn Probe],
+) -> Reuse<K> {
+    let Some(node) = reclaim(key, kind, TypeId::of::<K>(), shape, parent_ids) else {
         return Reuse::Fresh;
     };
     let node: Arc<Node<K>> = typed(node);
@@ -449,21 +467,26 @@ fn reuse<K: NodeValue>(key: &KeyRef<'_>, kind: Kind, parent_ids: &[NodeId], prob
 
 /// Looks up a keyed derived node; `probes` are its captures. Called by `effect!`.
 #[doc(hidden)]
-pub fn reuse_derived<K: NodeValue>(key: &KeyRef<'_>, deps: &[NodeHandle], probes: &[&dyn Probe]) -> Reuse<K> {
+pub fn reuse_derived<K: NodeValue>(
+    key: &KeyRef<'_>,
+    shape: &Shape,
+    deps: &[NodeHandle],
+    probes: &[&dyn Probe],
+) -> Reuse<K> {
     let mut parent_ids: Vec<NodeId> = deps.iter().map(|dep: &NodeHandle| dep.0.header().id).collect();
     parent_ids.sort_unstable();
     parent_ids.dedup();
-    reuse(key, Kind::Derived, &parent_ids, probes)
+    reuse(key, Kind::Derived, shape, &parent_ids, probes)
 }
 
 /// Looks up a keyed async source block; `probes` are its captures. Called by `effect!`.
 #[doc(hidden)]
-pub fn reuse_source_async<K: NodeValue>(key: &KeyRef<'_>, probes: &[&dyn Probe]) -> Reuse<K> {
-    reuse(key, Kind::AsyncSource, &[], probes)
+pub fn reuse_source_async<K: NodeValue>(key: &KeyRef<'_>, shape: &Shape, probes: &[&dyn Probe]) -> Reuse<K> {
+    reuse(key, Kind::AsyncSource, shape, &[], probes)
 }
 
 /// Looks up a keyed source node; `probe` is its new value. Called by `effect!`.
 #[doc(hidden)]
-pub fn reuse_source<K: NodeValue>(key: &KeyRef<'_>, probe: &dyn Probe) -> Reuse<K> {
-    reuse(key, Kind::Source, &[], &[probe])
+pub fn reuse_source<K: NodeValue>(key: &KeyRef<'_>, shape: &Shape, probe: &dyn Probe) -> Reuse<K> {
+    reuse(key, Kind::Source, shape, &[], &[probe])
 }

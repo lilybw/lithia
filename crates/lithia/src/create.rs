@@ -17,7 +17,7 @@ use crate::handles::{DerivedNode, NodeHandle, SourceNode};
 use crate::ids::{self, NodeId};
 use crate::keyed::{self, Inputs, Key, Keyed};
 use crate::node::{Body, BoxFut, Header, Kind, Node, NodeRef, RateWindow, Sched, WeakNodeRef, phase};
-use crate::options::Options;
+use crate::options::{Equals, Options};
 use crate::run::{RunShared, Yielder};
 use crate::{NodeValue, Readable, Site, protocol, settle_wait};
 
@@ -73,12 +73,21 @@ fn same_targets(header: &Header, captured: &Captured) -> bool {
     wanted == held
 }
 
-/// Hands a reclaimed node what the new creation brought: a source node its value, a body its
-/// captures, then a rerun (spec §10.1, Keyed nodes). Counts the returned handle as an anchor.
-fn refresh<K: NodeValue>(node: &Arc<Node<K>>, value: K, body: Option<Body<K>>, inputs: Inputs) {
+/// Hands a reclaimed node what the new creation brought: its comparator, a source node its value,
+/// a body its captures, then a rerun (spec §10.1, Keyed nodes). Counts the returned handle as an anchor.
+fn refresh<K: NodeValue>(
+    node: &Arc<Node<K>>,
+    value: K,
+    body: Option<Body<K>>,
+    inputs: Inputs,
+    equals: Option<Equals<K>>,
+) {
     let header: &Header = &node.header;
     header.anchors.fetch_add(1, Ordering::SeqCst);
     let runtime: Option<Handle> = header.runtime.clone();
+    if let Some(old) = node.adopt_equals(equals) {
+        crate::drops::drop_later(old, runtime.as_ref());
+    }
     match header.kind {
         Kind::Source => {
             // A write the node's `equals` may still find equal; a ghost is left alone.
@@ -117,7 +126,6 @@ fn new_node<K: NodeValue>(
     body: Option<Body<K>>,
     mut options: Options<K>,
 ) -> Arc<Node<K>> {
-    options.validate(site);
     let (key, inputs): (Option<Key>, Option<Inputs>) = match options.keyed.take() {
         None => (None, None),
         Some(mut keyed) => {
@@ -125,7 +133,7 @@ fn new_node<K: NodeValue>(
                 let node: Arc<Node<K>> = keyed::typed(reclaimed);
                 if same_targets(&node.header, captured) {
                     let (_, inputs): (Key, Inputs) = keyed.key(site);
-                    refresh(&node, value, body, inputs);
+                    refresh(&node, value, body, inputs, options.equals);
                     return node;
                 }
                 // Its body would write other nodes now: a new node takes the key instead.
@@ -140,9 +148,6 @@ fn new_node<K: NodeValue>(
     let mut parents: Vec<NodeRef> = Vec::with_capacity(deps.len());
     for dep in deps {
         let header: &Header = dep.0.header();
-        if header.is_ghost() {
-            panic!("lithia: cannot create a node that depends on a disposed node ({site}; parent {})", header.site);
-        }
         if !parents.iter().any(|p: &NodeRef| p.header().id == header.id) {
             parents.push(dep.0.clone());
         }
@@ -182,9 +187,9 @@ fn new_node<K: NodeValue>(
             sched: Mutex::new(Sched::new(kind != Kind::Source)),
             parents: Mutex::new(Some(parents.clone())),
             parent_ids,
-            fragility: options.fragility,
-            ghost: options.ghost,
-            flags: options.flags,
+            fragility: options.shape.fragility,
+            ghost: options.shape.ghost,
+            flags: options.shape.flags,
             runtime,
             scope,
             counted: AtomicBool::new(true),
@@ -206,12 +211,12 @@ fn new_node<K: NodeValue>(
         },
         value: ArcCell::new(Some(Arc::new(value))),
         body: Mutex::new(body),
-        equals: options.equals,
+        equals: options.equals.map(|equals: Equals<K>| ArcCell::new(Some(Arc::new(equals)))),
     });
     let erased: NodeRef = node.clone();
-    if !parents.is_empty() {
-        protocol::link(&erased, &parents);
-    }
+    // A new child of ghosts is linked as disposal leaves a surviving one; with only ghosts for
+    // parents, it is disposed as disposal would have (spec §10.5).
+    let orphan: bool = !parents.is_empty() && protocol::link(&erased, &parents);
     let has_parents: bool = !parents.is_empty();
     drop(parents);
     for target in &targets {
@@ -248,6 +253,9 @@ fn new_node<K: NodeValue>(
     }
     if kind != Kind::Source {
         context::record_creation(&erased);
+    }
+    if orphan {
+        crate::dispose::dispose_unchecked(&erased);
     }
     node
 }

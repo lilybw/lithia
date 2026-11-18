@@ -202,13 +202,13 @@ fn case_n_created_mid_propagation() {
                 let a: SourceNode<i32> = effect!(1);
                 let slow: DerivedNode<i32> = effect!(|a| {
                     started.store(true, Ordering::SeqCst);
-                    wait_for(&go); // still running while `m` is created
+                    wait_for(go); // still running while `m` is created
                     *a.get()
                 });
                 let holder: SourceNode<Option<DerivedNode<i32>>> = effect!(None);
                 let m_runs: SourceNode<u32> = effect!(0);
                 let maker: DerivedNode<()> = effect!(|a| {
-                    wait_for(&started);
+                    wait_for(started);
                     holder.set(Some(effect!(|slow| {
                         m_runs.update(|n: &u32| n + 1);
                         *slow.get() + 1
@@ -656,6 +656,52 @@ fn a_last_handle_drop_races_a_creation() {
     });
 }
 
+/// A node created while its only parent is disposed ends a ghost: disposal frees it, finds it
+/// linked when the parent closes, or it finds the parent closed itself.
+#[test]
+fn a_creation_races_the_disposal_of_its_only_parent() {
+    check(|| {
+        let scope: ModelScope = ModelScope::new();
+        let p: SourceNode<u32> = scope.batch(|| effect!(1));
+        let parent: SourceNode<u32> = p.clone();
+        let creator: loom::thread::JoinHandle<(ModelScope, DerivedNode<u32>)> = loom::thread::spawn(move || {
+            let there: ModelScope = ModelScope::new();
+            let orphan: DerivedNode<u32> = there.batch(|| effect!(|parent| *parent.get()));
+            (there, orphan)
+        });
+        lithia::dispose(&p);
+        let (there, orphan): (ModelScope, DerivedNode<u32>) = creator.join().unwrap();
+        scope.flush();
+        there.flush();
+        assert!(matches!(lithia::status(&orphan), Status::Ghost));
+    });
+}
+
+/// A fragile node created, and run on the worker, while one of its parents is disposed ends
+/// failed: it reruns as a surviving child, or its first run already sees the ghost.
+#[test]
+fn a_creation_races_the_disposal_of_one_parent() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (p, k): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| (effect!(1), effect!(2)));
+            let (parent, live): (SourceNode<u32>, SourceNode<u32>) = (p.clone(), k.clone());
+            let creator: loom::thread::JoinHandle<(ModelScope, DerivedNode<u32>)> = loom::thread::spawn(move || {
+                let there: ModelScope = ModelScope::new();
+                let strict: DerivedNode<u32> = there.batch(|| effect!(|parent, live| *live.get(), fragility = FRAGILE));
+                (there, strict)
+            });
+            lithia::dispose(&p);
+            let (there, strict): (ModelScope, DerivedNode<u32>) = creator.join().unwrap();
+            scope.flush();
+            there.flush();
+            let status: Status = lithia::status(&strict);
+            assert!(matches!(status, Status::Failed(_)), "{status:?}");
+            drop(k);
+        });
+    });
+}
+
 /// A parent's and its child's last handles drop at once: both are examined, and both freed.
 #[test]
 fn a_parent_and_its_child_drop_their_last_handles_at_once() {
@@ -925,7 +971,7 @@ fn case_ar_creations_under_a_disposed_body() {
                 let body: DerivedNode<()> = effect!(|k| {
                     let _ = k.get();
                     started.store(true, Ordering::SeqCst);
-                    wait_for(&disposed);
+                    wait_for(disposed);
                     effect!(|k| {
                         let _ = k.get();
                         free_runs.update(|n: &u32| n + 1);

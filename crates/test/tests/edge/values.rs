@@ -172,6 +172,25 @@ async fn always_propagate_reruns_children_of_derived_nodes() {
 }
 
 #[lithia::test]
+async fn always_propagate_without_equals_changes_nothing() {
+    let flags: lithia::Flags = lithia::ALWAYS_PROPAGATE;
+    let literal: SourceNode<u32> = effect!(1, flags = ALWAYS_PROPAGATE);
+    let computed: SourceNode<u32> = effect!(1, flags = flags);
+    let runs: SourceNode<u32> = effect!(0);
+    let _child: DerivedNode<()> = effect!(|literal, computed| {
+        let _ = (literal.get(), computed.get());
+        runs.update(|n: &u32| n + 1);
+    });
+    lithia::flush().await;
+    literal.set(1);
+    lithia::flush().await;
+    computed.set(1);
+    lithia::flush().await;
+    // Without `equals` nothing compares, so every write propagates, flag or not.
+    assert_eq!(*runs.get(), 3);
+}
+
+#[lithia::test]
 async fn reflow_of_a_derived_node_reruns_it_and_its_children() {
     let a: SourceNode<i32> = effect!(1);
     let body_runs: SourceNode<u32> = effect!(0);

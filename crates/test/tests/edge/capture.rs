@@ -72,10 +72,48 @@ async fn effect_works_in_generic_functions() {
 }
 
 #[lithia::test]
-async fn move_closures_use_the_body_as_written() {
+async fn every_body_sees_its_captures_by_reference() {
+    let n: SourceNode<u32> = effect!(1);
+    let offset: u32 = 10;
+    let sync_body: DerivedNode<u32> = effect!(|n| {
+        let seen: &u32 = offset;
+        *n.get() + *seen
+    });
+    let moved_n: SourceNode<u32> = n.clone();
+    let sync_move: DerivedNode<u32> = effect!(move |moved_n| {
+        let seen: &u32 = offset;
+        *moved_n.get() + *seen
+    });
+    let async_body: DerivedNode<u32> = effect!(async |n| {
+        let seen: &u32 = offset;
+        *n.get() + *seen
+    });
+    let generator: DerivedNode<u32> = effect!(|n| {
+        let seen: &u32 = offset;
+        yield *n.get() + *seen;
+    });
+    let block: SourceNode<u32> = effect!(async {
+        let seen: &u32 = offset;
+        *seen
+    });
+    let moved_block: SourceNode<u32> = effect!(async move {
+        let owned: u32 = offset; // a block that runs once owns what it moved in
+        owned
+    });
+    lithia::test::settled(&generator).await;
+    lithia::test::settled(&async_body).await;
+    lithia::test::settled(&block).await;
+    lithia::test::settled(&moved_block).await;
+    let values: [u32; 6] =
+        [*sync_body.get(), *sync_move.get(), *async_body.get(), *generator.get(), *block.get(), *moved_block.get()];
+    assert_eq!(values, [11, 11, 11, 11, 10, 10]);
+}
+
+#[lithia::test]
+async fn move_closures_see_moved_values_by_reference() {
     let n: SourceNode<u32> = effect!(4);
     let offset: Arc<u32> = Arc::new(100);
-    let moved: DerivedNode<u32> = effect!(move |n| *n.get() + *offset);
+    let moved: DerivedNode<u32> = effect!(move |n| *n.get() + **offset);
     lithia::flush().await;
     assert_eq!(*moved.get(), 104);
 }

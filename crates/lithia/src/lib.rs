@@ -61,7 +61,7 @@ pub mod __private {
         HandleId, Inputs, KeyRef, KeyValue, NodeKey, Probe, ProbeViaArc, ProbeViaEq, ProbeViaHandle, ProbeViaOpaque,
         Probed, Reuse, Reused, reuse_derived, reuse_source, reuse_source_async,
     };
-    pub use crate::options::Options;
+    pub use crate::options::{Options, Shape};
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
     pub use crate::site::fn_path;
     pub use crate::value::{Capture, CaptureAny, FieldAny, InitDefault, MoveAny};

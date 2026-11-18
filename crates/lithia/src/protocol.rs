@@ -199,6 +199,14 @@ fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<Vec<Arc<Fail
     holds.then_some(causes)
 }
 
+/// Fails a fragile node whose condition holds (spec §9.2).
+fn fail_by_fragility(header: &Header, sched: &mut Sched, causes: Vec<Arc<Failure>>, work: &mut Work) {
+    let parent: String = causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
+    header.fail(Failure { message: "parent failed".to_string(), site: *header.site, causes });
+    sched.failed_by_fragility = true;
+    work.diags.push(Diag::FragilityFailed { site: header.site, parent });
+}
+
 /// Decides what a ready entry does: run, wait for the run in flight, or settle (spec §7.2).
 fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     let header: &Header = node.header();
@@ -221,11 +229,17 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     if let Some(fragility) = header.fragility {
         match fragility_causes(node, fragility) {
             Some(causes) => {
-                let parent: String =
-                    causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
-                header.fail(Failure { message: "parent failed".to_string(), site: *header.site, causes });
-                sched.failed_by_fragility = true;
-                work.diags.push(Diag::FragilityFailed { site: header.site, parent });
+                fail_by_fragility(header, sched, causes, work);
+                // A run in flight would publish over the failure: it restarts, and the restart
+                // finds the node fragile in `start_run`.
+                if let Some(slot) = sched.run.as_mut()
+                    && !slot.restart
+                {
+                    slot.restart = true;
+                    slot.shared.cancel();
+                    work.diags.push(Diag::Superseded { site: header.site, run: slot.id });
+                    work.wakes.push(slot.shared.clone());
+                }
                 settle(node, sched, epoch, work);
                 return;
             }
@@ -587,16 +601,18 @@ pub(crate) fn fire_deferred(deferred: Deferred) {
 }
 
 /// Links a new node to its parents and opens entries for every epoch a parent still owes
-/// a release in (spec §11.4 step 7).
-pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) {
+/// a release in (spec §11.4 step 7). Returns whether every parent had been torn down as a ghost.
+pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) -> bool {
     let header: &Header = node.header();
     let weak: crate::node::WeakNodeRef = Arc::downgrade(node);
+    let mut all_closed: bool = true;
     let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
     for parent in parents {
         let parent_header: &Header = parent.header();
         let epochs: Vec<Arc<Epoch>> = {
             let mut parent_guard: MutexGuard<'_, Sched> = parent_header.sched.lock();
             let parent_sched: &mut Sched = &mut parent_guard;
+            all_closed &= parent_sched.closed;
             parent_sched.subscribers.push((header.id, weak.clone()));
             let mut list: Vec<Arc<Epoch>> =
                 parent_sched.entries.values().map(|entry: &Entry| entry.epoch.clone()).collect();
@@ -621,6 +637,7 @@ pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) {
     }
     drop(guard);
     settle_wait::bump();
+    all_closed
 }
 
 /// Starts a queued run: takes over the runnable entries and the handover (spec §7.3 item 1).
@@ -658,9 +675,20 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
             }
             let killed: bool =
                 header.kind == Kind::AsyncSource && header.runs.load(Ordering::SeqCst) != shared.expected();
+            let fragile: Option<Vec<Arc<Failure>>> = match header.fragility {
+                Some(fragility) if !served.is_empty() && !header.is_ghost() && !killed => {
+                    fragility_causes(node, fragility)
+                }
+                _ => None,
+            };
             if served.is_empty() {
                 false
             } else if header.is_ghost() || killed {
+                close_served(node, served, &mut work);
+                false
+            } else if let Some(causes) = fragile {
+                // Decided before a parent failed: the node fails instead, as `decide` would now.
+                fail_by_fragility(header, sched, causes, &mut work);
                 close_served(node, served, &mut work);
                 false
             } else {

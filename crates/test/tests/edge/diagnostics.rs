@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lithia::{DerivedNode, Site, SourceNode, Status, effect};
+use lithia::{Changes, DerivedNode, Site, SourceNode, Status, effect};
 use tracing::Level;
 
 use crate::events::{Captured, events};
@@ -80,7 +80,7 @@ async fn a_node_freed_before_its_first_run_warns() {
 }
 
 #[lithia::test]
-async fn cuts_warn_for_value_holders_and_trace_for_effects() {
+async fn cuts_warn_for_value_holders_and_debug_for_effects() {
     let _ = events();
     let x: SourceNode<i32> = effect!(0);
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
@@ -106,7 +106,7 @@ async fn cuts_warn_for_value_holders_and_trace_for_effects() {
     });
     y.set(15);
     lithia::flush().await;
-    let event: Option<Captured> = find(Level::TRACE, &["cut an effect", &line], Duration::from_secs(2)).await;
+    let event: Option<Captured> = find(Level::DEBUG, &["cut an effect", &line], Duration::from_secs(2)).await;
     assert!(event.is_some());
 }
 
@@ -121,4 +121,59 @@ async fn an_unattributed_loop_triggers_the_rerun_rate_warning() {
         find(Level::WARN, &["reran faster than the configured rate", &line], Duration::from_secs(5)).await;
     lithia::dispose(&holder);
     assert!(event.is_some(), "loop count {}", *n.get());
+}
+
+const UNREAD: &str = "nothing reads it";
+
+#[lithia::test]
+async fn a_memo_that_loses_its_last_child_warns_that_nothing_reads_it() {
+    let _ = events();
+    let input: SourceNode<u32> = effect!(0);
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let memo: DerivedNode<u32> = effect!(|input| *input.get() + 1);
+    let reader: DerivedNode<()> = effect!(|memo| {
+        let _ = memo.get();
+    });
+    lithia::flush().await;
+    // Support keeps the memo for its reader: no warning.
+    drop(memo);
+    lithia::flush().await;
+    assert!(find(Level::WARN, &[UNREAD, &line], Duration::from_millis(50)).await.is_none());
+    // Its last reader goes without a sweep reaching the memo.
+    lithia::dispose(&reader);
+    assert!(find(Level::WARN, &[UNREAD, &line], Duration::from_secs(2)).await.is_some());
+    drop(input);
+}
+
+#[lithia::test]
+async fn a_memo_that_loses_its_last_stream_warns_that_nothing_reads_it() {
+    let _ = events();
+    let input: SourceNode<u32> = effect!(0);
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let memo: DerivedNode<u32> = effect!(|input| *input.get() + 1);
+    let stream: Changes<u32> = memo.changes();
+    lithia::flush().await;
+    drop(memo);
+    lithia::flush().await;
+    assert!(find(Level::WARN, &[UNREAD, &line], Duration::from_millis(50)).await.is_none());
+    drop(stream);
+    assert!(find(Level::WARN, &[UNREAD, &line], Duration::from_secs(2)).await.is_some());
+    drop(input);
+}
+
+#[lithia::test]
+async fn a_memo_that_loses_its_last_child_by_edge_alone_warns_too() {
+    let _ = events();
+    let input: SourceNode<u32> = effect!(0);
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let memo: DerivedNode<u32> = effect!(|input| *input.get() + 1);
+    // Its body never reads the memo, so only the edge makes it a reader.
+    let child: DerivedNode<()> = effect!(|memo| {});
+    lithia::flush().await;
+    drop(memo);
+    lithia::flush().await;
+    assert!(find(Level::WARN, &[UNREAD, &line], Duration::from_millis(50)).await.is_none());
+    lithia::dispose(&child);
+    assert!(find(Level::WARN, &[UNREAD, &line], Duration::from_secs(2)).await.is_some());
+    drop(input);
 }

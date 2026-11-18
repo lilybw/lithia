@@ -3,7 +3,6 @@
 
 //! Reference counting, disposal and ghosts (spec §10).
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,9 +38,18 @@ async fn children_of_an_emit_latest_ghost_keep_working() {
     k.set(10);
     lithia::flush().await;
     assert_eq!(*child.get(), 15);
-    let creation: std::thread::Result<DerivedNode<i32>> =
-        catch_unwind(AssertUnwindSafe(|| effect!(|frozen| *frozen.get())));
-    assert!(creation.is_err(), "a new child of a ghost panics");
+    // A new child behaves as the surviving one does.
+    let late: DerivedNode<i32> = effect!(|frozen, k| *frozen.get() * *k.get());
+    lithia::flush().await;
+    assert_eq!(*late.get(), 50);
+    k.set(2);
+    lithia::flush().await;
+    assert_eq!((*child.get(), *late.get()), (7, 10));
+    // With only the ghost for a parent, it is disposed at once, as disposal would have done.
+    let orphan: DerivedNode<i32> = effect!(|frozen| *frozen.get());
+    assert!(matches!(lithia::status(&orphan), Status::Ghost));
+    lithia::flush().await;
+    assert!(orphan.try_get().is_err());
 }
 
 #[lithia::test]
@@ -62,6 +70,17 @@ async fn a_cause_failure_ghost_fails_fragile_children() {
         other => panic!("expected Failed, got {other:?}"),
     }
     assert!(matches!(lithia::status(&lenient), Status::Ready), "the body never reads the ghost");
+    // New children behave as the surviving ones do.
+    let late_strict: DerivedNode<i32> = effect!(|doomed, k| *k.get(), fragility = FRAGILE);
+    let late_lenient: DerivedNode<i32> = effect!(|doomed, k| *k.get());
+    let late_reader: DerivedNode<i32> = effect!(|doomed, k| *doomed.get() + *k.get());
+    lithia::flush().await;
+    match lithia::status(&late_strict) {
+        Status::Failed(failure) => assert_eq!(failure.causes[0].message, "parent disposed"),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert!(matches!(lithia::status(&late_lenient), Status::Ready));
+    assert!(matches!(lithia::status(&late_reader), Status::Failed(_)), "reading the ghost panics");
 }
 
 #[lithia::test]

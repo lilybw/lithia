@@ -192,7 +192,8 @@ fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
             released += 1;
         }
     }
-    let unread: Vec<&'static crate::Site> = still.iter().chain(&order).filter_map(unread).collect();
+    let unread: Vec<&'static crate::Site> =
+        still.iter().chain(&order).filter_map(|node: &NodeRef| unread(node.header())).collect();
     keep.extend(still);
     keep.extend(order);
     keep.extend(search.region.into_values());
@@ -204,9 +205,15 @@ fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     keep
 }
 
+/// Warns if support keeps the node running as a memo that nothing reads; for when it loses a reader.
+pub(crate) fn check_unread(header: &Header) {
+    if let Some(site) = unread(header) {
+        crate::diag::unread_memo(site);
+    }
+}
+
 /// The site of a memo that support keeps running though nothing reads it, for the warning.
-fn unread(node: &NodeRef) -> Option<&'static crate::Site> {
-    let header: &Header = node.header();
+fn unread(header: &Header) -> Option<&'static crate::Site> {
     if header.is_unit
         || !is_held(header)
         || !header.targets.is_empty()

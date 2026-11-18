@@ -24,8 +24,11 @@ fn row(id: u32, title: &str) -> Row {
     Row { id, title: title.to_string() }
 }
 
-/// The text of every debug event emitted in this binary.
-fn debug_events() -> Arc<Mutex<Vec<String>>> {
+/// The level and text of every event emitted in this binary.
+type Events = Arc<Mutex<Vec<(Level, String)>>>;
+
+/// The events collected so far, collecting from the first call on.
+fn events() -> Events {
     struct Fields(String);
     impl Visit for Fields {
         fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
@@ -35,20 +38,18 @@ fn debug_events() -> Arc<Mutex<Vec<String>>> {
             let _ = write!(self.0, "{}={} ", field.name(), value);
         }
     }
-    struct Collector(Arc<Mutex<Vec<String>>>);
+    struct Collector(Events);
     impl<S: Subscriber> Layer<S> for Collector {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-            if *event.metadata().level() == Level::DEBUG {
-                let mut fields: Fields = Fields(String::new());
-                event.record(&mut fields);
-                self.0.lock().unwrap().push(fields.0);
-            }
+            let mut fields: Fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().unwrap().push((*event.metadata().level(), fields.0));
         }
     }
-    static EVENTS: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
+    static EVENTS: OnceLock<Events> = OnceLock::new();
     EVENTS
         .get_or_init(|| {
-            let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let events: Events = Arc::new(Mutex::new(Vec::new()));
             let subscriber: tracing_subscriber::layer::Layered<Collector, tracing_subscriber::Registry> =
                 tracing_subscriber::registry().with(Collector(events.clone()));
             tracing::subscriber::set_global_default(subscriber).expect("one global subscriber");
@@ -57,9 +58,13 @@ fn debug_events() -> Arc<Mutex<Vec<String>>> {
         .clone()
 }
 
-/// Whether a debug event containing `text` and naming a site in this file has arrived.
-fn reported(text: &str) -> bool {
-    debug_events().lock().unwrap().iter().any(|event: &String| event.contains(text) && event.contains("keyed.rs:"))
+/// Whether an event at `level` containing `text` and naming a site in this file has arrived.
+fn reported(level: Level, text: &str) -> bool {
+    events()
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(at, event): &(Level, String)| *at == level && event.contains(text) && event.contains("keyed.rs:"))
 }
 
 fn texts(list: &DerivedNode<Vec<DerivedNode<String>>>) -> Vec<String> {
@@ -189,10 +194,10 @@ async fn case_bf_new_parents_make_a_new_node() {
     assert_eq!(lithia::test::live_nodes().await, base + 2);
 }
 
-// Case BG: duplicate keys are matched in creation order and reported at debug level.
+// Case BG: duplicate keys are matched in creation order and warned about.
 #[lithia::test]
 async fn case_bg_duplicate_keys_match_in_order() {
-    let _events: Arc<Mutex<Vec<String>>> = debug_events();
+    let _events: Events = events();
     let rows: SourceNode<Vec<Row>> = effect!(vec![row(1, "a"), row(1, "b")]);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let list: DerivedNode<Vec<DerivedNode<String>>> = effect!(|rows| {
@@ -213,7 +218,7 @@ async fn case_bg_duplicate_keys_match_in_order() {
     lithia::flush().await;
     // Each run of `list` reruns the two rows too, since they depend on `rows`; equal captures add nothing.
     assert_eq!((texts(&list), runs.load(Ordering::SeqCst)), (vec!["a".to_string(), "b".to_string()], 2));
-    assert!(reported("same key"));
+    assert!(reported(Level::WARN, "same key"));
     rows.set(vec![row(1, "b"), row(1, "a")]);
     lithia::flush().await;
     assert_eq!(texts(&list), ["b", "a"]);
@@ -330,13 +335,13 @@ async fn case_bi_a_superseded_run_hands_its_keyed_nodes_on() {
 // Case BJ: a key outside any body has nothing to reclaim; the node is created as usual.
 #[lithia::test]
 async fn case_bj_a_key_outside_a_body() {
-    let _events: Arc<Mutex<Vec<String>>> = debug_events();
+    let _events: Events = events();
     let base: usize = lithia::test::live_nodes().await;
     let made: Vec<SourceNode<u32>> = (0..2).map(|_| effect!(7u32, key = 1u8)).collect();
     made[0].set(8);
     assert_eq!((*made[0].get(), *made[1].get()), (8, 7));
     assert_eq!(lithia::test::live_nodes().await, base + 2);
-    assert!(reported("outside a body"));
+    assert!(reported(Level::DEBUG, "outside a body"));
 }
 
 // Case BK: an `Arc` capture compares by pointer; a capture without `PartialEq` always counts as changed.

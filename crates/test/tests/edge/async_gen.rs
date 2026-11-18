@@ -137,3 +137,42 @@ async fn flush_waits_through_a_synchronous_generator() {
     lithia::flush().await;
     assert_eq!(*last.get(), 1000);
 }
+
+#[lithia::test]
+async fn settled_follows_a_write_along_an_edge() {
+    let input: SourceNode<u32> = effect!(0);
+    let mirror: SourceNode<u32> = effect!(0);
+    let _writer: DerivedNode<()> = effect!(|input| mirror.set(*input.get()));
+    let slow: DerivedNode<u32> = effect!(async |mirror| {
+        let value: u32 = *mirror.get();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        value
+    });
+    lithia::test::settled(&slow).await;
+    input.set(5);
+    // `slow` is downstream of a node the writer writes, not of `input`.
+    lithia::test::settled(&input).await;
+    assert_eq!(*slow.get(), 5);
+}
+
+#[lithia::test]
+async fn settled_follows_a_write_through_a_handle_read_from_a_value() {
+    let input: SourceNode<u32> = effect!(0);
+    let mirror: SourceNode<u32> = effect!(0);
+    let slot: SourceNode<Option<SourceNode<u32>>> = effect!(Some(mirror.clone()));
+    let _writer: DerivedNode<()> = effect!(|input, slot| {
+        if let Some(target) = &*slot.get() {
+            target.set(*input.get());
+        }
+    });
+    let slow: DerivedNode<u32> = effect!(async |mirror| {
+        let value: u32 = *mirror.get();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        value
+    });
+    lithia::test::settled(&slow).await;
+    input.set(5);
+    // The writer has no edge to `mirror`: its run noted the write.
+    lithia::test::settled(&input).await;
+    assert_eq!(*slow.get(), 5);
+}

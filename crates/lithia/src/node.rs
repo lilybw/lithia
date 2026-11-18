@@ -148,6 +148,8 @@ pub(crate) struct Sched {
     pub(crate) subscribers: Vec<(NodeId, WeakNodeRef)>,
     /// Nodes created by this node's runs, held weakly, for `lithia::test::settled`.
     pub(crate) created: Vec<WeakNodeRef>,
+    /// Nodes its runs wrote or reflowed without an edge, held weakly, for `lithia::test::settled`.
+    pub(crate) wrote: Vec<WeakNodeRef>,
     /// The generation: nodes the runs created without a key, held until the next run is decided.
     pub(crate) generation: Vec<NodeRef>,
     /// The generation's keyed nodes; a release hands them to the holdover.
@@ -173,6 +175,7 @@ impl Sched {
             ran_at: 0,
             subscribers: Vec::new(),
             created: Vec::new(),
+            wrote: Vec::new(),
             generation: Vec::new(),
             keyed: KeyedSet::default(),
             holdover: KeyedSet::default(),
@@ -378,10 +381,17 @@ impl Header {
         out
     }
 
-    /// Removes a freed or disposed child from the subscriber list.
+    /// Removes a freed or disposed child from the subscriber list; the last one leaving may leave
+    /// a memo unread (spec §12).
     pub(crate) fn unsubscribe(&self, child: NodeId) {
         let mut guard: MutexGuard<'_, Sched> = self.sched.lock();
+        let before: usize = guard.subscribers.len();
         guard.subscribers.retain(|(id, _): &(NodeId, WeakNodeRef)| *id != child);
+        let last: bool = guard.subscribers.len() < before && guard.subscribers.is_empty();
+        drop(guard);
+        if last {
+            crate::support::check_unread(self);
+        }
     }
 
     /// Notifies `changes()` streams of a new value.
@@ -399,7 +409,23 @@ pub(crate) struct Node<K: NodeValue> {
     pub(crate) value: ArcCell<K>,
     /// Empty for source nodes; taken on disposal.
     pub(crate) body: Mutex<Option<Body<K>>>,
-    pub(crate) equals: Option<Equals<K>>,
+    /// Empty without `equals`; a reclaiming creation replaces it (spec §10.1, Keyed nodes).
+    pub(crate) equals: Option<ArcCell<Equals<K>>>,
+}
+
+impl<K: NodeValue> Node<K> {
+    /// The current comparator, if the node has one.
+    pub(crate) fn comparator(&self) -> Option<Arc<Equals<K>>> {
+        self.equals.as_ref().and_then(ArcCell::load_full)
+    }
+
+    /// Takes a reclaiming creation's comparator; returns the one it replaced.
+    pub(crate) fn adopt_equals(&self, equals: Option<Equals<K>>) -> Option<Arc<Equals<K>>> {
+        let (Some(cell), Some(equals)) = (&self.equals, equals) else {
+            return None;
+        };
+        cell.swap(Some(Arc::new(equals)))
+    }
 }
 
 /// Operations the scheduler needs on a node of any value type.
