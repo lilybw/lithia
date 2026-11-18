@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="lithia-site" data-root-path="./">
+<title>$pagetitle$</title>
+<link rel="stylesheet" href="spec.css">
+$if(highlighting-css)$
+<style>
+$highlighting-css$
+</style>
+$endif$
+$for(header-includes)$
+$header-includes$
+$endfor$
+</head>
+<body>
+<header class="site"><a href="../">lithia $version$</a><a href="../api/lithia/index.html">API</a>$if(pdf)$<a href="$pdf$">PDF</a>$endif$</header>
+<nav id="TOC" aria-label="Contents">
+<details>
+<summary>Contents</summary>
+$table-of-contents$
+</details>
+</nav>
+<main>
+$body$
+</main>
+</body>
+</html>

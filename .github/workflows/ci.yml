@@ -50,6 +50,13 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+      - name: Docs site snapshot
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends pandoc
+          python3 .github/scripts/site.py snapshot --version 0.0.0 --out target/site-snapshot
+
       - name: Tests, validation and compile-fail cases
         run: cargo test --workspace --locked
 

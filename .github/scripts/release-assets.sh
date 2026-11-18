@@ -19,11 +19,11 @@ previous="$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true
 sed -i 's/^publish = false$/publish = true/' Cargo.toml
 cargo package -p lithia-macro -p lithia --locked --allow-dirty
 git checkout -- Cargo.toml
-cargo doc --no-deps -p lithia -p lithia-macro --locked
+python3 .github/scripts/site.py snapshot --version "${tag#v}" --out target/site-snapshot
 
 rm -rf target/dist && mkdir -p target/dist
 cp "target/package/lithia-macro-${base}.crate" "target/package/lithia-${base}.crate" target/dist/
-tar -czf "target/dist/lithia-docs-${tag}.tar.gz" -C target doc
+tar -czf "target/dist/lithia-docs-${tag}.tar.gz" -C target/site-snapshot api spec
 spec="$(printf "%s\n" docs/spec/LITHIA_design_spec_v*.pdf | sort -V | tail -n 1)"
 cp "$spec" target/dist/
 (cd target/dist && sha256sum -- * > SHA256SUMS)
@@ -31,7 +31,7 @@ cp "$spec" target/dist/
 {
     echo "Automated nightly release of \`$(git rev-parse --short HEAD)\`, built after the test matrix passed on Ubuntu and Windows."
     echo
-    echo "Assets: the \`lithia\` and \`lithia-macro\` crate packages (version ${base}), the API docs, the design spec and SHA-256 sums."
+    echo "Assets: the \`lithia\` and \`lithia-macro\` crate packages (version ${base}), the docs (API reference and spec as HTML), the spec PDF and SHA-256 sums."
     echo
     if [[ -n "$previous" ]]; then
         echo "Changes since ${previous}:"

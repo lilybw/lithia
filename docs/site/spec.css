@@ -1,0 +1,69 @@
+/* The design spec's page: Lora for text, a readable column, tables that scroll. */
+@font-face { font-family: "Lora"; font-style: normal; font-weight: 400 700; font-display: swap; src: url("fonts/lora-latin-wght-normal.woff2") format("woff2-variations"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Lora"; font-style: normal; font-weight: 400 700; font-display: swap; src: url("fonts/lora-latin-ext-wght-normal.woff2") format("woff2-variations"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Lora"; font-style: italic; font-weight: 400 700; font-display: swap; src: url("fonts/lora-latin-wght-italic.woff2") format("woff2-variations"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Lora"; font-style: italic; font-weight: 400 700; font-display: swap; src: url("fonts/lora-latin-ext-wght-italic.woff2") format("woff2-variations"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+
+:root {
+    color-scheme: light;
+    --text: #1d1b19;
+    --muted: #6b6560;
+    --line: #e4ded6;
+    --paper: #fdfcfa;
+    --code-bg: #f5f2ee;
+    --link: #8a3b12;
+}
+* { box-sizing: border-box; }
+html { background: var(--paper); }
+body {
+    margin: 0 auto;
+    max-width: 52rem;
+    padding: 0 1.25rem 4rem;
+    font: 1.0625rem/1.65 "Lora", Georgia, serif;
+    color: var(--text);
+    overflow-wrap: break-word;
+}
+a { color: var(--link); text-underline-offset: 0.15em; }
+header.site {
+    display: flex;
+    gap: 1.25rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.95rem;
+}
+header.site a:first-child { font-weight: 600; margin-right: auto; text-decoration: none; color: var(--text); }
+nav#TOC { margin: 1.25rem 0; font-size: 0.95rem; }
+nav#TOC summary { cursor: pointer; color: var(--muted); }
+nav#TOC ul { padding-left: 1.25rem; margin: 0.25rem 0; }
+h1, h2, h3, h4 { line-height: 1.25; scroll-margin-top: 1rem; }
+h1 { font-size: 2rem; margin: 1.5rem 0 0.25rem; }
+h2 { font-size: 1.45rem; margin-top: 2.5rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--line); }
+h3 { font-size: 1.15rem; margin-top: 2rem; }
+h4 { font-size: 1rem; margin-top: 1.5rem; }
+code, pre {
+    font-family: ui-monospace, "SFMono-Regular", "Source Code Pro", Menlo, Consolas, monospace;
+    font-size: 0.86em;
+}
+code { background: var(--code-bg); padding: 0.05em 0.3em; border-radius: 3px; }
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0.75rem 1rem;
+    overflow-x: auto;
+    line-height: 1.45;
+}
+pre code { background: none; padding: 0; font-size: 1em; }
+div.sourceCode { margin: 1rem 0; }
+table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+    margin: 1rem 0;
+}
+th, td { border: 1px solid var(--line); padding: 0.35rem 0.6rem; vertical-align: top; text-align: left; }
+th { background: var(--code-bg); }
+img { max-width: 100%; height: auto; }
+blockquote { margin: 1rem 0; padding: 0 1rem; border-left: 3px solid var(--line); color: var(--muted); }

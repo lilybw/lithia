@@ -1,5 +1,5 @@
 # Every push to `nightly` runs the full test matrix; when it passes, the commit is released as
-# v<crate version>.<n>, with n one above the last release of that version.
+# v<crate version>.<n>, with n one above the last release of that version, and the docs site is rebuilt.
 name: nightly
 
 on:
@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.assets.outputs.tag }}
     env:
       RUST_TOOLCHAIN: "1.97.0"
       CARGO_TERM_COLOR: always
@@ -39,6 +41,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install pandoc
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends pandoc
+
       - name: Build assets
         id: assets
         run: .github/scripts/release-assets.sh
@@ -53,3 +58,12 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "lithia $TAG" \
             --notes-file target/release-notes.md
+
+  pages:
+    needs: release
+    if: needs.release.outputs.tag != ''
+    uses: ./.github/workflows/pages.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write

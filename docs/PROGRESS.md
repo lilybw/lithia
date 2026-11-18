@@ -198,7 +198,15 @@ Five passes from `TODO.md`, run in series:
 - Packaging flips `publish = false` to `true` on the runner only: cargo verifies `lithia` against the
   packaged `lithia-macro` only for publishable packages. The crates have no license yet, so cargo warns.
 - Branches: `nightly` (released when green) and `release` (stable merges; v0.3.1 merged 2026-11-18). The old
-  `release/v0.3.0` branch gives way to `release` and is tagged `v0.3.0`.
+  `release/v0.3.0` branch gave way to `release`; its tip 003d740 is in `release`'s history (no tag: this
+  session cannot push tags).
+- Docs site (GitHub Pages, deployed by Actions): `pages.yml` runs after each release, or by hand. Each
+  release's `lithia-docs-<tag>.tar.gz` holds `api/` (rustdoc with `docs/site/rustdoc.css`: Lora as the text
+  font, self-hosted under OFL; plus the forwarding script) and `spec/` (the newest spec via pandoc and
+  `docs/site/spec-template.html`). `.github/scripts/site.py assemble` lays the newest 50 out under
+  `versions/<v>/`, the newest also at `api/` and `spec/`, with a front page, `versions.json` and a 404 page.
+  `?v=<version>` on a latest page forwards to `versions/<version>/…` (`docs/site/ts/version.ts`, compiled by
+  `tsc` 5.9.3 at build time). v0.3.1.1 and v0.3.1.2 predate this: rustdoc only, the spec as PDF.
 
 ## Next steps
 

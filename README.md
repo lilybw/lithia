@@ -59,3 +59,10 @@ models). When it passes, [`nightly.yml`](.github/workflows/nightly.yml) releases
 `v<crate version>.<n>`, such as `v0.3.1.1`, `v0.3.1.2`, with the `lithia` and `lithia-macro` crate
 packages, the API docs, the design spec and SHA-256 sums attached. A new crate version in `Cargo.toml`
 starts again at `.1`. The `release` branch holds what was last merged as stable.
+
+Each release also rebuilds the docs site on GitHub Pages ([`pages.yml`](.github/workflows/pages.yml)):
+the API reference from rustdoc and the spec as HTML, the newest at `api/` and `spec/` and the newest 50
+releases under `versions/<version>/`. Any `api/` or `spec/` page takes `?v=<version>` to open that
+version's copy, such as `api/lithia/index.html?v=0.3.1.2`. The site's styling and scripts live in
+[`docs/site`](docs/site) and [`.github/scripts/site.py`](.github/scripts/site.py); nothing in the crates
+changes for it. `python3 .github/scripts/site.py snapshot --version X --out DIR` builds one version locally.
