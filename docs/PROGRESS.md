@@ -10,7 +10,7 @@ nodes to v0.3.0's lifetime rule; v0.3.0, v0.2.5 and v0.2.4 are kept for referenc
 | `crates/lithia` | `lithia` | Engine and public API: nodes, handles, epochs, scheduling protocol, drops, diagnostics; re-exports the macros; `lithia::test` utilities |
 | `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
 | `crates/validation` | `lithia-validation` | Spec §13 cases, verbatim (`tests/cases.rs` A–AG, `tests/support.rs` AI–BC, `tests/keyed.rs` BD–BK, `tests/compile.rs` AH) |
-| `crates/test` | `lithia-test` | Edge-case unit and integration tests |
+| `crates/test` | `lithia-test` | Edge-case tests: `tests/edge/` (one module per area, one binary), `tests/deep_chain.rs`, `tests/loom.rs` |
 | `crates/bench` | `lithia-bench` | Spec §15 benchmarks |
 
 ## Validation cases (spec §13)
@@ -86,7 +86,11 @@ BJ a key outside a body, BK captures without `PartialEq`: all pass.
 
 - Reflow of a source node re-emits its value to its children but sends nothing to `changes()`, since the value did not change.
 - Diagnostics raised while a scheduling lock is held are gathered and emitted after it is released (spec §11.4 step 1).
-- `lithia-test` holds 75 edge-case tests across values, propagation, async/generators, lifetime, capture, diagnostics, runtimes, support (`tests/support.rs`) and keyed nodes (`tests/keyed.rs`).
+- `lithia-test` holds 75 edge-case tests: 74 in `tests/edge/` (values, propagation, async/generators, lifetime,
+  capture, diagnostics, runtimes, support, keyed nodes; one module each, sharing one tracing collector in
+  `events.rs`) and the 20 000-node chain in `tests/deep_chain.rs`. The chain runs alone because a sweep
+  through handleless nodes walks to the top of the chain while any scoped node is alive, which makes
+  building it beside other tests' scoped nodes quadratic (see Next steps).
 
 ## Model checking (loom)
 
@@ -214,3 +218,6 @@ Five passes from `TODO.md`, run in series:
 3. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
 4. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
 5. Decide the keyed open questions (§17): options of a later creation, and whether duplicate keys warn.
+6. Make `blocked()` in `support.rs` cheap while scoped nodes exist: today `ANY_SCOPED` stays set once any
+   node is scoped, and every sweep then walks handleless parents to an anchor, so a deep handleless chain
+   costs quadratic time to build. A count of live scoped nodes, or a forward walk from them, would fix it.

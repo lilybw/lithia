@@ -5,55 +5,23 @@
 
 #![allow(clippy::type_complexity, clippy::get_first)]
 
-use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lithia::{DerivedNode, Readable, SourceNode, effect};
 use tokio::sync::oneshot;
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing::Level;
 
-/// Every event at WARN or TRACE from lithia, as `name=value` text.
-fn events() -> Arc<Mutex<Vec<(Level, String)>>> {
-    struct Fields(String);
-    impl Visit for Fields {
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            let _ = write!(self.0, "{}={:?} ", field.name(), value);
-        }
-        fn record_str(&mut self, field: &Field, value: &str) {
-            let _ = write!(self.0, "{}={} ", field.name(), value);
-        }
-    }
-    struct Collector(Arc<Mutex<Vec<(Level, String)>>>);
-    impl<S: Subscriber> Layer<S> for Collector {
-        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-            let mut fields: Fields = Fields(String::new());
-            event.record(&mut fields);
-            self.0.lock().unwrap().push((*event.metadata().level(), fields.0));
-        }
-    }
-    static EVENTS: OnceLock<Arc<Mutex<Vec<(Level, String)>>>> = OnceLock::new();
-    EVENTS
-        .get_or_init(|| {
-            let events: Arc<Mutex<Vec<(Level, String)>>> = Arc::new(Mutex::new(Vec::new()));
-            let subscriber: tracing_subscriber::layer::Layered<Collector, tracing_subscriber::Registry> =
-                tracing_subscriber::registry().with(Collector(events.clone()));
-            tracing::subscriber::set_global_default(subscriber).expect("one global subscriber");
-            events
-        })
-        .clone()
-}
+use crate::events::{Captured, events};
 
 /// Whether a warning containing `text` and naming `line` of this file arrives within `limit`.
 async fn warned(text: &str, line: u32, limit: Duration) -> bool {
     let at: String = format!("support.rs:{line}:");
     let deadline: tokio::time::Instant = tokio::time::Instant::now() + limit;
     loop {
-        let found: bool = events().lock().unwrap().iter().any(|(level, text_seen): &(Level, String)| {
-            *level == Level::WARN && text_seen.contains(text) && text_seen.contains(&at)
+        let found: bool = events().lock().unwrap().iter().any(|event: &Captured| {
+            event.level == Level::WARN && event.text.contains(text) && event.text.contains(&at)
         });
         if found || tokio::time::Instant::now() >= deadline {
             return found;
@@ -364,10 +332,10 @@ async fn a_supported_starting_point_ends_its_sweep_at_once() {
     }
     let walked: usize = events().lock().unwrap()[before..]
         .iter()
-        .filter(|(level, text): &&(Level, String)| *level == Level::TRACE && text.contains("lithia: sweep"))
-        .map(|(_, text): &(Level, String)| {
-            let at: usize = text.find("walked=").unwrap() + "walked=".len();
-            text[at..].split(' ').next().unwrap().parse::<usize>().unwrap()
+        .filter(|event: &&Captured| event.level == Level::TRACE && event.text.contains("lithia: sweep"))
+        .map(|event: &Captured| {
+            let at: usize = event.text.find("walked=").unwrap() + "walked=".len();
+            event.text[at..].split(' ').next().unwrap().parse::<usize>().unwrap()
         })
         .sum();
     // Walking the hub's downstream would take 20 000 nodes per drop; other tests' sweeps add a few.

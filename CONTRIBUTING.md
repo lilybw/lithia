@@ -22,7 +22,7 @@ Only pull requests change `nightly` and `release`; the maintainer can also push 
 | `crates/lithia` | `lithia` | The engine and its public API |
 | `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
 | `crates/validation` | `lithia-validation` | The spec's validation cases (§13), verbatim, and the compile-fail cases |
-| `crates/test` | `lithia-test` | Edge-case tests, and the loom models |
+| `crates/test` | `lithia-test` | Edge-case tests (`tests/edge/`, one module per area, built as one binary), the deep-chain test and the loom models |
 | `crates/bench` | `lithia-bench` | The spec's benchmarks (§15) |
 | `docs/spec` | | The design spec, one file per version |
 | `docs/site`, `.github/scripts` | | The docs site's styling, scripts and build |
@@ -32,6 +32,7 @@ Only pull requests change `nightly` and `release`; the maintainer can also push 
 ```sh
 cargo test --workspace          # everything, including the compile-fail cases
 cargo test -p lithia-validation # the spec's cases
+cargo test -p lithia-test --test edge  # the edge-case tests
 cargo bench -p lithia-bench     # prints a results table
 RUSTFLAGS="--cfg lithia_loom" CARGO_TARGET_DIR=target/loom cargo test --release -p lithia-test --test loom
 python3 .github/scripts/site.py snapshot --version 0.0.0 --out target/site-snapshot  # needs pandoc and npx

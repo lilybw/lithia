@@ -49,35 +49,6 @@ async fn one_node_through_two_handles_is_one_dependency() {
 }
 
 #[lithia::test]
-async fn a_long_chain_propagates_and_drops_without_recursion() {
-    let source: SourceNode<u64> = effect!(0);
-    let mut tail: DerivedNode<u64> = effect!(|source| *source.get() + 1);
-    for _ in 0..20_000 {
-        let previous: DerivedNode<u64> = tail.clone();
-        tail = effect!(|previous| *previous.get() + 1);
-    }
-    lithia::flush().await;
-    assert_eq!(*tail.get(), 20_001);
-    source.set(10);
-    lithia::flush().await;
-    assert_eq!(*tail.get(), 20_011);
-    let base: usize = lithia::test::live_nodes().await;
-    // Every node is top-level, so support holds the chain while `source` is held. Dropping the
-    // head's handle starts one sweep that lets go of all 20 002 nodes; they are freed
-    // bottom-up, parents through a worklist and bodies on the blocking pool, without recursion.
-    drop(tail);
-    assert_eq!(lithia::test::live_nodes().await, base, "support still holds the chain");
-    drop(source);
-    let freed: Result<(), tokio::time::error::Elapsed> = tokio::time::timeout(Duration::from_secs(15), async {
-        while lithia::test::live_nodes().await != base - 20_002 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await;
-    assert!(freed.is_ok(), "live nodes: {} of {}", lithia::test::live_nodes().await, base - 20_002);
-}
-
-#[lithia::test]
 async fn a_four_way_binding_mesh_terminates_and_agrees() {
     let a: SourceNode<i32> = effect!(0, equals = lithia::eq);
     let b: SourceNode<i32> = effect!(0, equals = lithia::eq);

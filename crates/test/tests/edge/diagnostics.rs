@@ -3,56 +3,13 @@
 
 //! Sites and tracing diagnostics (spec §4.3, §12).
 
-use std::fmt::Write as _;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lithia::{DerivedNode, Site, SourceNode, Status, effect};
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing::Level;
 
-/// One captured event: its level and every field rendered as `name=value`.
-#[derive(Clone, Debug)]
-struct Captured {
-    level: Level,
-    text: String,
-}
-
-struct Fields(String);
-
-impl Visit for Fields {
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        let _ = write!(self.0, "{}={:?} ", field.name(), value);
-    }
-
-    fn record_str(&mut self, field: &Field, value: &str) {
-        let _ = write!(self.0, "{}={} ", field.name(), value);
-    }
-}
-
-struct Collector(Arc<Mutex<Vec<Captured>>>);
-
-impl<S: Subscriber> Layer<S> for Collector {
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let mut fields: Fields = Fields(String::new());
-        event.record(&mut fields);
-        self.0.lock().unwrap().push(Captured { level: *event.metadata().level(), text: fields.0 });
-    }
-}
-
-fn events() -> Arc<Mutex<Vec<Captured>>> {
-    static EVENTS: OnceLock<Arc<Mutex<Vec<Captured>>>> = OnceLock::new();
-    EVENTS
-        .get_or_init(|| {
-            let events: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(Vec::new()));
-            let subscriber: tracing_subscriber::layer::Layered<Collector, tracing_subscriber::Registry> =
-                tracing_subscriber::registry().with(Collector(events.clone()));
-            tracing::subscriber::set_global_default(subscriber).expect("one global subscriber");
-            events
-        })
-        .clone()
-}
+use crate::events::{Captured, events};
 
 /// Waits up to `limit` for an event at `level` whose text contains every needle.
 async fn find(level: Level, needles: &[&str], limit: Duration) -> Option<Captured> {
