@@ -37,7 +37,7 @@ pub use handles::{Accessor, DerivedNode, Dispose, Readable, Reflow, Setter, Sour
 pub use lithia_macro::{effect, main, test};
 pub use options::{
     ALWAYS_PROPAGATE, FRAGILE, Flags, Fragility, GhostPolicy, ON_GHOST_CAUSE_FAILURE, ON_GHOST_EMIT_LATEST,
-    ON_GHOST_SET_AS_PENDING, SEMI_FRAGILE,
+    ON_GHOST_SET_AS_PENDING, SEMI_FRAGILE, WHOLE_EPOCHS,
 };
 pub use site::Site;
 pub use status::{Failure, Ghosted, Status};
@@ -77,7 +77,7 @@ pub mod __private {
     pub mod consts {
         pub use crate::options::{
             ALWAYS_PROPAGATE, FRAGILE, ON_GHOST_CAUSE_FAILURE, ON_GHOST_EMIT_LATEST, ON_GHOST_SET_AS_PENDING,
-            SEMI_FRAGILE,
+            SEMI_FRAGILE, WHOLE_EPOCHS,
         };
     }
 }

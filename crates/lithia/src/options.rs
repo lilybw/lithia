@@ -48,11 +48,16 @@ bitflags::bitflags! {
     pub struct Flags: u32 {
         /// Keeps the old value on an equal write, but propagates anyway; without `equals`, a no-op.
         const ALWAYS_PROPAGATE = 1;
+        /// Runs only once every epoch that has reached the node is ready at it, so a run never
+        /// reads one epoch's changes beside another's half-propagated ones.
+        const WHOLE_EPOCHS = 2;
     }
 }
 
 /// Keeps the old value on an equal write, but propagates anyway; without `equals`, a no-op.
 pub const ALWAYS_PROPAGATE: Flags = Flags::ALWAYS_PROPAGATE;
+/// Runs only once every epoch that has reached the node is ready at it (spec §8).
+pub const WHOLE_EPOCHS: Flags = Flags::WHOLE_EPOCHS;
 
 /// Comparator for the `equals` option, where `true` means equal.
 pub(crate) type Equals<K> = Arc<dyn Fn(&K, &K) -> bool + Send + Sync>;

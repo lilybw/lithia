@@ -284,6 +284,12 @@ fn parents_changed_since(node: &NodeRef, ran_at: u64) -> bool {
     })
 }
 
+/// Whether a `WHOLE_EPOCHS` node still waits for an epoch that has reached it to become ready.
+fn whole_epochs_wait(header: &Header, sched: &Sched) -> bool {
+    header.flags.contains(crate::Flags::WHOLE_EPOCHS)
+        && sched.entries.values().any(|entry: &Entry| !entry.waiting.is_empty())
+}
+
 /// Fails a fragile node whose condition holds (spec §9.2).
 fn fail_by_fragility(header: &Header, sched: &mut Sched, causes: Vec<Arc<Failure>>, work: &mut Work) {
     let parent: String = causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
@@ -359,7 +365,10 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     }
     entry.runnable = true;
     let waits_for_run: bool = entry.reflow && !entry.first && !entry.force && !changed;
+    let whole_wait: bool = whole_epochs_wait(header, sched);
     match sched.run.as_mut() {
+        // Under `WHOLE_EPOCHS`, the last epoch to become ready starts the run (or `settle` does).
+        None if whole_wait => {}
         None => {
             sched.release_generation(&mut work.released);
             if !sched.queued {
@@ -386,6 +395,17 @@ fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
         return;
     };
     wake_gated(sched, work);
+    // The last epoch a `WHOLE_EPOCHS` node waited for settled: the run the others made due starts.
+    if node.header().flags.contains(crate::Flags::WHOLE_EPOCHS)
+        && sched.run.is_none()
+        && !sched.queued
+        && !whole_epochs_wait(node.header(), sched)
+        && sched.entries.values().any(|entry: &Entry| entry.runnable)
+    {
+        sched.release_generation(&mut work.released);
+        sched.queued = true;
+        work.spawns.push(node.clone());
+    }
     match sched.owed_mut(epoch) {
         Some(served) => {
             served.carry = served.carry.max(entry.carry);
@@ -803,7 +823,8 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
         } else {
             standing(node, creator.as_ref())
         };
-        let started: bool = if sched.run.is_some() {
+        let started: bool = if sched.run.is_some() || whole_epochs_wait(header, sched) {
+            // A `WHOLE_EPOCHS` node framed again meanwhile starts once that epoch is ready too.
             false
         } else if standing == Standing::Gated {
             // Its creator decides it first: it starts again once the creator has moved on.
@@ -1095,8 +1116,8 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
                 }
             }
             header.clear_bits(phase::PENDING);
-            let follow_up: bool =
-                sched.entries.values().any(|entry: &Entry| entry.runnable && entry.waiting.is_empty());
+            let follow_up: bool = !whole_epochs_wait(header, sched)
+                && sched.entries.values().any(|entry: &Entry| entry.runnable && entry.waiting.is_empty());
             if end == End::Finished && follow_up && !sched.queued && !header.is_ghost() {
                 sched.queued = true;
                 work.spawns.push(node.clone());

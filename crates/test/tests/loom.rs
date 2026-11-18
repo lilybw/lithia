@@ -882,6 +882,50 @@ fn a_cut_writer_reruns_after_its_epoch() {
     });
 }
 
+/// Two threads write one source at once; a `WHOLE_EPOCHS` join of its two paths holds its runs
+/// while an epoch that reached it is on its way, and still ends quiet on the final value. A write
+/// is readable before its epoch is delivered, so a run may read it early; its epoch reruns the join.
+#[test]
+fn a_whole_epochs_join_converges_under_concurrent_writes() {
+    check(|| {
+        let scope: ModelScope = ModelScope::new();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(i32, i32)>>> = Default::default();
+        let (s, join): (SourceNode<i32>, DerivedNode<()>) = scope.batch(|| {
+            let s: SourceNode<i32> = effect!(0);
+            let ones: DerivedNode<i32> = effect!(|s| *s.get());
+            let tens: DerivedNode<i32> = effect!(|s| *s.get() * 10);
+            let join: DerivedNode<()> = effect!(
+                |ones, tens| {
+                    let pair: (i32, i32) = (*ones.get(), *tens.get());
+                    seen.lock().unwrap().push(pair);
+                },
+                flags = WHOLE_EPOCHS
+            );
+            (s, join)
+        });
+        scope.flush();
+        let other: loom::thread::JoinHandle<()> = {
+            let s: SourceNode<i32> = s.clone();
+            loom::thread::spawn(move || {
+                let scope: ModelScope = ModelScope::new();
+                scope.batch(|| s.set(2));
+                scope.flush();
+            })
+        };
+        scope.batch(|| s.set(1));
+        scope.flush();
+        other.join().unwrap();
+        while !model::quiet(&join) {
+            if !model::run_one() {
+                loom::thread::yield_now();
+            }
+        }
+        let reads: Vec<(i32, i32)> = seen.lock().unwrap().clone();
+        let last: (i32, i32) = *reads.last().unwrap();
+        assert_eq!(last, (*s.get(), *s.get() * 10), "{reads:?}");
+    });
+}
+
 /// A parent's and its child's last handles drop at once: both are examined, and both freed.
 #[test]
 fn a_parent_and_its_child_drop_their_last_handles_at_once() {
