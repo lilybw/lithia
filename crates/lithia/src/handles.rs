@@ -7,10 +7,11 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::capture::Lease;
 use crate::changes::Changes;
 use crate::context::{self, ClosureCreations, ClosureGuard};
 use crate::node::{Header, Kind, Node, NodeRef, phase};
-use crate::sync::MutexGuard;
+use crate::sync::{ArcCell, MutexGuard};
 use crate::{GhostPolicy, Ghosted, NodeValue, Status, diag, ids, protocol};
 
 /// Type-erased reference to a node, used by `effect!` and the free functions.
@@ -226,13 +227,13 @@ macro_rules! readable {
 
         impl<K: NodeValue> Clone for $ty<K> {
             fn clone(&self) -> Self {
-                $ty { internal: AtomicBool::new(new_ref(&self.node, $ty::<K>::writes())), node: self.node.clone() }
+                $ty { internal: Count::new(new_ref(&self.node, $ty::<K>::writes())), node: self.node.clone() }
             }
         }
 
         impl<K: NodeValue> Drop for $ty<K> {
             fn drop(&mut self) {
-                drop_ref(&self.node, self.internal.load(Ordering::Relaxed), $ty::<K>::anchoring(&self.node));
+                drop_ref(&self.node, &self.internal, $ty::<K>::anchoring(&self.node));
             }
         }
 
@@ -241,9 +242,9 @@ macro_rules! readable {
             #[allow(dead_code)]
             pub(crate) fn outside(node: &Arc<Node<K>>) -> Self {
                 if $ty::<K>::anchoring(node) {
-                    node.header.anchors.fetch_add(1, Ordering::SeqCst);
+                    crate::support::add_anchors(node.clone(), 1);
                 }
-                $ty { node: node.clone(), internal: AtomicBool::new(false) }
+                $ty { node: node.clone(), internal: Count::new(false) }
             }
 
             /// Clones the handle for a body, recorded as a capture its body only reads.
@@ -294,28 +295,41 @@ macro_rules! readable {
 /// `let count: SourceNode<u32> = effect!(0); count.set(3);`
 pub struct SourceNode<K: NodeValue> {
     pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: AtomicBool,
+    pub(crate) internal: Count,
 }
 
 /// Node whose body produces its value from its dependencies; `DerivedNode<()>` is an effect.
 /// `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);`
 pub struct DerivedNode<K: NodeValue> {
     pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: AtomicBool,
+    pub(crate) internal: Count,
 }
 
 /// Read-only view of a node.
 /// `let reader: Accessor<u32> = count.accessor();`
 pub struct Accessor<K: NodeValue> {
     pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: AtomicBool,
+    pub(crate) internal: Count,
 }
 
 /// Write-only view of a source node.
 /// `let writer: Setter<u32> = count.setter();`
 pub struct Setter<K: NodeValue> {
     pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: AtomicBool,
+    pub(crate) internal: Count,
+}
+
+/// How a handle counts: as an outside handle, or as a capture; a capture a `move` block took over
+/// holds the block's lease, and counts as an outside handle once the block has ended (spec §4.2).
+pub(crate) struct Count {
+    internal: AtomicBool,
+    lease: ArcCell<Lease>,
+}
+
+impl Count {
+    pub(crate) fn new(internal: bool) -> Count {
+        Count { internal: AtomicBool::new(internal), lease: ArcCell::new(None) }
+    }
 }
 
 /// Records a new handle: internal in capture mode, otherwise an outside handle.
@@ -332,7 +346,7 @@ fn new_ref<K: NodeValue>(node: &Arc<Node<K>>, writes: bool) -> bool {
 fn true_if_counted<K: NodeValue>(node: &Arc<Node<K>>, writes: bool) -> bool {
     // `writes` is false only for `Accessor`, which anchors only a node with a body.
     if writes || node.header.kind != Kind::Source {
-        node.header.anchors.fetch_add(1, Ordering::SeqCst);
+        crate::support::add_anchors(node.clone(), 1);
     }
     false
 }
@@ -345,17 +359,21 @@ fn record_field<K: NodeValue>(node: &Arc<Node<K>>, writes: bool) {
     }
 }
 
-/// Flags a handle a `move` body takes as internal; its anchoring count drops after creation.
-fn take_moved<K: NodeValue>(node: &Arc<Node<K>>, internal: &AtomicBool, writes: bool, anchoring: bool) {
+/// Flags a handle a `move` body takes as internal, under the expansion's lease; its anchoring
+/// count drops after creation.
+fn take_moved<K: NodeValue>(node: &Arc<Node<K>>, count: &Count, writes: bool, anchoring: bool) {
     if !crate::capture::active() {
         return;
     }
     let erased: NodeRef = node.clone();
     crate::capture::record(erased.clone(), writes);
-    if internal.swap(true, Ordering::Relaxed) {
+    if count.internal.swap(true, Ordering::Relaxed) {
         return;
     }
     node.header.captured.fetch_add(1, Ordering::SeqCst);
+    let lease: Arc<Lease> = crate::capture::lease();
+    lease.take(erased.clone(), anchoring);
+    count.lease.store(Some(lease));
     if anchoring {
         crate::capture::moved(erased);
     }
@@ -363,12 +381,17 @@ fn take_moved<K: NodeValue>(node: &Arc<Node<K>>, internal: &AtomicBool, writes: 
 
 /// Releases a handle; dropping the last anchoring handle starts a sweep, and the last captured
 /// one may leave a memo unread (spec §12).
-fn drop_ref<K: NodeValue>(node: &Arc<Node<K>>, internal: bool, anchoring: bool) {
-    if internal {
-        if node.header.captured.fetch_sub(1, Ordering::SeqCst) == 1 {
-            crate::support::check_unread(&node.header);
+fn drop_ref<K: NodeValue>(node: &Arc<Node<K>>, count: &Count, anchoring: bool) {
+    if count.internal.load(Ordering::Relaxed) {
+        let ended: bool = count.lease.load_full().is_some_and(|lease: Arc<Lease>| !lease.release(node.header.id));
+        if !ended {
+            if node.header.captured.fetch_sub(1, Ordering::SeqCst) == 1 {
+                crate::support::check_unread(&node.header);
+            }
+            return;
         }
-    } else if anchoring && node.header.anchors.fetch_sub(1, Ordering::SeqCst) == 1 {
+    }
+    if anchoring && node.header.anchors.fetch_sub(1, Ordering::SeqCst) == 1 {
         let erased: NodeRef = node.clone();
         crate::support::start(erased);
     }
@@ -415,13 +438,13 @@ impl<K: NodeValue> sealed::Sealed for Setter<K> {}
 
 impl<K: NodeValue> Clone for Setter<K> {
     fn clone(&self) -> Self {
-        Setter { internal: AtomicBool::new(new_ref(&self.node, true)), node: self.node.clone() }
+        Setter { internal: Count::new(new_ref(&self.node, true)), node: self.node.clone() }
     }
 }
 
 impl<K: NodeValue> Drop for Setter<K> {
     fn drop(&mut self) {
-        drop_ref(&self.node, self.internal.load(Ordering::Relaxed), true);
+        drop_ref(&self.node, &self.internal, true);
     }
 }
 
@@ -540,8 +563,8 @@ impl<K: NodeValue> SourceNode<K> {
 
     /// Write-only view of this node.
     pub fn setter(&self) -> Setter<K> {
-        self.node.header.anchors.fetch_add(1, Ordering::SeqCst);
-        Setter { node: self.node.clone(), internal: AtomicBool::new(false) }
+        crate::support::add_anchors(self.node.clone(), 1);
+        Setter { node: self.node.clone(), internal: Count::new(false) }
     }
 
     /// Lets this node live by its handles alone, as in v0.2.5; nodes hanging off it stop with it.

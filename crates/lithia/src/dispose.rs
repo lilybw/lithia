@@ -149,6 +149,10 @@ fn teardown(node: &NodeRef) -> Vec<NodeRef> {
         header.scope.live.fetch_sub(1, Ordering::SeqCst);
     }
     node.release_payload();
+    // Handles its block moved out count before disposal recomputes support.
+    if let Some(lease) = header.lease.swap(None) {
+        lease.end();
+    }
     crate::support::release_generation(generation);
     if let Some(list) = parents {
         crate::drops::release_parents(list);

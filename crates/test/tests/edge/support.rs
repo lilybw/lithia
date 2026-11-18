@@ -281,7 +281,7 @@ async fn handles_cloned_out_of_a_body_are_outside_handles() {
 }
 
 #[lithia::test]
-async fn a_handle_moved_out_of_an_async_move_block_is_not_counted() {
+async fn a_handle_moved_out_of_an_async_move_block_counts_once_the_block_ends() {
     let seen: SourceNode<u32> = effect!(0);
     let base: usize = lithia::test::live_nodes().await;
     let (tx, rx): (oneshot::Sender<SourceNode<u32>>, oneshot::Receiver<SourceNode<u32>>) = oneshot::channel();
@@ -289,14 +289,97 @@ async fn a_handle_moved_out_of_an_async_move_block_is_not_counted() {
     let block: SourceNode<()> = effect!(async move {
         let _ = tx.send(t);
     });
-    let moved: SourceNode<u32> = rx.await.unwrap(); // an internal handle, out of the block
+    let moved: SourceNode<u32> = rx.await.unwrap(); // out of the block, which has ended
     let watcher: DerivedNode<()> = effect!(|moved| seen.set(*moved.get()));
     lithia::flush().await;
     assert_eq!(*seen.get(), 3);
     drop(block);
-    drop(watcher); // `moved` anchors nothing, so the watcher goes with its own handle
-    assert_eq!(lithia::test::live_nodes().await, base + 1);
+    drop(watcher); // `moved` anchors `t` now, so support keeps the watcher
+    assert_eq!(lithia::test::live_nodes().await, base + 2);
+    moved.set(4);
+    lithia::flush().await;
+    assert_eq!(*seen.get(), 4);
     drop(moved);
+    assert_eq!(lithia::test::live_nodes().await, base);
+}
+
+#[lithia::test]
+async fn a_handle_moved_out_of_a_finished_move_block_anchors_a_scoped_node() {
+    let seen: SourceNode<u32> = effect!(0);
+    let (tx, rx): (oneshot::Sender<SourceNode<u32>>, oneshot::Receiver<SourceNode<u32>>) = oneshot::channel();
+    // Scoped: only its own handles support it, not the block that writes it.
+    let t: SourceNode<u32> = effect!(3).scoped();
+    let block: SourceNode<()> = effect!(async move {
+        let _ = tx.send(t);
+    });
+    let back: SourceNode<u32> = rx.await.unwrap();
+    lithia::test::settled(&block).await;
+    effect!(|back| seen.set(*back.get()));
+    lithia::flush().await;
+    // A sweep starts at `t` if its anchor count crosses zero; `back` keeps it above.
+    drop(back.clone());
+    back.set(5);
+    lithia::flush().await;
+    assert_eq!(*seen.get(), 5);
+    drop(block);
+}
+
+// One thread, so the block's run task cannot end the lease before disposal does.
+#[lithia::test(flavor = "current_thread")]
+async fn a_handle_moved_out_of_a_disposed_move_block_counts_at_once() {
+    let seen: SourceNode<u32> = effect!(0);
+    let base: usize = lithia::test::live_nodes().await;
+    let (tx, rx): (oneshot::Sender<SourceNode<u32>>, oneshot::Receiver<SourceNode<u32>>) = oneshot::channel();
+    let t: SourceNode<u32> = effect!(3);
+    let block: SourceNode<()> = effect!(async move {
+        let _ = tx.send(t);
+        std::future::pending::<()>().await;
+    });
+    let moved: SourceNode<u32> = rx.await.unwrap(); // out of the block, which still runs
+    effect!(|moved| seen.set(*moved.get()));
+    lithia::flush().await;
+    // Disposal ends the block's lease before support is recomputed, so `moved` anchors `t` in time.
+    lithia::dispose(&block);
+    moved.set(5);
+    lithia::flush().await;
+    assert_eq!(*seen.get(), 5);
+    drop(block);
+    assert_eq!(lithia::test::live_nodes().await, base + 2);
+    drop(moved);
+    assert_eq!(lithia::test::live_nodes().await, base);
+}
+
+#[lithia::test]
+async fn an_anchor_that_returns_holds_again_what_support_let_go_of() {
+    let go: SourceNode<u32> = effect!(0);
+    let slot: Arc<Mutex<Option<lithia::Accessor<u32>>>> = Arc::new(Mutex::new(None));
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let base: usize = lithia::test::live_nodes().await;
+    let p: SourceNode<u32> = effect!(1);
+    let d: DerivedNode<u32> = effect!(|p| *p.get());
+    let e: DerivedNode<()> = effect!(|d| {
+        let _ = d.get();
+        runs.fetch_add(1, Ordering::SeqCst);
+    });
+    // `w` keeps `d` and `e` alive through what its body reads, and can hand out `d` again;
+    // scoped, it goes with its handle.
+    let w: DerivedNode<()> = effect!(|go| {
+        if *go.get() > 0 {
+            *slot.lock().unwrap() = Some(d.accessor());
+        }
+        let _ = e.get();
+    })
+    .scoped();
+    lithia::flush().await;
+    drop((e, d, p)); // nothing anchors `p` or `d` now: support lets go of `d` and `e`
+    assert_eq!(lithia::test::live_nodes().await, base + 4);
+    go.set(1); // `d` is an anchor again
+    lithia::flush().await;
+    drop(w); // what kept `d` and `e` alive goes; support holds them again
+    assert_eq!(lithia::test::live_nodes().await, base + 3);
+    let reader: lithia::Accessor<u32> = slot.lock().unwrap().take().unwrap();
+    assert_eq!((*reader.get(), runs.load(Ordering::SeqCst)), (1, 1));
+    drop(reader);
     assert_eq!(lithia::test::live_nodes().await, base);
 }
 

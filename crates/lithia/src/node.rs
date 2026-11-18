@@ -128,6 +128,10 @@ pub(crate) struct Header {
     pub(crate) inputs: Mutex<Option<Inputs>>,
     /// The run id an async source block may run under; a write or a new block moves `runs` past it.
     pub(crate) block_run: AtomicU64,
+    /// Whether support holds the node while an anchor reaches it: a top-level node with parents.
+    pub(crate) supportable: bool,
+    /// The lease of an async source block's `move` captures, ended once the block stops for good.
+    pub(crate) lease: ArcCell<crate::capture::Lease>,
 }
 
 /// Scheduler state of one node, guarded by its scheduling lock.
@@ -534,6 +538,10 @@ impl<K: NodeValue> Drop for Node<K> {
         }
         if let Some(body) = self.body.get_mut().take() {
             crate::drops::drop_later(body, runtime.as_ref());
+        }
+        // Handles its block moved out count before its targets lose its support.
+        if let Some(lease) = self.header.lease.swap(None) {
+            lease.end();
         }
         // A freed writer no longer supports its targets; its generation loses its creation edges.
         for target in self.header.targets.iter().filter_map(WeakNodeRef::upgrade) {

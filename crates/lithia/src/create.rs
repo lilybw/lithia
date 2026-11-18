@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Mutex, MutexGuard};
 use tokio::runtime::Handle;
 
-use crate::capture::Captured;
+use crate::capture::{Captured, Lease};
 use crate::context;
 use crate::epoch::Scope;
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
@@ -81,9 +81,10 @@ fn refresh<K: NodeValue>(
     body: Option<Body<K>>,
     inputs: Inputs,
     equals: Option<Equals<K>>,
+    lease: Option<Arc<Lease>>,
 ) {
     let header: &Header = &node.header;
-    header.anchors.fetch_add(1, Ordering::SeqCst);
+    crate::support::add_anchors(node.clone(), 1);
     let runtime: Option<Handle> = header.runtime.clone();
     if let Some(old) = node.adopt_equals(equals) {
         crate::drops::drop_later(old, runtime.as_ref());
@@ -106,6 +107,10 @@ fn refresh<K: NodeValue>(
     let erased: NodeRef = node.clone();
     if header.kind == Kind::AsyncSource {
         protocol::kill_run(&erased);
+        // The old block stops: what it moved out counts from now on.
+        if let Some(old) = header.lease.swap(lease) {
+            old.end();
+        }
     }
     context::record_refresh(&erased);
     if let Some(old) = old {
@@ -133,7 +138,7 @@ fn new_node<K: NodeValue>(
                 let node: Arc<Node<K>> = keyed::typed(reclaimed);
                 if same_targets(&node.header, captured) {
                     let (_, inputs): (Key, Inputs) = keyed.key(site);
-                    refresh(&node, value, body, inputs, options.equals);
+                    refresh(&node, value, body, inputs, options.equals, captured.2.clone());
                     return node;
                 }
                 // Its body would write other nodes now: a new node takes the key instead.
@@ -168,6 +173,7 @@ fn new_node<K: NodeValue>(
     let closed: bool = creator_node.as_ref().is_some_and(|c: &NodeRef| c.header().sched.lock().closed);
     let held: bool = creator_node.is_some() && !closed;
     let top_level: bool = run.is_none();
+    let supportable: bool = top_level && !parents.is_empty() && kind != Kind::Source;
     let warn_first_run: bool = kind != Kind::Source && (top_level || (!held && !closed));
     let (sender, _): (tokio::sync::watch::Sender<u64>, tokio::sync::watch::Receiver<u64>) =
         tokio::sync::watch::channel(0u64);
@@ -208,6 +214,8 @@ fn new_node<K: NodeValue>(
             key,
             inputs: Mutex::new(inputs),
             block_run: AtomicU64::new(if kind == Kind::AsyncSource { 1 } else { 0 }),
+            supportable,
+            lease: ArcCell::new(if kind == Kind::AsyncSource { captured.2.clone() } else { None }),
         },
         value: ArcCell::new(Some(Arc::new(value))),
         body: Mutex::new(body),
@@ -217,7 +225,6 @@ fn new_node<K: NodeValue>(
     // A new child of ghosts is linked as disposal leaves a surviving one; with only ghosts for
     // parents, it is disposed as disposal would have (spec §10.5).
     let orphan: bool = !parents.is_empty() && protocol::link(&erased, &parents);
-    let has_parents: bool = !parents.is_empty();
     drop(parents);
     for target in &targets {
         target.header().writers.lock().push(Arc::downgrade(&erased));
@@ -247,7 +254,7 @@ fn new_node<K: NodeValue>(
         settle_wait::bump();
     }
     drop(creator_node);
-    if top_level && has_parents && kind != Kind::Source {
+    if supportable {
         *erased.header().support.lock() = Some(erased.clone());
         crate::diag::support_held(site);
     }
@@ -260,12 +267,36 @@ fn new_node<K: NodeValue>(
     node
 }
 
+/// A one-shot block that ends its lease once it is dropped, with what it still owns (spec §4.2).
+struct Leased<T> {
+    block: Option<BoxFut<T>>,
+    lease: Arc<Lease>,
+}
+
+impl<T> Future for Leased<T> {
+    type Output = T;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<T> {
+        match self.block.as_mut() {
+            Some(block) => block.as_mut().poll(cx),
+            None => std::task::Poll::Pending,
+        }
+    }
+}
+
+impl<T> Drop for Leased<T> {
+    fn drop(&mut self) {
+        drop(self.block.take());
+        self.lease.end();
+    }
+}
+
 /// Creates a source node holding `value` (spec §3.1).
 #[doc(hidden)]
 pub fn source<K: NodeValue>(site: &'static Site, value: K, options: Options<K>) -> SourceNode<K> {
     SourceNode {
         node: new_node(site, Kind::Source, &[], &Captured::default(), value, None, options),
-        internal: std::sync::atomic::AtomicBool::new(false),
+        internal: crate::handles::Count::new(false),
     }
 }
 
@@ -282,10 +313,14 @@ where
     K: NodeValue,
     F: Future<Output = K> + Send + 'static,
 {
-    let body: Body<K> = Body::Once(Box::pin(block));
+    let block: BoxFut<K> = Box::pin(block);
+    let body: Body<K> = Body::Once(match captured.2.clone() {
+        Some(lease) => Box::pin(Leased { block: Some(block), lease }),
+        None => block,
+    });
     SourceNode {
         node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options),
-        internal: std::sync::atomic::AtomicBool::new(false),
+        internal: crate::handles::Count::new(false),
     }
 }
 
@@ -303,12 +338,18 @@ where
     G: FnOnce(Yielder<K>) -> F + Send + 'static,
     F: Future<Output = ()> + Send + 'static,
 {
-    let start: Box<dyn FnOnce(Yielder<K>) -> BoxFut<()> + Send> =
-        Box::new(move |yielder: Yielder<K>| -> BoxFut<()> { Box::pin(block(yielder)) });
+    let lease: Option<Arc<Lease>> = captured.2.clone();
+    let start: Box<dyn FnOnce(Yielder<K>) -> BoxFut<()> + Send> = Box::new(move |yielder: Yielder<K>| -> BoxFut<()> {
+        let block: BoxFut<()> = Box::pin(block(yielder));
+        match lease {
+            Some(lease) => Box::pin(Leased { block: Some(block), lease }),
+            None => block,
+        }
+    });
     let body: Body<K> = Body::OnceGen(start);
     SourceNode {
         node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options),
-        internal: std::sync::atomic::AtomicBool::new(false),
+        internal: crate::handles::Count::new(false),
     }
 }
 
@@ -329,7 +370,7 @@ where
     let body: Body<K> = Body::Sync(Arc::new(body));
     DerivedNode {
         node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
-        internal: std::sync::atomic::AtomicBool::new(false),
+        internal: crate::handles::Count::new(false),
     }
 }
 
@@ -351,7 +392,7 @@ where
     let body: Body<K> = Body::Async(Arc::new(move || -> BoxFut<K> { Box::pin(body()) }));
     DerivedNode {
         node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
-        internal: std::sync::atomic::AtomicBool::new(false),
+        internal: crate::handles::Count::new(false),
     }
 }
 
@@ -373,6 +414,6 @@ where
     let body: Body<K> = Body::Gen(Arc::new(move |yielder: Yielder<K>| -> BoxFut<()> { Box::pin(body(yielder)) }));
     DerivedNode {
         node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
-        internal: std::sync::atomic::AtomicBool::new(false),
+        internal: crate::handles::Count::new(false),
     }
 }

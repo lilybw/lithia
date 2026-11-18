@@ -100,8 +100,7 @@ async fn every_body_sees_its_captures_by_reference() {
         let owned: u32 = offset; // a block that runs once owns what it moved in
         owned
     });
-    lithia::test::settled(&generator).await;
-    lithia::test::settled(&async_body).await;
+    lithia::test::settled(&n).await; // every derived node here hangs off `n`
     lithia::test::settled(&block).await;
     lithia::test::settled(&moved_block).await;
     let values: [u32; 6] =

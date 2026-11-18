@@ -702,6 +702,39 @@ fn a_creation_races_the_disposal_of_one_parent() {
     });
 }
 
+/// A handle a `move` block moves out drops while the block's lease ends on the worker: it is
+/// counted once either way, so the watcher of its node goes with it.
+#[test]
+fn a_moved_out_handle_drops_while_its_lease_ends() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let slot: std::sync::Arc<std::sync::Mutex<Option<SourceNode<u32>>>> = Default::default();
+            let out: std::sync::Arc<std::sync::Mutex<Option<SourceNode<u32>>>> = slot.clone();
+            let block: SourceNode<()> = scope.batch(|| {
+                let t: SourceNode<u32> = effect!(1);
+                effect!(|t| {
+                    let _ = t.get();
+                });
+                effect!(async move {
+                    *out.lock().unwrap() = Some(t);
+                })
+            });
+            let moved: SourceNode<u32> = loop {
+                if let Some(handle) = slot.lock().unwrap().take() {
+                    break handle;
+                }
+                loom::thread::yield_now();
+            };
+            drop(moved);
+            scope.flush();
+            drop(block);
+            scope.flush();
+            assert_eq!(scope.live(), 0);
+        });
+    });
+}
+
 /// A parent's and its child's last handles drop at once: both are examined, and both freed.
 #[test]
 fn a_parent_and_its_child_drop_their_last_handles_at_once() {

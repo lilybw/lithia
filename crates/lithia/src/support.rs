@@ -24,15 +24,17 @@ const START_BUDGET: usize = 64;
 /// Set once any node is scoped; until then no node can be blocked by a scoped parent.
 static ANY_SCOPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Starting points raised on this thread, swept when the outermost operation ends.
+/// Starting points and returned anchors raised on this thread, handled when the outermost
+/// operation ends.
 struct Op {
     depth: u32,
     running: bool,
     starts: Vec<NodeRef>,
+    returns: Vec<NodeRef>,
 }
 
 crate::sync::thread_local! {
-    static OP: RefCell<Op> = RefCell::new(Op { depth: 0, running: false, starts: Vec::new() });
+    static OP: RefCell<Op> = RefCell::new(Op { depth: 0, running: false, starts: Vec::new(), returns: Vec::new() });
 }
 
 /// An operation that drops references; its sweeps run when the outermost one ends.
@@ -62,6 +64,68 @@ impl Drop for OpGuard {
 /// Whether `header`'s node is an anchor: not a ghost, with an anchoring outside handle.
 pub(crate) fn is_anchor(header: &Header) -> bool {
     !header.is_ghost() && header.anchors.load(Ordering::SeqCst) > 0
+}
+
+/// Counts `count` more anchors on `node`; one that was not an anchor holds again what support let
+/// go of downstream and that still lives, as far as its support reaches (spec §10.1).
+pub(crate) fn add_anchors(node: NodeRef, count: usize) {
+    if node.header().anchors.fetch_add(count, Ordering::SeqCst) != 0 || node.header().is_ghost() {
+        return;
+    }
+    let mut node: Option<NodeRef> = Some(node);
+    let now: Option<bool> = OP
+        .try_with(|op: &RefCell<Op>| {
+            let mut op = op.borrow_mut();
+            if let Some(node) = node.take() {
+                op.returns.push(node);
+            }
+            op.depth == 0 && !op.running
+        })
+        .ok();
+    match now {
+        Some(true) => run(),
+        Some(false) => {}
+        None => {
+            if let Some(node) = node.take() {
+                drop(anchor_returned(vec![node]));
+            }
+        }
+    }
+}
+
+/// Holds again what support let go of downstream of `returned` and that an anchor reaches now;
+/// returns the references taken, for the caller to drop after the sweep lock is released.
+fn anchor_returned(returned: Vec<NodeRef>) -> Vec<NodeRef> {
+    let mut keep: Vec<NodeRef> = Vec::new();
+    let mut held: Vec<&'static crate::Site> = Vec::new();
+    {
+        let lock: MutexGuard<'_, ()> = SWEEP.lock();
+        let mut search: Search = Search::default();
+        let mut seen: BTreeSet<NodeId> = BTreeSet::new();
+        let mut stack: Vec<NodeRef> = returned;
+        while let Some(current) = stack.pop() {
+            let header: &Header = current.header();
+            // A node support holds already holds what hangs off it, unless a scoped node blocks that.
+            let stop: bool = !seen.insert(header.id)
+                || header.is_ghost()
+                || header.scoped.load(Ordering::SeqCst)
+                || is_held(header)
+                || search.blocked(&current, &mut keep);
+            if !stop {
+                if header.supportable {
+                    *header.support.lock() = Some(current.clone());
+                    held.push(header.site);
+                }
+                stack.extend(successors(&current, &mut keep));
+            }
+            keep.push(current);
+        }
+        drop(lock);
+    }
+    for site in held {
+        crate::diag::support_held(site);
+    }
+    keep
 }
 
 /// Whether support currently holds the node.
@@ -130,13 +194,22 @@ fn run() {
     }
     let _reset: Reset = Reset;
     loop {
-        let starts: Vec<NodeRef> =
-            OP.try_with(|op: &RefCell<Op>| std::mem::take(&mut op.borrow_mut().starts)).unwrap_or_default();
-        if starts.is_empty() {
+        let (returns, starts): (Vec<NodeRef>, Vec<NodeRef>) = OP
+            .try_with(|op: &RefCell<Op>| {
+                let mut op = op.borrow_mut();
+                (std::mem::take(&mut op.returns), std::mem::take(&mut op.starts))
+            })
+            .unwrap_or_default();
+        if returns.is_empty() && starts.is_empty() {
             break;
         }
-        let dropped: Vec<NodeRef> = sweep(starts);
-        drop(dropped);
+        // Returned anchors first: a sweep then finds what they hold again.
+        if !returns.is_empty() {
+            drop(anchor_returned(returns));
+        }
+        if !starts.is_empty() {
+            drop(sweep(starts));
+        }
     }
 }
 
