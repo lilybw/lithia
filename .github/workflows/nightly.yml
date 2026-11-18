@@ -1,0 +1,55 @@
+# Every push to `nightly` runs the full test matrix; when it passes, the commit is released as
+# v<crate version>.<n>, with n one above the last release of that version.
+name: nightly
+
+on:
+  push:
+    branches: [nightly]
+
+# One release at a time, so each run sees the tags of the one before.
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      RUST_TOOLCHAIN: "1.97.0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build assets
+        id: assets
+        run: .github/scripts/release-assets.sh
+
+      - name: Publish release
+        if: steps.assets.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+        run: |
+          gh release create "$TAG" target/dist/* \
+            --target "$GITHUB_SHA" \
+            --title "lithia $TAG" \
+            --notes-file target/release-notes.md

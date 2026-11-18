@@ -50,3 +50,12 @@ LOOM_MAX_PREEMPTIONS=4 ...    # deeper: about 7 minutes instead of 30 seconds
 
 `.cargo/config.toml` runs every `#[lithia::test]` under a timeout (`LITHIA_TEST_TIMEOUT_MS`), so a
 `flush` or `settled` that never returns fails its test instead of stalling the run.
+
+## Releases
+
+Every push to `nightly` runs the full test matrix on Ubuntu and Windows
+([`ci.yml`](.github/workflows/ci.yml): format, lints, docs, tests, validation and compile-fail cases, loom
+models). When it passes, [`nightly.yml`](.github/workflows/nightly.yml) releases that commit as
+`v<crate version>.<n>`, such as `v0.3.1.1`, `v0.3.1.2`, with the `lithia` and `lithia-macro` crate
+packages, the API docs, the design spec and SHA-256 sums attached. A new crate version in `Cargo.toml`
+starts again at `.1`. The `release` branch holds what was last merged as stable.

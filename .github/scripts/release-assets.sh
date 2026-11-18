@@ -24,7 +24,7 @@ cargo doc --no-deps -p lithia -p lithia-macro --locked
 rm -rf target/dist && mkdir -p target/dist
 cp "target/package/lithia-macro-${base}.crate" "target/package/lithia-${base}.crate" target/dist/
 tar -czf "target/dist/lithia-docs-${tag}.tar.gz" -C target doc
-spec="$(ls docs/spec/LITHIA_design_spec_v*.pdf | sort -V | tail -n 1)"
+spec="$(printf "%s\n" docs/spec/LITHIA_design_spec_v*.pdf | sort -V | tail -n 1)"
 cp "$spec" target/dist/
 (cd target/dist && sha256sum -- * > SHA256SUMS)
 
