@@ -5,7 +5,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use lithia::{Changes, DerivedNode, Ghosted, SourceNode, Status, effect};
@@ -246,4 +246,29 @@ async fn a_write_before_the_first_item_keeps_the_block_from_running() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!ran.load(Ordering::SeqCst), "a superseded block never starts");
     assert_eq!(*slow.get(), 2);
+}
+
+#[lithia::test]
+async fn a_fragile_child_whose_parent_recovers_unchanged_is_restored_without_running() {
+    let n: SourceNode<i32> = effect!(1);
+    let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get(), equals = lithia::eq);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let strict: DerivedNode<i32> = effect!(
+        |inv| {
+            runs.fetch_add(1, Ordering::SeqCst);
+            *inv.get() + 1
+        },
+        fragility = FRAGILE
+    );
+    lithia::flush().await;
+    n.set(0); // `inv` fails, and `strict` with it, without running
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&strict), Status::Failed(_)));
+    n.set(1); // `inv` recovers to an equal value: only its status changed
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&strict), Status::Ready));
+    assert_eq!((*strict.get(), runs.load(Ordering::SeqCst)), (101, 1));
+    n.set(2); // a real change runs it
+    lithia::flush().await;
+    assert_eq!((*strict.get(), runs.load(Ordering::SeqCst)), (51, 2));
 }

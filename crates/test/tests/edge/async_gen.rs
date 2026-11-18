@@ -176,3 +176,52 @@ async fn settled_follows_a_write_through_a_handle_read_from_a_value() {
     lithia::test::settled(&input).await;
     assert_eq!(*slow.get(), 5);
 }
+
+#[lithia::test]
+async fn an_async_node_makes_progress_under_fast_input() {
+    let input: SourceNode<u32> = effect!(0);
+    let slow: DerivedNode<u32> = effect!(async |input| {
+        let value: u32 = *input.get();
+        tokio::time::sleep(Duration::from_millis(8)).await;
+        value
+    });
+    let mut published: Vec<u32> = Vec::new();
+    for value in 1..=40u32 {
+        input.set(value);
+        lithia::flush().await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        published.push(*slow.get());
+    }
+    // A run that replaced another finishes before new input replaces it, so values come through
+    // while input keeps outpacing the body.
+    published.dedup();
+    assert!(published.len() > 2, "{published:?}");
+    lithia::test::settled(&slow).await;
+    assert_eq!(*slow.get(), 40);
+}
+
+#[lithia::test]
+async fn a_replacing_generator_is_superseded_after_its_first_item() {
+    let input: SourceNode<u32> = effect!(0);
+    let ticks: DerivedNode<u32> = effect!(|input| {
+        let base: u32 = *input.get() * 1000;
+        let mut n: u32 = 0;
+        loop {
+            yield base + n;
+            n += 1;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    lithia::flush().await;
+    input.set(1); // supersedes the first run: the replacement is protected until its first item
+    lithia::flush().await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    input.set(2); // the replacement has yielded, so this supersedes it
+    lithia::flush().await;
+    let deadline: tokio::time::Instant = tokio::time::Instant::now() + Duration::from_secs(2);
+    while *ticks.get() < 2000 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(*ticks.get() >= 2000, "{}", *ticks.get());
+    lithia::dispose(&ticks);
+}

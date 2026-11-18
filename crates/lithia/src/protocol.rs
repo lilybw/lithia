@@ -232,6 +232,14 @@ fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<Vec<Arc<Fail
     holds.then_some(causes)
 }
 
+/// Whether a parent's version is newer than `ran_at`, the start of the node's last run.
+fn parents_changed_since(node: &NodeRef, ran_at: u64) -> bool {
+    let parents: MutexGuard<'_, Option<Vec<NodeRef>>> = node.header().parents.lock();
+    parents.as_ref().is_some_and(|list: &Vec<NodeRef>| {
+        list.iter().any(|parent: &NodeRef| parent.header().version.load(Ordering::SeqCst) > ran_at)
+    })
+}
+
 /// Fails a fragile node whose condition holds (spec §9.2).
 fn fail_by_fragility(header: &Header, sched: &mut Sched, causes: Vec<Arc<Failure>>, work: &mut Work) {
     let parent: String = causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
@@ -276,7 +284,18 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
                 settle(node, sched, epoch, work);
                 return;
             }
-            None => force = sched.failed_by_fragility,
+            // Recovered: a status change, which reruns the node only if it never ran or a parent
+            // changed since its last run; otherwise it is restored as it was (spec §9.2).
+            None if sched.failed_by_fragility => {
+                if sched.ran_at == 0 || parents_changed_since(node, sched.ran_at) {
+                    force = true;
+                } else {
+                    header.clear_bits(phase::FAILED);
+                    header.failure.store(None);
+                    sched.failed_by_fragility = false;
+                }
+            }
+            None => {}
         }
     }
     let ran_at: u64 = sched.ran_at;
@@ -300,7 +319,9 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
             }
         }
         Some(slot) => {
-            if !waits_for_run && !slot.restart {
+            // A run that replaced another is not replaced before its first item: the entry waits,
+            // coalescing with any later ones, and supersedes it then, or runs after it ends.
+            if !waits_for_run && !slot.restart && !slot.replaced {
                 slot.restart = true;
                 slot.shared.cancel();
                 work.diags.push(Diag::Superseded { site: header.site, run: slot.id });
@@ -727,6 +748,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
             // Its creator decides it first: it starts again once the creator has moved on.
             false
         } else {
+            let replaced: bool = !sched.inherited.is_empty();
             let mut served: Vec<Served> = std::mem::take(&mut sched.inherited);
             let ready: Vec<EpochId> = sched
                 .entries
@@ -786,7 +808,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 header.clear_bits(phase::FAILED);
                 header.failure.store(None);
                 sched.failed_by_fragility = false;
-                sched.run = Some(RunSlot { id, shared: shared.clone(), served, restart: false });
+                sched.run = Some(RunSlot { id, shared: shared.clone(), served, restart: false, replaced });
                 sched.release_generation(&mut work.released);
                 true
             }
@@ -869,6 +891,9 @@ pub(crate) fn after_poll(
         let stamp: u64 = if cancelled { 0 } else { own_stamp };
         pending.extend(deliver_children(node, &served, batch, stamp));
     }
+    if matches!(outcome, Outcome::Yielded) && !cancelled {
+        protect_ends(node, shared);
+    }
     let closes_tokens: bool = !matches!(outcome, Outcome::Yielded);
     if cancelled {
         if !matches!(outcome, Outcome::Yielded | Outcome::Suspended) {
@@ -914,6 +939,31 @@ pub(crate) fn after_poll(
         pending.extend(finalize(node, shared, End::Finished));
     }
     pending
+}
+
+/// A run that replaced another produced its first item: input that waited for it supersedes it now.
+fn protect_ends(node: &NodeRef, shared: &Arc<RunShared>) {
+    let header: &Header = node.header();
+    let mut work: Work = Work::default();
+    {
+        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let sched: &mut Sched = &mut guard;
+        let ran_at: u64 = sched.ran_at;
+        // As in `decide`: an entry runnable only for a reflow waits for the run to end.
+        let waiting: bool = sched.entries.values().any(|entry: &Entry| {
+            let reflow_only: bool = entry.reflow && !entry.first && !entry.force && entry.newest <= ran_at;
+            entry.runnable && entry.waiting.is_empty() && !reflow_only
+        });
+        if let Some(slot) = sched.run.as_mut().filter(|slot: &&mut RunSlot| slot.id == shared.id() && slot.replaced) {
+            slot.replaced = false;
+            if waiting && !slot.restart {
+                slot.restart = true;
+                slot.shared.cancel();
+                work.diags.push(Diag::Superseded { site: header.site, run: slot.id });
+            }
+        }
+    }
+    drain(work);
 }
 
 /// Why a run stopped.

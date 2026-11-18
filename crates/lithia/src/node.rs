@@ -328,6 +328,9 @@ pub(crate) struct RunSlot {
     pub(crate) served: Vec<Served>,
     /// Superseded: start a new run once this one has stopped.
     pub(crate) restart: bool,
+    /// It replaced a superseded run and has produced no item yet: new input waits for its first
+    /// item instead of superseding it, so a node always makes progress (spec §7.3 item 4).
+    pub(crate) replaced: bool,
 }
 
 /// Merges `incoming` into `list`, keeping one record per epoch.

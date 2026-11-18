@@ -830,6 +830,30 @@ fn a_superseded_runs_creation_waits_for_the_restart() {
     });
 }
 
+/// Writes land while an async run is suspended: one may supersede it, and a later one waits for
+/// the replacement's item instead of superseding it again. The node ends on the last input.
+#[test]
+fn a_replacement_run_is_not_replaced_before_its_item() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (input, slow): (SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
+                let input: SourceNode<u32> = effect!(0);
+                let slow: DerivedNode<u32> = effect!(async |input| {
+                    let value: u32 = *input.get();
+                    SuspendOnce(false).await;
+                    value * 10
+                });
+                (input, slow)
+            });
+            scope.batch(|| input.set(1));
+            scope.batch(|| input.set(2));
+            scope.settle(&slow);
+            assert_eq!(*slow.get(), 20);
+        });
+    });
+}
+
 /// A parent's and its child's last handles drop at once: both are examined, and both freed.
 #[test]
 fn a_parent_and_its_child_drop_their_last_handles_at_once() {
