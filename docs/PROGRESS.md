@@ -211,6 +211,21 @@ Five passes from `TODO.md`, run in series:
   `?v=<version>` on a latest page forwards to `versions/<version>/…` (`docs/site/ts/version.ts`, compiled by
   `tsc` 5.9.3 at build time). v0.3.1.1 and v0.3.1.2 predate this: rustdoc only, the spec as PDF.
 
+## Public release preparation (2026-11-18)
+
+- License: GPL-2.0-or-later, Blender's style: `LICENSE` holds the GPL v2 text, every source file starts with
+  `SPDX-FileCopyrightText: 2026 lithia Authors` and `SPDX-License-Identifier: GPL-2.0-or-later`, and
+  `AUTHORS` lists the lithia Authors. The Lora fonts in `docs/site/fonts` stay under the OFL 1.1. Cargo
+  metadata names the license, the docs site and the API reference.
+- README summarizes lithia for users; `CONTRIBUTING.md` holds the layout, commands, conventions and the
+  pull-request flow into `nightly`; `.github/CODEOWNERS` and a PR template support it.
+- Branch protection is a repository setting this session cannot write: a ruleset on `nightly` and
+  `release` (no deletion or force push; pull requests with one code-owner approval; the four CI checks;
+  repository admins may bypass) is set up by hand.
+- Docs site styling: `docs/site/site.css` (front pages and spec) and `docs/site/rustdoc.css` (rustdoc via
+  `--extend-css`): system type for headings, Lora for text, frosted-glass chrome over a faint red glow,
+  light and dark, with solid fallbacks for no backdrop blur or reduced transparency.
+
 ## Next steps
 
 1. Merge `release` into `main`; choose a license before making the repo public (`TODO.md`).
