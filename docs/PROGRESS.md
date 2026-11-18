@@ -185,9 +185,24 @@ Five passes from `TODO.md`, run in series:
 - Not done: Miri and the 1.95 toolchain need downloads this container cannot make; the TLA+ model the
   spec requires before shipping (11.4 step 8) is still open.
 
+## CI and nightly releases (2026-11-18)
+
+- `.github/workflows/ci.yml`: on Ubuntu and Windows with rustc 1.97.0 (the compile-fail snapshots depend on
+  it): fmt (Ubuntu), clippy normal and loom cfg, `cargo doc -D warnings`, `cargo test --workspace`, the loom
+  models at bound 3. Also runs on pull requests into `nightly` or `release`, and by hand.
+- `.github/workflows/nightly.yml`: every push to `nightly` runs `ci.yml`; when both platforms pass,
+  `.github/scripts/release-assets.sh` names the release `v<crate version>.<n>` (one above the highest `n`
+  for that version; a commit already released is skipped) and `gh release create` attaches the two crate
+  packages, the API docs, the newest spec PDF and `SHA256SUMS`. Runs are serialized, so numbers stay in
+  push order; a push that arrives while one waits replaces the waiting one.
+- Packaging flips `publish = false` to `true` on the runner only: cargo verifies `lithia` against the
+  packaged `lithia-macro` only for publishable packages. The crates have no license yet, so cargo warns.
+- Branches: `nightly` (released when green) and `release` (stable merges; v0.3.1 merged 2026-11-18). The old
+  `release/v0.3.0` branch gives way to `release` and is tagged `v0.3.0`.
+
 ## Next steps
 
-1. Merge `v0.3.1-keyed` (which builds on `release/v0.3.0`) into `main`, then the release configuration and binaries from `TODO.md`.
+1. Merge `release` into `main`; choose a license before making the repo public (`TODO.md`).
 2. A TLA+ specification of the protocol and of lifetimes (§11.4 step 8, §16, §17), which the spec asks for before shipping.
 3. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
 4. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
