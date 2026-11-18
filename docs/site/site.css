@@ -1,72 +1,236 @@
 /* SPDX-FileCopyrightText: 2026 lithia Authors */
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
-/* The design spec's page: Lora for text, a readable column, tables that scroll. */
 @font-face { font-family: "Lora"; font-style: normal; font-weight: 400 700; font-display: swap; src: url("fonts/lora-latin-wght-normal.woff2") format("woff2-variations"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
 @font-face { font-family: "Lora"; font-style: normal; font-weight: 400 700; font-display: swap; src: url("fonts/lora-latin-ext-wght-normal.woff2") format("woff2-variations"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
 @font-face { font-family: "Lora"; font-style: italic; font-weight: 400 700; font-display: swap; src: url("fonts/lora-latin-wght-italic.woff2") format("woff2-variations"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
 @font-face { font-family: "Lora"; font-style: italic; font-weight: 400 700; font-display: swap; src: url("fonts/lora-latin-ext-wght-italic.woff2") format("woff2-variations"); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
 
+/* lithia's site: Apple-like calm, chrome of frosted glass over a faint lithium-red glow. */
+
 :root {
-    color-scheme: light;
-    --text: #1d1b19;
-    --muted: #6b6560;
-    --line: #e4ded6;
-    --paper: #fdfcfa;
-    --code-bg: #f5f2ee;
-    --link: #8a3b12;
+    color-scheme: light dark;
+    --bg: #f5f5f7;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --hairline: rgba(0, 0, 0, 0.08);
+    --accent: #0066cc;
+    --accent-ink: #ffffff;
+    --code-bg: rgba(0, 0, 0, 0.045);
+    --glass: rgba(255, 255, 255, 0.62);
+    --glass-edge: rgba(255, 255, 255, 0.78);
+    --glass-shine: rgba(255, 255, 255, 0.9);
+    --glass-shadow: 0 10px 40px rgba(24, 24, 40, 0.08), 0 1px 2px rgba(24, 24, 40, 0.06);
+    --glow-red: rgba(220, 40, 70, 0.16);
+    --glow-violet: rgba(120, 90, 220, 0.12);
+    --glow-aqua: rgba(40, 170, 210, 0.10);
+    --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --text-font: "Lora", Georgia, serif;
 }
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #000000;
+        --text: #f5f5f7;
+        --muted: #a1a1a6;
+        --hairline: rgba(255, 255, 255, 0.1);
+        --accent: #2997ff;
+        --accent-ink: #000000;
+        --code-bg: rgba(255, 255, 255, 0.07);
+        --glass: rgba(29, 29, 31, 0.6);
+        --glass-edge: rgba(255, 255, 255, 0.1);
+        --glass-shine: rgba(255, 255, 255, 0.14);
+        --glass-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        --glow-red: rgba(230, 50, 80, 0.22);
+        --glow-violet: rgba(130, 100, 240, 0.18);
+        --glow-aqua: rgba(40, 170, 210, 0.12);
+    }
+}
+
 * { box-sizing: border-box; }
-html { background: var(--paper); }
+html { background: var(--bg); -webkit-text-size-adjust: 100%; }
 body {
-    margin: 0 auto;
-    max-width: 52rem;
-    padding: 0 1.25rem 4rem;
-    font: 1.0625rem/1.65 "Lora", Georgia, serif;
+    margin: 0;
+    min-height: 100vh;
     color: var(--text);
+    font: 1.0625rem/1.7 var(--text-font);
     overflow-wrap: break-word;
+    -webkit-font-smoothing: antialiased;
 }
-a { color: var(--link); text-underline-offset: 0.15em; }
-header.site {
+/* The glow the glass refracts: lithium burns red, so the light behind the page does too. */
+body::before {
+    content: "";
+    position: fixed;
+    inset: -20vh -10vw auto;
+    height: 70vh;
+    z-index: -1;
+    pointer-events: none;
+    background:
+        radial-gradient(40% 60% at 22% 30%, var(--glow-red), transparent 70%),
+        radial-gradient(35% 55% at 70% 20%, var(--glow-violet), transparent 70%),
+        radial-gradient(30% 50% at 88% 55%, var(--glow-aqua), transparent 70%);
+    filter: blur(20px);
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 0.18em; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+
+/* Glass: translucent, blurred, with a lit top edge. */
+.glass {
+    background: var(--glass);
+    border: 1px solid var(--glass-edge);
+    box-shadow: inset 0 1px 0 var(--glass-shine), var(--glass-shadow);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .glass { background: var(--bg); }
+}
+@media (prefers-reduced-transparency: reduce) {
+    .glass { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
+    body::before { display: none; }
+}
+
+/* The bar across the top of every page, over a fade that keeps text from showing above it. */
+body::after {
+    content: "";
+    position: fixed;
+    inset: 0 0 auto;
+    height: 2.25rem;
+    z-index: 9;
+    pointer-events: none;
+    background: linear-gradient(var(--bg) 55%, transparent);
+}
+.bar {
+    position: sticky;
+    top: 0.75rem;
+    z-index: 10;
     display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    width: min(64rem, calc(100% - 1.5rem));
+    margin: 0.75rem auto 0;
+    padding: 0.55rem 0.75rem 0.55rem 1.25rem;
+    border-radius: 999px;
+    font: 500 0.9rem/1.2 var(--ui);
+}
+.bar .home { color: var(--text); font-weight: 600; letter-spacing: -0.01em; margin-right: auto; }
+.bar .home small { color: var(--muted); font-weight: 400; margin-left: 0.4rem; font-size: inherit; }
+.bar a:not(.home) { color: var(--text); opacity: 0.8; }
+.bar a:not(.home):hover { opacity: 1; text-decoration: none; }
+.bar a.here { opacity: 1; }
+
+/* Front pages. */
+.front { max-width: 44rem; margin: 0 auto; padding: 5.5rem 1.5rem 4rem; }
+.front h1 {
+    margin: 0;
+    font: 700 clamp(3.25rem, 9vw, 5.25rem)/1 var(--display);
+    letter-spacing: -0.045em;
+}
+.front .lede { margin: 1.1rem 0 0; font-size: 1.3rem; line-height: 1.5; color: var(--text); max-width: 34rem; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 2rem 0 0; }
+.pill {
+    display: inline-block;
+    padding: 0.7rem 1.35rem;
+    border-radius: 999px;
+    font: 500 0.98rem/1.2 var(--ui);
+    color: var(--text);
+}
+.pill:hover { text-decoration: none; }
+.pill.primary { background: var(--accent); color: var(--accent-ink); border: 1px solid transparent; }
+.pill.primary:hover { filter: brightness(1.08); }
+.note { margin: 1.5rem 0 0; color: var(--muted); font: 0.92rem/1.55 var(--ui); }
+.note code { font-size: 0.86rem; }
+
+.panel { margin: 3.5rem 0 0; padding: 0.5rem 0; border-radius: 22px; }
+.panel h2 { margin: 1rem 1.5rem 0.5rem; font: 600 1.15rem/1.3 var(--display); letter-spacing: -0.01em; }
+.panel p { margin: 0 1.5rem 0.75rem; color: var(--muted); font: 0.9rem/1.5 var(--ui); }
+.versions { list-style: none; margin: 0; padding: 0; font: 0.95rem/1.4 var(--ui); }
+.versions li {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
     gap: 1.25rem;
-    padding: 1rem 0;
-    border-bottom: 1px solid var(--line);
-    font-size: 0.95rem;
+    align-items: baseline;
+    padding: 0.7rem 1.5rem;
+    border-top: 1px solid var(--hairline);
 }
-header.site a:first-child { font-weight: 600; margin-right: auto; text-decoration: none; color: var(--text); }
-nav#TOC { margin: 1.25rem 0; font-size: 0.95rem; }
-nav#TOC summary { cursor: pointer; color: var(--muted); }
-nav#TOC ul { padding-left: 1.25rem; margin: 0.25rem 0; }
-h1, h2, h3, h4 { line-height: 1.25; scroll-margin-top: 1rem; }
-h1 { font-size: 2rem; margin: 1.5rem 0 0.25rem; }
-h2 { font-size: 1.45rem; margin-top: 2.5rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--line); }
-h3 { font-size: 1.15rem; margin-top: 2rem; }
-h4 { font-size: 1rem; margin-top: 1.5rem; }
-code, pre {
-    font-family: ui-monospace, "SFMono-Regular", "Source Code Pro", Menlo, Consolas, monospace;
-    font-size: 0.86em;
+.versions .version { font-weight: 600; font-variant-numeric: tabular-nums; }
+.versions .latest { color: var(--muted); font-weight: 400; margin-left: 0.5rem; }
+.versions time { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+footer.site { max-width: 44rem; margin: 0 auto; padding: 0 1.5rem 3rem; display: flex; gap: 1.5rem; color: var(--muted); font: 0.85rem/1.4 var(--ui); }
+footer.site a { color: var(--muted); }
+
+/* The spec: contents beside the text on wide screens, above it on narrow ones. */
+.reader { display: grid; grid-template-columns: minmax(0, 46rem); justify-content: center; gap: 2.5rem; padding: 2rem 1.5rem 5rem; }
+@media (min-width: 72rem) {
+    .reader { grid-template-columns: 16rem minmax(0, 46rem); }
+    .reader > nav { position: sticky; top: 5rem; align-self: start; max-height: calc(100vh - 6rem); overflow: auto; }
+    .reader > nav details > summary { display: none; }
 }
-code { background: var(--code-bg); padding: 0.05em 0.3em; border-radius: 3px; }
+.reader > nav { border-radius: 18px; padding: 0.9rem 1rem; font: 0.88rem/1.45 var(--ui); }
+@media (max-width: 71.99rem) {
+    .reader > nav { max-height: 16rem; overflow: auto; }
+}
+.reader > nav summary { cursor: pointer; color: var(--muted); }
+.reader > nav ul { list-style: none; margin: 0; padding: 0; }
+.reader > nav ul ul { padding-left: 0.85rem; }
+.reader > nav li { margin: 0.2rem 0; }
+.reader > nav a { color: var(--text); opacity: 0.78; }
+.reader > nav a:hover { opacity: 1; text-decoration: none; }
+.reader > nav > details > ul > li > a { display: none; }
+.reader > nav > details > ul > li > ul { padding-left: 0; }
+
+main h1, main h2, main h3, main h4 { font-family: var(--display); line-height: 1.2; letter-spacing: -0.015em; scroll-margin-top: 5rem; }
+main h1 { font-size: 2.6rem; font-weight: 700; letter-spacing: -0.035em; margin: 0.5rem 0 0.25rem; }
+main h2 { font-size: 1.6rem; font-weight: 600; margin: 3rem 0 0.75rem; }
+main h3 { font-size: 1.2rem; font-weight: 600; margin: 2.2rem 0 0.5rem; }
+main h4 { font-size: 1.02rem; font-weight: 600; margin: 1.6rem 0 0.4rem; }
+main p, main li { max-width: 72ch; }
+code, pre { font-family: var(--mono); font-size: 0.84em; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 6px; }
 pre {
     background: var(--code-bg);
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    padding: 0.75rem 1rem;
+    border-radius: 14px;
+    padding: 1rem 1.15rem;
     overflow-x: auto;
-    line-height: 1.45;
+    line-height: 1.5;
 }
 pre code { background: none; padding: 0; font-size: 1em; }
-div.sourceCode { margin: 1rem 0; }
+div.sourceCode { margin: 1.25rem 0; }
 table {
     display: block;
     max-width: 100%;
     overflow-x: auto;
     border-collapse: collapse;
-    font-size: 0.92rem;
-    margin: 1rem 0;
+    margin: 1.25rem 0;
+    font: 0.88rem/1.5 var(--ui);
 }
-th, td { border: 1px solid var(--line); padding: 0.35rem 0.6rem; vertical-align: top; text-align: left; }
-th { background: var(--code-bg); }
-img { max-width: 100%; height: auto; }
-blockquote { margin: 1rem 0; padding: 0 1rem; border-left: 3px solid var(--line); color: var(--muted); }
+th, td { padding: 0.5rem 0.75rem; vertical-align: top; text-align: left; border-bottom: 1px solid var(--hairline); }
+th { font-weight: 600; }
+img { max-width: 100%; height: auto; border-radius: 12px; }
+blockquote { margin: 1.25rem 0; padding: 0.25rem 1.1rem; border-left: 3px solid var(--hairline); color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+    img { background: #ffffff; }
+}
+
+/* Code colours after Xcode's, for the spans pandoc marks up. */
+main code span.kw, main code span.cf, main code span.im { color: #ad3da4; }
+main code span.dt, main code span.bu { color: #703daa; }
+main code span.st, main code span.ch, main code span.ss, main code span.vs { color: #c41a16; }
+main code span.dv, main code span.bn, main code span.fl, main code span.cn { color: #272ad8; }
+main code span.co, main code span.do, main code span.an, main code span.cv, main code span.in { color: #707f8c; font-style: normal; }
+main code span.fu, main code span.at, main code span.pp { color: #3e8087; }
+main code span.op, main code span.va, main code span.ot { color: inherit; }
+main code span.er, main code span.al, main code span.wa { color: #c41a16; font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+    main code span.kw, main code span.cf, main code span.im { color: #ff7ab2; }
+    main code span.dt, main code span.bu { color: #dabaff; }
+    main code span.st, main code span.ch, main code span.ss, main code span.vs { color: #ff8170; }
+    main code span.dv, main code span.bn, main code span.fl, main code span.cn { color: #d9c97c; }
+    main code span.co, main code span.do, main code span.an, main code span.cv, main code span.in { color: #7f8c98; }
+    main code span.fu, main code span.at, main code span.pp { color: #67b7a4; }
+    main code span.er, main code span.al, main code span.wa { color: #ff8170; }
+}

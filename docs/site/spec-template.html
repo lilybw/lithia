@@ -7,20 +7,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="lithia-site" data-root-path="./">
 <title>$pagetitle$</title>
-<link rel="stylesheet" href="spec.css">
 $if(highlighting-css)$
 <style>
 $highlighting-css$
 </style>
 $endif$
+<link rel="stylesheet" href="site.css">
 $for(header-includes)$
 $header-includes$
 $endfor$
 </head>
 <body>
-<header class="site"><a href="../">lithia $version$</a><a href="../api/lithia/index.html">API</a>$if(pdf)$<a href="$pdf$">PDF</a>$endif$</header>
-<nav id="TOC" aria-label="Contents">
-<details>
+<header class="bar glass">
+<a class="home" href="../">lithia<small>$version$</small></a>
+<a href="../api/lithia/index.html">API</a>
+<a class="here" href="./" aria-current="page">Spec</a>
+$if(pdf)$<a href="$pdf$">PDF</a>$endif$
+</header>
+<div class="reader">
+<nav class="glass" aria-label="Contents">
+<details open>
 <summary>Contents</summary>
 $table-of-contents$
 </details>
@@ -28,5 +34,6 @@ $table-of-contents$
 <main>
 $body$
 </main>
+</div>
 </body>
 </html>

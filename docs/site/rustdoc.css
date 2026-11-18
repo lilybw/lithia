@@ -35,10 +35,82 @@
     unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-/* Settings' "sans-serif fonts" (:root.sans-serif-fonts) still wins over this. */
+/* Apple-like calm to match the site: system type for headings and chrome, Lora for text,
+ * a frosted sidebar over a faint lithium-red glow. Settings' sans-serif option still wins. */
 :root {
     --font-family: "Lora", "Source Serif 4", NanumBarunGothic, serif;
+    --lithia-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    --lithia-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --code-block-border-radius: 12px;
 }
+:root[data-theme="light"],
+:root:not([data-theme]) {
+    --main-background-color: #fbfbfd;
+    --main-color: #1d1d1f;
+    --sidebar-background-color: rgba(245, 245, 247, 0.62);
+    --sidebar-background-color-hover: rgba(0, 0, 0, 0.05);
+    --sidebar-border-color: rgba(0, 0, 0, 0.07);
+    --sidebar-current-link-background-color: rgba(255, 255, 255, 0.85);
+    --code-block-background-color: rgba(0, 0, 0, 0.045);
+    --headings-border-bottom-color: rgba(0, 0, 0, 0.08);
+    --border-color: rgba(0, 0, 0, 0.1);
+    --button-background-color: rgba(255, 255, 255, 0.7);
+    --link-color: #0066cc;
+    --sidebar-link-color: #0066cc;
+    --search-input-focused-border-color: #0071e3;
+    --lithia-glow-red: rgba(220, 40, 70, 0.10);
+    --lithia-glow-violet: rgba(120, 90, 220, 0.08);
+    --lithia-glass-edge: rgba(255, 255, 255, 0.7);
+}
+:root[data-theme="dark"] {
+    --main-background-color: #000000;
+    --main-color: #f5f5f7;
+    --sidebar-background-color: rgba(29, 29, 31, 0.6);
+    --sidebar-background-color-hover: rgba(255, 255, 255, 0.06);
+    --sidebar-border-color: rgba(255, 255, 255, 0.08);
+    --sidebar-current-link-background-color: rgba(255, 255, 255, 0.1);
+    --code-block-background-color: rgba(255, 255, 255, 0.07);
+    --headings-border-bottom-color: rgba(255, 255, 255, 0.1);
+    --border-color: rgba(255, 255, 255, 0.14);
+    --button-background-color: rgba(29, 29, 31, 0.7);
+    --link-color: #2997ff;
+    --sidebar-link-color: #2997ff;
+    --search-input-focused-border-color: #2997ff;
+    --lithia-glow-red: rgba(230, 50, 80, 0.16);
+    --lithia-glow-violet: rgba(130, 100, 240, 0.12);
+    --lithia-glass-edge: rgba(255, 255, 255, 0.08);
+}
+
+/* The glow behind the page, which the sidebar's glass blurs. */
+body {
+    background-image:
+        radial-gradient(60vw 50vh at 0% 0%, var(--lithia-glow-red, transparent), transparent 70%),
+        radial-gradient(50vw 45vh at 35% 0%, var(--lithia-glow-violet, transparent), transparent 70%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+    -webkit-font-smoothing: antialiased;
+}
+.sidebar,
+rustdoc-topbar {
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    box-shadow: inset -1px 0 0 var(--lithia-glass-edge, transparent);
+}
+@media (prefers-reduced-transparency: reduce) {
+    body { background-image: none; }
+    .sidebar, rustdoc-topbar { -webkit-backdrop-filter: none; backdrop-filter: none; background-color: var(--main-background-color); }
+}
+
+/* System type for headings and chrome, as rustdoc's Fira Sans would be. */
+#crate-search, h1, h2, h3, h4, h5, h6, .sidebar, rustdoc-topbar, .search-input, .search-results .result-name,
+.item-table dt > a, .out-of-band, .sub-heading, span.since, a.src, rustdoc-toolbar, summary.hideme,
+.scraped-example-list, .rustdoc-breadcrumbs, .search-switcher, ul.all-items, .deprecated-count {
+    font-family: var(--lithia-ui);
+}
+h1, h2, h3, h4 { letter-spacing: -0.015em; }
+.main-heading h1 { font-weight: 700; letter-spacing: -0.03em; }
+.search-input { border-radius: 999px; padding: 8px 16px; }
+.docblock code, .item-table dd code { border-radius: 6px; }
 details.toggle:not([open]) > summary .docblock > :first-child::after {
     font-family: var(--font-family);
 }

@@ -32,6 +32,8 @@ TYPESCRIPT: str = "typescript@5.9.3"
 PLACEHOLDER: str = '"__LITHIA_VERSION__"'
 TAG: re.Pattern[str] = re.compile(r"^v(\d+(?:\.\d+)+)$")
 IMAGE: re.Pattern[str] = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
+REPOSITORY: str = "https://github.com/lilybw/lithia"
+MONTHS: tuple[str, ...] = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,7 @@ def version_script(version: str) -> str:
 
 
 def page(title: str, body: str, stylesheet: str, script: str = "", meta: str = "") -> str:
-    """A plain site page in the spec's style."""
+    """A plain site page."""
     return (
         '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
@@ -148,7 +150,7 @@ def build_spec(version: str, script: str, out: Path) -> None:
             args += ["--variable", f"pdf={pdf.name}"]
             shutil.copy2(pdf, out / pdf.name)
         run(args)
-    shutil.copy2(SITE / "spec.css", out / "spec.css")
+    shutil.copy2(SITE / "site.css", out / "site.css")
     shutil.copytree(SITE / "fonts", out / "fonts")
     for image in IMAGE.findall(text):
         found: Path = SPEC_DIR / image
@@ -231,19 +233,19 @@ def place(release: Release, assets: Path, out: Path, script: str) -> bool:
     shutil.copytree(unpacked / "doc", out / "api")
     (out / "api" / "index.html").write_text(stub("lithia/index.html", "lithia API", script))
     (out / "spec").mkdir()
-    shutil.copy2(SITE / "spec.css", out / "spec" / "spec.css")
+    shutil.copy2(SITE / "site.css", out / "spec" / "site.css")
     shutil.copytree(SITE / "fonts", out / "spec" / "fonts")
     pdfs: list[Path] = sorted(assets.glob("LITHIA_design_spec_*.pdf"))
-    links: str = "".join(f'<li><a href="{html.escape(p.name)}">{html.escape(p.name)}</a></li>' for p in pdfs)
     for pdf in pdfs:
         shutil.copy2(pdf, out / "spec" / pdf.name)
+    links: str = "".join(f'<a class="pill glass" href="{html.escape(p.name)}">{html.escape(p.stem)} (PDF)</a>' for p in pdfs)
     body: str = (
-        f'<header class="site"><a href="../">lithia {release.version}</a>'
-        f'<a href="../api/lithia/index.html">API</a></header>\n<main><h1>Design spec</h1>\n'
-        f"<p>This release predates the HTML spec; its spec is a PDF.</p>\n<ul>{links}</ul></main>"
+        f"{bar('../', release.version, '../api/lithia/index.html', './', 'spec')}\n<main class=\"front\">\n"
+        f"<h1>Design spec</h1>\n<p class=\"lede\">This release predates the spec's web page; its spec is a PDF.</p>\n"
+        f'<div class="actions">{links}</div>\n</main>'
     )
     (out / "spec" / "index.html").write_text(
-        page(f"lithia {release.version}: design spec", body, "spec.css", script, '<meta name="lithia-site" data-root-path="./">\n')
+        page(f"lithia {release.version}: design spec", body, "site.css", script, '<meta name="lithia-site" data-root-path="./">\n')
     )
     return True
 
@@ -254,46 +256,78 @@ def description() -> str:
     return manifest["package"]["description"]
 
 
+def bar(home: str, version: str, api: str, spec: str, here: str) -> str:
+    """The glass bar across the top of a site page."""
+    tag: str = f"<small>{html.escape(version)}</small>" if version else ""
+    api_current: str = ' class="here" aria-current="page"' if here == "api" else ""
+    spec_current: str = ' class="here" aria-current="page"' if here == "spec" else ""
+    return (
+        f'<header class="bar glass"><a class="home" href="{home}">lithia{tag}</a>'
+        f'<a{api_current} href="{api}">API</a><a{spec_current} href="{spec}">Spec</a>'
+        f'<a href="{REPOSITORY}">Source</a></header>'
+    )
+
+
+def footer() -> str:
+    """The license line and source link under a front page."""
+    return f'<footer class="site"><span>GPL-2.0-or-later</span><a href="{REPOSITORY}">Source on GitHub</a></footer>'
+
+
+def readable(date: str) -> str:
+    """2026-11-18 as 18 Nov 2026; anything else as given."""
+    parts: list[str] = date.split("-")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return date
+    return f"{int(parts[2])} {MONTHS[int(parts[1]) - 1]} {parts[0]}"
+
+
 def landing(placed: list[Release], keep: int) -> str:
-    """The site's front page: the latest docs and every hosted version."""
+    """The site's front page: the latest docs and every hosted release."""
     latest: Release = placed[0]
+    example: str = placed[1].version if len(placed) > 1 else latest.version
     rows: str = "\n".join(
-        f"<tr><td>{r.version}</td><td>{r.date}</td>"
-        f'<td><a href="versions/{r.version}/api/lithia/index.html">API</a></td>'
-        f'<td><a href="versions/{r.version}/spec/index.html">Spec</a></td></tr>'
+        f'<li><span class="version">{r.version}{"<span class=\"latest\">latest</span>" if r is latest else ""}</span>'
+        f'<time datetime="{r.date}">{readable(r.date)}</time>'
+        f'<a href="versions/{r.version}/api/lithia/index.html">API</a>'
+        f'<a href="versions/{r.version}/spec/index.html">Spec</a></li>'
         for r in placed
     )
     body: str = (
-        f'<header class="site"><a href="./">lithia</a><a href="api/lithia/index.html">API</a>'
-        f'<a href="spec/index.html">Spec</a></header>\n<main>\n<h1>lithia</h1>\n<p>{html.escape(description())}</p>\n'
-        f'<p>Latest: <strong>{latest.version}</strong>. <a href="api/lithia/index.html">API reference</a> · '
-        f'<a href="spec/index.html">Design spec</a></p>\n'
-        "<p>Any page under <code>api/</code> or <code>spec/</code> takes <code>?v=&lt;version&gt;</code> "
-        f"to open that version instead, such as <code>api/lithia/index.html?v={latest.version}</code>.</p>\n"
-        f"<h2>Versions</h2>\n<p>The newest {keep} releases are hosted here.</p>\n"
-        f"<table><thead><tr><th>Version</th><th>Released</th><th></th><th></th></tr></thead>\n<tbody>\n{rows}\n</tbody></table>\n</main>"
+        f"{bar('./', '', 'api/lithia/index.html', 'spec/index.html', '')}\n<main class=\"front\">\n<h1>lithia</h1>\n"
+        f'<p class="lede">{html.escape(description())}</p>\n<div class="actions">'
+        f'<a class="pill primary" href="api/lithia/index.html">Read the API reference</a>'
+        f'<a class="pill glass" href="spec/index.html">Read the design spec</a></div>\n'
+        f'<p class="note">These are the docs for {latest.version}. Add <code>?v={example}</code> to any API or spec '
+        "address to read another release.</p>\n"
+        f'<section class="panel glass" aria-labelledby="releases"><h2 id="releases">Releases</h2>\n'
+        f"<p>The newest {keep} releases keep their docs here.</p>\n<ul class=\"versions\">\n{rows}\n</ul></section>\n"
+        f"</main>\n{footer()}"
     )
     return page("lithia docs", body, "site.css")
 
 
 def version_landing(release: Release) -> str:
-    """A hosted version's own front page."""
+    """A hosted release's own front page."""
     body: str = (
-        f'<header class="site"><a href="../../">lithia</a><a href="api/lithia/index.html">API</a>'
-        f'<a href="spec/index.html">Spec</a></header>\n<main>\n<h1>lithia {release.version}</h1>\n'
-        f'<p><a href="api/lithia/index.html">API reference</a> · <a href="spec/index.html">Design spec</a> · '
-        f'<a href="../../">All versions</a></p>\n</main>'
+        f"{bar('../../', release.version, 'api/lithia/index.html', 'spec/index.html', '')}\n<main class=\"front\">\n"
+        f"<h1>lithia {release.version}</h1>\n"
+        f'<p class="lede">The docs as they were in this release{f", on {readable(release.date)}" if release.date else ""}.</p>\n'
+        f'<div class="actions"><a class="pill primary" href="api/lithia/index.html">Read the API reference</a>'
+        f'<a class="pill glass" href="spec/index.html">Read the design spec</a>'
+        f'<a class="pill glass" href="../../">All releases</a></div>\n</main>\n{footer()}'
     )
     return page(f"lithia {release.version}", body, "../../site.css")
 
 
-def not_found(base: str, latest: str) -> str:
+def not_found(base: str, latest: str, keep: int) -> str:
     """The 404 page; GitHub serves it at any missing path, so its links are absolute."""
     body: str = (
-        f'<header class="site"><a href="{base}">lithia</a><a href="{base}api/lithia/index.html">API</a>'
-        f'<a href="{base}spec/index.html">Spec</a></header>\n<main>\n<h1>Page not found</h1>\n'
-        f"<p>The page does not exist, or not in the version asked for. Older versions leave the site as new ones "
-        f'arrive; the <a href="{base}">front page</a> lists those still here. The latest is {latest}.</p>\n</main>'
+        f"{bar(base, '', f'{base}api/lithia/index.html', f'{base}spec/index.html', '')}\n<main class=\"front\">\n"
+        "<h1>Page not found</h1>\n"
+        "<p class=\"lede\">This page doesn't exist, or not in the release you asked for. "
+        f"The site keeps the newest {keep} releases; the latest is {latest}.</p>\n"
+        f'<div class="actions"><a class="pill primary" href="{base}">Go to the front page</a>'
+        f'<a class="pill glass" href="{base}api/lithia/index.html">Open the latest API reference</a></div>\n</main>'
     )
     return page("lithia: page not found", body, f"{base}site.css")
 
@@ -320,10 +354,10 @@ def assemble(out: Path, keep: int, base: str, repo: str | None, source: Path | N
     latest: Release = placed[0]
     shutil.copytree(out / "versions" / latest.version / "api", out / "api")
     shutil.copytree(out / "versions" / latest.version / "spec", out / "spec")
-    shutil.copy2(SITE / "spec.css", out / "site.css")
+    shutil.copy2(SITE / "site.css", out / "site.css")
     shutil.copytree(SITE / "fonts", out / "fonts")
     (out / "index.html").write_text(landing(placed, keep))
-    (out / "404.html").write_text(not_found(base, latest.version))
+    (out / "404.html").write_text(not_found(base, latest.version, keep))
     versions: dict[str, object] = {
         "latest": latest.version,
         "versions": [{"version": r.version, "tag": r.tag, "date": r.date} for r in placed],
