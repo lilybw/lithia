@@ -188,8 +188,10 @@ Five passes from `TODO.md`, run in series:
 ## CI and nightly releases (2026-11-18)
 
 - `.github/workflows/ci.yml`: on Ubuntu and Windows with rustc 1.97.0 (the compile-fail snapshots depend on
-  it): fmt (Ubuntu), clippy normal and loom cfg, `cargo doc -D warnings`, `cargo test --workspace`, the loom
-  models at bound 3. Also runs on pull requests into `nightly` or `release`, and by hand.
+  it), as four parallel jobs (tests and loom per OS): fmt (Ubuntu), clippy normal and loom cfg,
+  `cargo doc -D warnings`, a docs-site snapshot (Ubuntu), `cargo test --workspace`, the loom models at bound 3.
+  Line-table debug info, and rust-lld on Windows: compiling and linking were most of the Windows job.
+  Also runs on pull requests into `nightly` or `release`; manual runs need the workflow on `main`.
 - `.github/workflows/nightly.yml`: every push to `nightly` runs `ci.yml`; when both platforms pass,
   `.github/scripts/release-assets.sh` names the release `v<crate version>.<n>` (one above the highest `n`
   for that version; a commit already released is skipped) and `gh release create` attaches the two crate
@@ -200,7 +202,8 @@ Five passes from `TODO.md`, run in series:
 - Branches: `nightly` (released when green) and `release` (stable merges; v0.3.1 merged 2026-11-18). The old
   `release/v0.3.0` branch gave way to `release`; its tip 003d740 is in `release`'s history (no tag: this
   session cannot push tags).
-- Docs site (GitHub Pages, deployed by Actions): `pages.yml` runs after each release, or by hand. Each
+- Docs site (GitHub Pages, deployed by Actions, live at https://lilybw.com/lithia/): `pages.yml` runs after
+  each release; the `github-pages` environment allows `nightly`. Each
   release's `lithia-docs-<tag>.tar.gz` holds `api/` (rustdoc with `docs/site/rustdoc.css`: Lora as the text
   font, self-hosted under OFL; plus the forwarding script) and `spec/` (the newest spec via pandoc and
   `docs/site/spec-template.html`). `.github/scripts/site.py assemble` lays the newest 50 out under
