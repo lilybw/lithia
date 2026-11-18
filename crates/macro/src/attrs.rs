@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! `#[lithia::main]` and `#[lithia::test]` (spec §3.5).
 
 use proc_macro2::TokenStream;

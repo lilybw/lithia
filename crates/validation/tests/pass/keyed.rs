@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 // Every form of `effect!` takes `key`, as an expression or a closure naming variables in scope.
 #![deny(warnings)]
 use lithia::{effect, DerivedNode, SourceNode};

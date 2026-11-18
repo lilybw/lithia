@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Keyed nodes: holdover, reclaiming and refreshing across a creator's runs (spec §10.1, Keyed nodes).
 
 use std::sync::Arc;

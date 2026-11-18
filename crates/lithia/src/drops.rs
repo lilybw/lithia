@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Deferred drops: values and bodies never drop inside the scheduling protocol (spec §10.3).
 
 use std::any::Any;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Synchronization primitives of the engine: std and parking_lot normally, loom's under
 //! `--cfg lithia_loom`, so the model checker sees every lock, atomic and thread-local (spec §11.4 step 8).
 

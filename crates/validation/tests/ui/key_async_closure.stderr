@@ -1,5 +1,5 @@
 error: a `key` closure names variables in scope and runs at once; write it without `async` or `move`
- --> tests/ui/key_async_closure.rs:6:48
+ --> tests/ui/key_async_closure.rs:9:48
   |
-6 |     let _n: SourceNode<u32> = effect!(1, key = async |id| *id);
+9 |     let _n: SourceNode<u32> = effect!(1, key = async |id| *id);
   |                                                ^^^^^^^^^^^^^^

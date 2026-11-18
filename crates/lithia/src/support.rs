@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Support: what keeps top-level nodes alive without a handle, and the sweeps that let go of them.
 
 use std::cell::RefCell;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Sites and tracing diagnostics (spec §4.3, §12).
 
 use std::fmt::Write as _;

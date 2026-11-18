@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Manual disposal and ghosts (spec §10.4, §10.5).
 
 use std::collections::{BTreeMap, BTreeSet};

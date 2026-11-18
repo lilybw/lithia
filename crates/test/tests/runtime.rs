@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Runtimes, flavours and shutdown (spec §11.3).
 
 use std::time::Duration;

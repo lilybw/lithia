@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Propagation, batching, scopes and termination (spec §6.2, §7, §11.3).
 
 #![allow(clippy::type_complexity)]

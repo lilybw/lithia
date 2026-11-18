@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Bounds on node values (spec §11.1).
 
 /// Bound on every node value; blanket-implemented so that the compile error names the fix.

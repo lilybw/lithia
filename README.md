@@ -1,7 +1,10 @@
 # lithia
 
-A thread-safe, fine-grained reactive engine for Rust on tokio, bringing the core of Solid 2.0's
-signal model to Rust through one primitive: the `effect!` macro.
+Thread-safe, fine-grained reactivity for Rust, after Solid 2.0's signals. One macro, `effect!`, makes
+every kind of node; tokio runs them across threads.
+
+**[Documentation](https://lilybw.com/lithia/)** · [API reference](https://lilybw.com/lithia/api/lithia/) ·
+[Design spec](https://lilybw.com/lithia/spec/) · [Releases](https://github.com/lilybw/lithia/releases)
 
 ```rust
 use lithia::{DerivedNode, SourceNode, effect};
@@ -17,52 +20,50 @@ async fn main() {
 }
 ```
 
-The design is specified in [`docs/spec`](docs/spec/LITHIA_design_spec_v0.3.1.md) (v0.3.1, also as PDF); implementation status
-and decisions are tracked in [`docs/PROGRESS.md`](docs/PROGRESS.md).
+## What it does
 
-Requires Rust 1.95 or newer (edition 2024).
+- **One primitive.** `effect!(value)` makes a source node you write to. `effect!(|a, b| …)` makes a derived
+  node that reruns when `a` or `b` changes; one that returns `()` is an effect.
+- **Built for threads.** Handles are `Send + Sync` and every run is a tokio task. A write propagates
+  without glitches: a node that depends on it along two paths runs once, with both updated.
+- **Async and generators.** Bodies can `.await`, and can `yield` several values in turn. Pending and failed
+  are states a node can be in, and a panic fails its node instead of the program.
+- **Lifetimes without owners.** A node lives as long as something outside lithia can still make it run.
+  Nodes created inside a body are rebuilt on each of its runs, or kept with `key = …`, which reruns only
+  those whose inputs changed.
+- **Checked.** The spec's validation cases, compile-fail cases, and loom model checking of the scheduling
+  protocol run on Linux and Windows before every release.
 
-## Crates
+## Using it
 
-| Directory | Package | Role |
-|---|---|---|
-| `crates/lithia` | `lithia` | The engine and its public API; depend on this one |
-| `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
-| `crates/validation` | `lithia-validation` | The spec's validation cases, verbatim |
-| `crates/test` | `lithia-test` | Edge-case unit and integration tests |
-| `crates/bench` | `lithia-bench` | The spec's §15 benchmarks |
+lithia is not on crates.io yet. Depend on the `release` branch, or pin a release tag:
 
-## Commands
-
-```sh
-cargo test --workspace        # everything, including compile-fail tests
-cargo test -p lithia-validation
-cargo bench -p lithia-bench   # prints a results table
+```toml
+[dependencies]
+lithia = { git = "https://github.com/lilybw/lithia", branch = "release" }
 ```
 
-Model checking with [loom](https://docs.rs/loom) explores every thread interleaving of the
-scheduling protocol over the validation cases, up to a preemption bound (default 3):
+It needs Rust 1.95 or newer and runs on tokio: start with `#[lithia::main]` and `#[lithia::test]`, or use
+it from inside any tokio runtime. Until 1.0, the API may still change between releases.
 
-```sh
-RUSTFLAGS="--cfg lithia_loom" CARGO_TARGET_DIR=target/loom cargo test --release -p lithia-test --test loom
-LOOM_MAX_PREEMPTIONS=4 ...    # deeper: about 7 minutes instead of 30 seconds
-```
+## Releases and docs
 
-`.cargo/config.toml` runs every `#[lithia::test]` under a timeout (`LITHIA_TEST_TIMEOUT_MS`), so a
-`flush` or `settled` that never returns fails its test instead of stalling the run.
+Every push to `nightly` that passes CI on Ubuntu and Windows is released as `v<version>.<n>`, such as
+`v0.3.1.4`, with the crate packages, the docs and the spec attached, and the
+[docs site](https://lilybw.com/lithia/) is rebuilt. Each release's docs stay online: add `?v=0.3.1.4` to
+any page under `api/` or `spec/` to read that version.
 
-## Releases
+The [design spec](https://lilybw.com/lithia/spec/) is the full reference for how lithia behaves and why;
+[`docs/PROGRESS.md`](docs/PROGRESS.md) tracks the implementation, and [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
+its measurements.
 
-Every push to `nightly` runs the full test matrix on Ubuntu and Windows
-([`ci.yml`](.github/workflows/ci.yml): format, lints, docs, tests, validation and compile-fail cases, loom
-models). When it passes, [`nightly.yml`](.github/workflows/nightly.yml) releases that commit as
-`v<crate version>.<n>`, such as `v0.3.1.1`, `v0.3.1.2`, with the `lithia` and `lithia-macro` crate
-packages, the API docs, the design spec and SHA-256 sums attached. A new crate version in `Cargo.toml`
-starts again at `.1`. The `release` branch holds what was last merged as stable.
+## Contributing
 
-Each release also rebuilds the docs site on GitHub Pages ([`pages.yml`](.github/workflows/pages.yml)):
-the API reference from rustdoc and the spec as HTML, the newest at `api/` and `spec/` and the newest 50
-releases under `versions/<version>/`. Any `api/` or `spec/` page takes `?v=<version>` to open that
-version's copy, such as `api/lithia/index.html?v=0.3.1.2`. The site's styling and scripts live in
-[`docs/site`](docs/site) and [`.github/scripts/site.py`](.github/scripts/site.py); nothing in the crates
-changes for it. `python3 .github/scripts/site.py snapshot --version X --out DIR` builds one version locally.
+Pull requests go to `nightly`; [CONTRIBUTING.md](CONTRIBUTING.md) explains the layout, the checks and the
+conventions.
+
+## License
+
+lithia is free software under the GNU General Public License, version 2 or (at your option) any later
+version: see [LICENSE](LICENSE). "lithia Authors" in the files' SPDX headers means the people in
+[AUTHORS](AUTHORS). The Lora font files in `docs/site/fonts` are under the SIL Open Font License 1.1.

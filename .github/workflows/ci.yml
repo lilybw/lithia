@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 lithia Authors
+# SPDX-License-Identifier: GPL-2.0-or-later
+
 # Lints, tests, validation cases, compile-fail cases and loom models on Ubuntu and Windows;
 # the tests and the loom models run as separate jobs, side by side.
 name: ci

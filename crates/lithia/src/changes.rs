@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! The `changes()` stream (spec §3.6, §10.5).
 
 use std::future::poll_fn;

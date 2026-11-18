@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Validation cases AI–BC, added by v0.3.0: how long nodes live without handles (spec §10, §13).
 //! Every case runs under the workspace's test timeout (`.cargo/config.toml`).
 

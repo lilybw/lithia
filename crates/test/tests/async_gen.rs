@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Async bodies, generators and supersession (spec §3.6, §7.3, §8).
 
 use std::time::Duration;

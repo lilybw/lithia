@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! A minimal executor and harness for loom models of the engine (spec §11.4 step 8).
 //! Compiled only under `--cfg lithia_loom`; runs are polled on loom threads instead of tokio.
 

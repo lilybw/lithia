@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 lithia Authors
+# SPDX-License-Identifier: GPL-2.0-or-later
+
 """Builds lithia's docs site: one version's snapshot (API and spec), or the whole site from releases.
 
 `site.py snapshot --version 0.3.1.3 --out DIR` writes DIR/api and DIR/spec for one release.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Procedural macros of lithia: `effect!`, `#[lithia::main]` and `#[lithia::test]`.
 //! Use them through the `lithia` crate, whose paths their expansions name.
 

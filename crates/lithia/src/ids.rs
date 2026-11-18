@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Process-wide identities and the version clock (spec §5.1, §11.4 step 5).
 
 use std::sync::atomic::{AtomicU64, Ordering};

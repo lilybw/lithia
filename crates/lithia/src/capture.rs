@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Capture mode: handle clones an `effect!` expansion makes for a body are internal handles,
 //! and their nodes are recorded for the writer edges of the node being created.
 

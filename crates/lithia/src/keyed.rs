@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Keyed creation: a run reclaims the node its creator's previous run created with the same key (spec §10.1).
 
 use std::any::{Any, TypeId};

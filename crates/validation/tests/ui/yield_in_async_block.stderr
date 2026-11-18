@@ -1,5 +1,5 @@
 error: `yield` publishes the enclosing effect! body's items and only works directly in that body
- --> tests/ui/yield_in_async_block.rs:7:13
-  |
-7 |             yield *n.get();
-  |             ^^^^^
+  --> tests/ui/yield_in_async_block.rs:10:13
+   |
+10 |             yield *n.get();
+   |             ^^^^^

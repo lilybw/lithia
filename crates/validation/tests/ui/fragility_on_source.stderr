@@ -1,11 +1,11 @@
 error: `fragility` applies to derived nodes only; a source node has no parents
- --> tests/ui/fragility_on_source.rs:4:24
+ --> tests/ui/fragility_on_source.rs:7:24
   |
-4 |     let _ = effect!(0, fragility = FRAGILE);
+7 |     let _ = effect!(0, fragility = FRAGILE);
   |                        ^^^^^^^^^
 
 error: `fragility` applies to derived nodes only; a source node has no parents
- --> tests/ui/fragility_on_source.rs:5:34
+ --> tests/ui/fragility_on_source.rs:8:34
   |
-5 |     let _ = effect!(async { 1 }, fragility = SEMI_FRAGILE);
+8 |     let _ = effect!(async { 1 }, fragility = SEMI_FRAGILE);
   |                                  ^^^^^^^^^

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Parsing and expansion of `effect!` (spec §3.1, §3.2, §4).
 
 use std::collections::HashSet;

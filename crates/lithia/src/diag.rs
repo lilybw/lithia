@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Diagnostics through `tracing` (spec §12).
 
 use std::collections::{BTreeMap, BTreeSet};

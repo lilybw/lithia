@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Where lithia is running on this thread: frames, batches and scopes (spec §6.2, §11.3).
 
 use std::cell::{Cell, RefCell};

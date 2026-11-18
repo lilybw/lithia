@@ -1,7 +1,7 @@
 error[E0277]: `Rc<{integer}>` cannot be a node value: values must be `Send + Sync + 'static`
- --> tests/ui/non_send_value.rs:6:13
+ --> tests/ui/non_send_value.rs:9:13
   |
-6 |     let _ = effect!(Rc::new(1));
+9 |     let _ = effect!(Rc::new(1));
   |             ^^^^^^^^^^^^^^^^^^^ the trait `NodeValue` is not implemented for `Rc<{integer}>`
   |
   = note: replace `Rc` with `Arc`, and `RefCell` or `Cell` with `Mutex`, `RwLock` or an atomic

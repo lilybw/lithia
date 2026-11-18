@@ -116,12 +116,8 @@ BJ a key outside a body, BK captures without `PartialEq`: all pass.
 
 ## Working notes
 
-- Builds and tests run in a cloud container; the user's repo `E:\GitHub\lithia` is synced by sending a
-  git bundle with a unique file name per sync (the transfer reuses content for a repeated path), then a
-  fast-forward merge there. GitHub `origin` is `lilybw/lithia` (private). Commits are authored as
-  `claudia <lilybwanscher@gmail.com>`.
-- Stress loop used before every sync: run each test binary 100–400 times in debug and release, and once
-  pinned to a single core with `taskset -c 0`.
+- Stress loop used before a release check: run each test binary 100–400 times in debug and release, and
+  again pinned to a single core with `taskset -c 0`.
 
 ## Spec v0.2.5
 

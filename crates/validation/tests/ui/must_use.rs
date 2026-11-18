@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 // Case AH: a bare `effect!(…).scoped();` is a `#[must_use]` warning.
 #![deny(unused_must_use)]
 use lithia::{effect, SourceNode};

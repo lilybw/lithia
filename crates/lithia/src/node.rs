@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! The node record behind every handle, and its scheduler state (spec §5).
 
 use std::any::TypeId;

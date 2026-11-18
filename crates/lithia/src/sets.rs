@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Small sets used by the scheduler: writer sets and parent masks (spec §5, §7.4).
 
 use crate::ids::NodeId;

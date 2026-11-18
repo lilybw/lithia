@@ -1,5 +1,5 @@
 error: `ALWAYS_PROPAGATE` without `equals` does nothing; add `equals = …`
- --> tests/ui/always_propagate_without_equals.rs:4:24
+ --> tests/ui/always_propagate_without_equals.rs:7:24
   |
-4 |     let _ = effect!(0, flags = ALWAYS_PROPAGATE);
+7 |     let _ = effect!(0, flags = ALWAYS_PROPAGATE);
   |                        ^^^^^

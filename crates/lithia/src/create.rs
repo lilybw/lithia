@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Node creation, called by `effect!` expansions (spec §4.5, §11.4 step 7).
 
 use std::future::Future;

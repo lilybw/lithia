@@ -13,7 +13,10 @@ version = "0.3.1"
 edition = "2024"
 rust-version = "1.95"
 publish = false
+license = "GPL-2.0-or-later"
 repository = "https://github.com/lilybw/lithia"
+homepage = "https://lilybw.com/lithia/"
+documentation = "https://lilybw.com/lithia/api/lithia/"
 
 [workspace.dependencies]
 lithia = { path = "crates/lithia", version = "0.3.1" }

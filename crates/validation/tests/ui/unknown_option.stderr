@@ -1,5 +1,5 @@
 error: unknown option `colour`; expected one of init, equals, fragility, ghost, flags, key
- --> tests/ui/unknown_option.rs:4:24
+ --> tests/ui/unknown_option.rs:7:24
   |
-4 |     let _ = effect!(0, colour = 1);
+7 |     let _ = effect!(0, colour = 1);
   |                        ^^^^^^

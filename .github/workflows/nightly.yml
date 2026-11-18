@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 lithia Authors
+# SPDX-License-Identifier: GPL-2.0-or-later
+
 # Every push to `nightly` runs the full test matrix; when it passes, the commit is released as
 # v<crate version>.<n>, with n one above the last release of that version, and the docs site is rebuilt.
 name: nightly

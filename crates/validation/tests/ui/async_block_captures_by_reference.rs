@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 // An async source block sees its captures by reference: moving a handle out takes a clone.
 use lithia::{effect, SourceNode};
 

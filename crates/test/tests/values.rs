@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 lithia Authors
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 //! Writes, equality, closures and status transitions (spec §5.3, §6).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
