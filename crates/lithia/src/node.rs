@@ -130,6 +130,9 @@ pub(crate) struct Header {
     pub(crate) block_run: AtomicU64,
     /// Whether support holds the node while an anchor reaches it: a top-level node with parents.
     pub(crate) supportable: bool,
+    /// A node its creator has yet to finish deciding: being let go of, in the holdover, or being
+    /// reclaimed until its refresh is done (spec §7.2, Creator order).
+    pub(crate) undecided: AtomicBool,
     /// The lease of an async source block's `move` captures, ended once the block stops for good.
     pub(crate) lease: ArcCell<crate::capture::Lease>,
 }
@@ -166,6 +169,8 @@ pub(crate) struct Sched {
     pub(crate) releasing: bool,
     /// Failed through fragility rather than its own panic.
     pub(crate) failed_by_fragility: bool,
+    /// Nodes this node created that wait for it to decide them before they run.
+    pub(crate) gated: Vec<(NodeId, WeakNodeRef)>,
 }
 
 impl Sched {
@@ -186,13 +191,31 @@ impl Sched {
             closed: false,
             releasing: false,
             failed_by_fragility: false,
+            gated: Vec::new(),
         }
+    }
+
+    /// Whether this node, as `child`'s creator, may still replace it or keep it: an entry it has not
+    /// decided, a run it will start or restart, or a run under way that has not reclaimed `child`.
+    pub(crate) fn decides(&self, child: &Header) -> bool {
+        let undecided_entry: bool = self.entries.values().any(|entry: &Entry| !entry.runnable);
+        let next_run: bool = self.run.is_none()
+            && (self.queued || !self.inherited.is_empty() || self.entries.values().any(|entry: &Entry| entry.runnable));
+        let restart: bool = self.run.as_ref().is_some_and(|slot: &RunSlot| slot.restart);
+        undecided_entry || next_run || restart || child.undecided.load(Ordering::SeqCst)
     }
 
     /// Releases the generation: unkeyed nodes into `out`, keyed ones into the holdover.
     pub(crate) fn release_generation(&mut self, out: &mut Vec<NodeRef>) {
+        // Undecided until the release lands: a run of theirs must not start in between.
+        for node in &self.generation {
+            node.header().undecided.store(true, Ordering::SeqCst);
+        }
         out.append(&mut self.generation);
         let keyed: KeyedSet = std::mem::take(&mut self.keyed);
+        for node in keyed.iter() {
+            node.header().undecided.store(true, Ordering::SeqCst);
+        }
         self.holdover.merge(keyed);
     }
 

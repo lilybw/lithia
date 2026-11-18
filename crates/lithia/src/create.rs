@@ -112,7 +112,15 @@ fn refresh<K: NodeValue>(
             old.end();
         }
     }
-    context::record_refresh(&erased);
+    // A run the node owes already, gated until now, runs the new body: no rerun is needed for it.
+    let owed: bool = header.kind == Kind::Derived && {
+        let guard: MutexGuard<'_, Sched> = header.sched.lock();
+        guard.run.is_none()
+            && guard.entries.values().any(|entry: &crate::node::Entry| entry.runnable && entry.waiting.is_empty())
+    };
+    if !owed {
+        context::record_refresh(&erased);
+    }
     if let Some(old) = old {
         crate::drops::drop_later(old, runtime.as_ref());
     }
@@ -139,6 +147,7 @@ fn new_node<K: NodeValue>(
                 if same_targets(&node.header, captured) {
                     let (_, inputs): (Key, Inputs) = keyed.key(site);
                     refresh(&node, value, body, inputs, options.equals, captured.2.clone());
+                    keyed::decided(&node);
                     return node;
                 }
                 // Its body would write other nodes now: a new node takes the key instead.
@@ -215,6 +224,7 @@ fn new_node<K: NodeValue>(
             inputs: Mutex::new(inputs),
             block_run: AtomicU64::new(if kind == Kind::AsyncSource { 1 } else { 0 }),
             supportable,
+            undecided: AtomicBool::new(false),
             lease: ArcCell::new(if kind == Kind::AsyncSource { captured.2.clone() } else { None }),
         },
         value: ArcCell::new(Some(Arc::new(value))),

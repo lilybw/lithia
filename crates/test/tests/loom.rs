@@ -735,6 +735,101 @@ fn a_moved_out_handle_drops_while_its_lease_ends() {
     });
 }
 
+/// A write reaches a creator and the child it made, run on the main thread and the worker: the old
+/// child waits for its creator, which replaces it, so it never sees the new value.
+#[test]
+fn a_creator_decides_its_child_before_it_runs() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let seen: std::sync::Arc<std::sync::Mutex<Vec<(u32, u32)>>> = Default::default();
+            let input: SourceNode<u32> = scope.batch(|| {
+                let input: SourceNode<u32> = effect!(0);
+                effect!(|input| {
+                    let made_at: u32 = *input.get();
+                    effect!(|input| {
+                        // Read before locking: a std lock held across a loom switch would block the model.
+                        let pair: (u32, u32) = (*made_at, *input.get());
+                        seen.lock().unwrap().push(pair);
+                    });
+                });
+                input
+            });
+            scope.flush();
+            scope.batch(|| input.set(1));
+            scope.flush();
+            let runs: Vec<(u32, u32)> = seen.lock().unwrap().clone();
+            assert!(runs.iter().all(|(made_at, value): &(u32, u32)| made_at == value), "{runs:?}");
+            assert_eq!(runs.last(), Some(&(1, 1)));
+        });
+    });
+}
+
+/// The keyed form: the child waits until its creator's run has reclaimed it with new captures.
+#[test]
+fn a_creator_reclaims_its_keyed_child_before_it_runs() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let seen: std::sync::Arc<std::sync::Mutex<Vec<(u32, u32)>>> = Default::default();
+            let input: SourceNode<u32> = scope.batch(|| {
+                let input: SourceNode<u32> = effect!(0);
+                effect!(|input| {
+                    let label: u32 = *input.get();
+                    effect!(
+                        |input| {
+                            let pair: (u32, u32) = (*label, *input.get());
+                            seen.lock().unwrap().push(pair);
+                        },
+                        key = 0u8
+                    );
+                });
+                input
+            });
+            scope.flush();
+            scope.batch(|| input.set(1));
+            scope.flush();
+            let runs: Vec<(u32, u32)> = seen.lock().unwrap().clone();
+            assert_eq!(runs, [(0, 0), (1, 1)]);
+        });
+    });
+}
+
+/// A write supersedes an async creator's run that created a child: the child waits for the
+/// restart, which lets go of it. Its first run may already be under way, reading what is current,
+/// but it never runs again on the input that superseded its creator.
+#[test]
+fn a_superseded_runs_creation_waits_for_the_restart() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let seen: std::sync::Arc<std::sync::Mutex<Vec<(u32, u32, u32)>>> = Default::default();
+            let input: SourceNode<u32> = scope.batch(|| {
+                let input: SourceNode<u32> = effect!(0);
+                effect!(async |input| {
+                    let made_at: u32 = *input.get();
+                    let runs: std::sync::Arc<std::sync::atomic::AtomicU32> = Default::default();
+                    effect!(|input| {
+                        let run: u32 = runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let record: (u32, u32, u32) = (*made_at, *input.get(), run);
+                        seen.lock().unwrap().push(record);
+                    });
+                    SuspendOnce(false).await;
+                });
+                input
+            });
+            scope.batch(|| input.set(1)); // before, during or after the first run
+            scope.flush();
+            let runs: Vec<(u32, u32, u32)> = seen.lock().unwrap().clone();
+            assert!(
+                runs.iter().all(|(made_at, value, run): &(u32, u32, u32)| *run == 0 || made_at == value),
+                "{runs:?}"
+            );
+            assert!(runs.contains(&(1, 1, 0)), "{runs:?}");
+        });
+    });
+}
+
 /// A parent's and its child's last handles drop at once: both are examined, and both freed.
 #[test]
 fn a_parent_and_its_child_drop_their_last_handles_at_once() {

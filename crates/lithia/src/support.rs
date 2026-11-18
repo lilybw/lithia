@@ -31,10 +31,13 @@ struct Op {
     running: bool,
     starts: Vec<NodeRef>,
     returns: Vec<NodeRef>,
+    /// Nodes no creator holds any more, started again once released references are dropped.
+    resumes: Vec<WeakNodeRef>,
 }
 
 crate::sync::thread_local! {
-    static OP: RefCell<Op> = RefCell::new(Op { depth: 0, running: false, starts: Vec::new(), returns: Vec::new() });
+    static OP: RefCell<Op> =
+        RefCell::new(Op { depth: 0, running: false, starts: Vec::new(), returns: Vec::new(), resumes: Vec::new() });
 }
 
 /// An operation that drops references; its sweeps run when the outermost one ends.
@@ -194,13 +197,13 @@ fn run() {
     }
     let _reset: Reset = Reset;
     loop {
-        let (returns, starts): (Vec<NodeRef>, Vec<NodeRef>) = OP
+        let (returns, starts, resumes): (Vec<NodeRef>, Vec<NodeRef>, Vec<WeakNodeRef>) = OP
             .try_with(|op: &RefCell<Op>| {
                 let mut op = op.borrow_mut();
-                (std::mem::take(&mut op.returns), std::mem::take(&mut op.starts))
+                (std::mem::take(&mut op.returns), std::mem::take(&mut op.starts), std::mem::take(&mut op.resumes))
             })
             .unwrap_or_default();
-        if returns.is_empty() && starts.is_empty() {
+        if returns.is_empty() && starts.is_empty() && resumes.is_empty() {
             break;
         }
         // Returned anchors first: a sweep then finds what they hold again.
@@ -209,6 +212,12 @@ fn run() {
         }
         if !starts.is_empty() {
             drop(sweep(starts));
+        }
+        // Last, so that a node the sweeps freed gets no task.
+        for weak in resumes {
+            if let Some(node) = weak.upgrade() {
+                crate::protocol::resume(&node);
+            }
         }
     }
 }
@@ -474,6 +483,7 @@ pub(crate) fn scope(node: &NodeRef) {
     let creator: Option<NodeRef> = header.held_by.lock().take().and_then(|weak: WeakNodeRef| weak.upgrade());
     let released: Option<NodeRef> =
         creator.as_ref().and_then(|creator: &NodeRef| creator.header().sched.lock().remove_creation(header.id));
+    defer_resume(node);
     start(node.clone());
     drop(released);
     drop(creator);
@@ -488,6 +498,23 @@ pub(crate) fn release_generation(members: Vec<NodeRef>) {
     let _op: OpGuard = enter();
     for member in members {
         *member.header().held_by.lock() = None;
+        defer_resume(&member);
         start(member);
+    }
+}
+
+/// Starts `node` again once the current operation has dropped what it released: no creator gates
+/// it now (spec §7.2, Creator order).
+pub(crate) fn defer_resume(node: &NodeRef) {
+    let weak: WeakNodeRef = std::sync::Arc::downgrade(node);
+    let queued: bool = OP
+        .try_with(|op: &RefCell<Op>| {
+            let mut op = op.borrow_mut();
+            op.resumes.push(weak);
+            op.depth == 0 && !op.running
+        })
+        .unwrap_or(false);
+    if queued {
+        run();
     }
 }

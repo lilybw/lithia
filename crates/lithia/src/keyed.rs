@@ -273,7 +273,15 @@ impl<K: NodeValue> Reused<K> {
         if let Some(old) = self.0.adopt_equals(options.equals) {
             crate::drops::drop_later(old, self.0.header.runtime.as_ref());
         }
+        decided(&self.0);
     }
+}
+
+/// Its creator's run has reclaimed `node`, refreshed if need be: it may run again (spec §7.2).
+pub(crate) fn decided<K: NodeValue>(node: &Arc<Node<K>>) {
+    node.header.undecided.store(false, std::sync::atomic::Ordering::SeqCst);
+    let erased: NodeRef = node.clone();
+    crate::protocol::resume(&erased);
 }
 
 /// What a keyed creation found in its creator's holdover.

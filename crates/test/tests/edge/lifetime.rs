@@ -156,3 +156,40 @@ async fn a_returned_node_keeps_its_parents_alive() {
     lithia::flush().await;
     assert_eq!(&**made.get(), "lithia");
 }
+
+#[lithia::test]
+async fn a_creator_decides_its_children_before_they_run() {
+    let input: SourceNode<u32> = effect!(0);
+    let seen: Arc<std::sync::Mutex<Vec<(u32, u32)>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _creator: DerivedNode<()> = effect!(|input| {
+        let made_at: u32 = *input.get();
+        // Rebuilt on every run: the old child must not see the input that replaces it.
+        effect!(|input| seen.lock().unwrap().push((*made_at, *input.get())));
+    });
+    lithia::flush().await;
+    for value in 1..=3u32 {
+        input.set(value);
+        lithia::flush().await;
+    }
+    lithia::test::settled(&input).await;
+    let runs: Vec<(u32, u32)> = seen.lock().unwrap().clone();
+    assert!(runs.iter().all(|(made_at, value): &(u32, u32)| made_at == value), "{runs:?}");
+}
+
+#[lithia::test]
+async fn a_keyed_child_never_runs_with_the_captures_its_creator_replaces() {
+    let input: SourceNode<u32> = effect!(0);
+    let seen: Arc<std::sync::Mutex<Vec<(u32, u32)>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _creator: DerivedNode<()> = effect!(|input| {
+        let label: u32 = *input.get();
+        effect!(|input| seen.lock().unwrap().push((*label, *input.get())), key = 0u8);
+    });
+    lithia::flush().await;
+    for value in 1..=3u32 {
+        input.set(value);
+        lithia::flush().await;
+    }
+    lithia::test::settled(&input).await;
+    let runs: Vec<(u32, u32)> = seen.lock().unwrap().clone();
+    assert!(runs.iter().all(|(label, value): &(u32, u32)| label == value), "{runs:?}");
+}

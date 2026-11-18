@@ -45,6 +45,8 @@ pub(crate) struct Work {
     keep: Vec<NodeRef>,
     /// Generations released by this step, let go of before its spawns.
     released: Vec<NodeRef>,
+    /// Created nodes their creator gated, to start again once it has moved on.
+    resumes: Vec<crate::node::WeakNodeRef>,
 }
 
 /// Carries out gathered work: releases, spawns and wakes, then token closes.
@@ -80,6 +82,13 @@ pub(crate) fn drain_deferred(mut work: Work) -> Vec<Arc<Epoch>> {
         crate::support::release_generation(std::mem::take(&mut work.released));
     }
     let mut spawns: Vec<NodeRef> = std::mem::take(&mut work.spawns);
+    for weak in std::mem::take(&mut work.resumes) {
+        if let Some(node) = weak.upgrade()
+            && queue_if_runnable(&node)
+        {
+            spawns.push(node);
+        }
+    }
     spawns.sort_by_key(|node: &NodeRef| node.header().id);
     spawns.dedup_by_key(|node: &mut NodeRef| node.header().id);
     for node in spawns {
@@ -92,6 +101,30 @@ pub(crate) fn drain_deferred(mut work: Work) -> Vec<Arc<Epoch>> {
     drop(work);
     settle_wait::bump();
     closes
+}
+
+/// Queues a run of an idle node that has work left, as one its creator gated; true if it did.
+fn queue_if_runnable(node: &NodeRef) -> bool {
+    let mut guard: MutexGuard<'_, Sched> = node.header().sched.lock();
+    let ready: bool = !guard.inherited.is_empty()
+        || guard.entries.values().any(|entry: &Entry| entry.runnable && entry.waiting.is_empty());
+    let queue: bool = ready && guard.run.is_none() && !guard.queued && !node.header().is_ghost();
+    if queue {
+        guard.queued = true;
+    }
+    queue
+}
+
+/// Starts a gated node again, if it has work left (spec §7.2, Creator order).
+pub(crate) fn resume(node: &NodeRef) {
+    let mut work: Work = Work::default();
+    work.resumes.push(Arc::downgrade(node));
+    drain(work);
+}
+
+/// Hands the nodes this creator gated to `work`, to start again; they gate again if it still decides them.
+fn wake_gated(sched: &mut Sched, work: &mut Work) {
+    work.resumes.extend(sched.gated.drain(..).map(|(_, weak): (NodeId, crate::node::WeakNodeRef)| weak));
 }
 
 /// Opens an entry on every node downstream of `root` in `epoch`, waiting on its parent.
@@ -282,6 +315,7 @@ fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     let Some(entry) = sched.entries.remove(&epoch) else {
         return;
     };
+    wake_gated(sched, work);
     match sched.owed_mut(epoch) {
         Some(served) => {
             served.carry = served.carry.max(entry.carry);
@@ -640,16 +674,57 @@ pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) -> bool {
     all_closed
 }
 
+/// How a created node stands with its creator when a run of its would start.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Standing {
+    /// No creator holds it: it was made outside a run, or let go of.
+    Free,
+    /// Its creator has decided it.
+    Kept,
+    /// Its creator may still replace or keep it: it waits, registered with the creator.
+    Gated,
+}
+
+/// How `node` stands with `creator`; a wait is registered when gated. Locks the creator inside the
+/// node's lock: creators are older, as parents are in `link`. A release landing afterwards resumes it.
+fn standing(node: &NodeRef, creator: Option<&NodeRef>) -> Standing {
+    let Some(creator) = creator else {
+        return Standing::Free;
+    };
+    let header: &Header = node.header();
+    let mut guard: MutexGuard<'_, Sched> = creator.header().sched.lock();
+    if header.held_by.lock().is_none() {
+        return Standing::Free;
+    }
+    if header.is_ghost() || !guard.decides(header) {
+        return Standing::Kept;
+    }
+    if !guard.gated.iter().any(|(id, _): &(NodeId, crate::node::WeakNodeRef)| *id == header.id) {
+        guard.gated.push((header.id, Arc::downgrade(node)));
+    }
+    Standing::Gated
+}
+
 /// Starts a queued run: takes over the runnable entries and the handover (spec §7.3 item 1).
 /// Returns whether it started, and tokens for the caller to close.
 pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<Arc<Epoch>>) {
     let header: &Header = node.header();
     let mut work: Work = Work::default();
+    let creator: Option<NodeRef> =
+        header.creator.and_then(|_: NodeId| header.held_by.lock().as_ref().and_then(crate::node::WeakNodeRef::upgrade));
     let started: bool = {
         let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
         sched.queued = false;
-        if sched.run.is_some() {
+        let standing: Standing = if sched.run.is_some() || header.creator.is_none() {
+            Standing::Free
+        } else {
+            standing(node, creator.as_ref())
+        };
+        let started: bool = if sched.run.is_some() {
+            false
+        } else if standing == Standing::Gated {
+            // Its creator decides it first: it starts again once the creator has moved on.
             false
         } else {
             let mut served: Vec<Served> = std::mem::take(&mut sched.inherited);
@@ -681,9 +756,16 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 }
                 _ => None,
             };
+            // Let go of by its creator, with nothing left that can reach it: it is being freed, and
+            // only this task keeps it alive for now (spec §7.2, Creator order).
+            let orphaned: bool = standing == Standing::Free
+                && header.creator.is_some()
+                && header.anchors.load(Ordering::SeqCst) == 0
+                && header.captured.load(Ordering::SeqCst) == 0
+                && sched.subscribers.is_empty();
             if served.is_empty() {
                 false
-            } else if header.is_ghost() || killed {
+            } else if header.is_ghost() || killed || orphaned {
                 close_served(node, served, &mut work);
                 false
             } else if let Some(causes) = fragile {
@@ -708,8 +790,11 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 sched.release_generation(&mut work.released);
                 true
             }
-        }
+        };
+        wake_gated(sched, &mut work);
+        started
     };
+    drop(creator);
     if started {
         diag::count_run(header);
     }
@@ -905,6 +990,7 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
                 work.spawns.push(node.clone());
             }
         }
+        wake_gated(sched, &mut work);
         header.under_way.store(true, Ordering::SeqCst);
     }
     let releasing: bool = !work.released.is_empty();
@@ -975,6 +1061,7 @@ pub(crate) fn retire(node: &NodeRef) {
         let inherited: Vec<Served> = std::mem::take(&mut sched.inherited);
         close_served(node, inherited, &mut work);
         sched.queued = false;
+        wake_gated(sched, &mut work);
         match sched.run.take() {
             Some(slot) => {
                 let shared: Arc<RunShared> = slot.shared.clone();
