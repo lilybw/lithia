@@ -248,8 +248,8 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   write.
 - TLC on the fixed protocol, two workers, exhaustive and with no error: `MCSupersede` 201 709 states
   (depth 77, 2 min), `MCAsyncChain` 1 085 317 (depth 101, 9 min), `MCWriteBack` 2 645, `MCBinding` 1 145
-  (seconds each). `MCSharedTarget` and `MCDiamond` passed several million states without error; their
-  complete runs take hours here and run in CI.
+  (seconds each). `MCSharedTarget` passed 1.1 million states (depth 48) and `MCDiamond` 10 million
+  (depth 49) without error before this container's memory and time ran out; CI runs them to the end.
   Mutating the model the way the fixes changed the code makes it fail again: waits that do not count
   break `NoStuckWait` on `MCSharedTarget` (24 s), and dropping the successor's stamp breaks
   `ScopeConsistent` on `MCSupersede` (52 s).
