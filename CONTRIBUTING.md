@@ -7,11 +7,15 @@ tests and the spec in step.
 ## How a change lands
 
 1. Fork the repository and branch from `nightly`.
-2. Open a pull request into `nightly`. CI ([`ci.yml`](.github/workflows/ci.yml)) runs on Ubuntu and
-   Windows: format, lints (also under loom), docs, the tests with the validation and compile-fail cases,
-   and the loom models. All of it must pass, and the maintainer reviews.
+2. Open a pull request into `nightly`. CI ([`ci.yml`](.github/workflows/ci.yml)) runs on Linux (x86-64
+   and ARM), macOS and Windows: format, lints (also under loom), docs, the tests with the validation and
+   compile-fail cases, the loom models on Linux and Windows, and the tests on rustc 1.95, the declared
+   minimum. All of it must pass, and the maintainer reviews. The slower checks of
+   [`extended.yml`](.github/workflows/extended.yml) run too: Miri, the loom models at bound 4, stress runs,
+   TLC on the TLA+ model in `docs/tla` and the kept mutations. They do not gate a merge.
 3. Once merged, the push to `nightly` is released as the next `v<version>.<n>` and the docs site is
-   rebuilt. `release` takes stable merges from `nightly`.
+   rebuilt. `release` is then moved to that release's commit, not to `nightly`'s tip, once the extended
+   checks have passed on it and it has been on `nightly` for a few days without a fix on top.
 
 Only pull requests change `nightly` and `release`; the maintainer can also push to them directly.
 
@@ -25,6 +29,7 @@ Only pull requests change `nightly` and `release`; the maintainer can also push 
 | `crates/test` | `lithia-test` | Edge-case tests (`tests/edge/`, one module per area, built as one binary), the deep-chain test and the loom models |
 | `crates/bench` | `lithia-bench` | The spec's benchmarks (§15) |
 | `docs/spec` | | The design spec, one file per version |
+| `docs/tla` | | The TLA+ model of the scheduling protocol and its TLC models |
 | `docs/site`, `.github/scripts` | | The docs site's styling, scripts and build |
 
 ## Commands
@@ -36,13 +41,17 @@ cargo test -p lithia-test --test edge  # the edge-case tests
 cargo bench -p lithia-bench     # prints a results table; LITHIA_BENCH=spawn,clock runs only those rows
 cargo bench -p lithia-bench --bench allocs  # heap allocations per run, per write and per node
 RUSTFLAGS="--cfg lithia_loom" CARGO_TARGET_DIR=target/loom cargo test --release -p lithia-test --test loom
+.github/scripts/mutations.py    # each kept mutation must fail the test named for it (spec 11.4, Teeth)
+.github/scripts/stress.sh 100 50 50  # every test binary 100 times in release, 50 in debug, 50 on one core
 python3 .github/scripts/site.py snapshot --version 0.0.0 --out target/site-snapshot  # needs pandoc and npx
 ```
 
 Loom explores every thread interleaving of the scheduling protocol up to a preemption bound (3 by
 default; `LOOM_MAX_PREEMPTIONS=4` goes deeper, in minutes rather than seconds). `LITHIA_LOOM_FAST_PATH=off`
-runs the models with every ready run in a task of its own, the path the fast path falls back to; CI runs both. `.cargo/config.toml` runs
-every `#[lithia::test]` under a timeout, so a `flush` or `settled` that never returns fails its test.
+runs the models with every ready run in a task of its own, the path the fast path falls back to; CI runs both.
+`.cargo/config.toml` runs every `#[lithia::test]` under a timeout, so a `flush` or `settled` that never returns
+fails its test. [`docs/tla`](docs/tla) holds the TLA+ model of the protocol and how to check it with TLC; a
+change to the protocol updates the model too.
 
 The compile-fail cases' expected errors depend on the compiler: CI uses rustc 1.97.0, and
 `TRYBUILD=overwrite cargo test -p lithia-validation --test compile` updates them on that version.

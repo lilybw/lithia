@@ -77,8 +77,8 @@ creation is cut); Cases T and BG are extended.
 | §9 Failure, fragility | done | |
 | §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/support.rs`, `capture.rs`); v0.3.1: keyed nodes, holdover (`keyed.rs`, `create.rs`) |
 | §11 Concurrency, scopes | done | fast path and runner tasks (§11.4 step 4, `crates/lithia/src/inline.rs`) since v0.4.0 |
-| §11.4 step 8 loom | done | 44 models, bound 3 by default; see "Model checking" below |
-| §11.4 step 8 TLA+ | pending | open question in §17 |
+| §11.4 step 8 loom | done | 47 models, bound 3 by default, bound 4 on nightly; see "Model checking" below |
+| §11.4 step 8 TLA+ | scheduling done | `docs/tla`: framing, releases, runs, supersession, cuts, epoch tree; creation and lifetimes still to model (§16); gating is an open question (§17) |
 | §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 1000/s); first-run, growth and unread-memo warnings |
 | §15 Benchmarks | done | results and observations in `docs/BENCHMARKS.md` |
 
@@ -86,7 +86,7 @@ creation is cut); Cases T and BG are extended.
 
 - Validation cases live in the `lithia-validation` crate rather than a `lithia::validation` module, per the six-module layout.
 - Test harness timeout: `.cargo/config.toml` sets `LITHIA_TEST_TIMEOUT_MS`, which `#[lithia::test]` honours.
-- A node owes its children at most one release per epoch (an open entry, or a run holding the epoch unreleased); a run's release defers into an open entry of the same epoch. This keeps joins glitch-free when a writer is re-framed mid-run (Case T).
+- A node owes its children at most one release per epoch (an open entry, or a run holding the epoch unreleased); a run's release defers into an open entry of the same epoch. This keeps joins glitch-free when a writer is re-framed mid-run (Case T). Since v0.4.0.2 a child counts the releases each parent owes it (a source written twice in an epoch, or a parent re-framed while its release is under way, owes two), and each release reaches exactly the children its framing counted: a framing walk goes on through the subscribers a node had when its entry opened, and a release reaches the subscribers its node had when it was gathered, or for a write, those its framing walked.
 - New nodes do not run until their creation is delivered (seeded); entries opened at link time wait for the seed (Case N runs `m` once).
 - `settled(&node)` waits on the node, its descendants and nodes created by their runs (needed for Case U).
 - `defer` holds a token on the caller's scope until its task delivers, so `flush()` also waits for deferred work.
@@ -119,10 +119,12 @@ creation is cut); Cases T and BG are extended.
   v0.3.0 twelve lifetime models (spec §11.4), which assert on `ModelScope::live()`; v0.3.1 adds three for keyed
   nodes (a reclaim racing a last-handle drop, a disposal during a reclaim, a supersede handing keyed nodes on);
   v0.4.0 adds nine (spec §11.4), two of which found races the release fixes, and one for a chain on the
-  fast path racing a second write.
-- Default preemption bound 3: all 45 explore ~390 000 interleavings in ~38 s on two test threads with the
-  fast path, ~650 000 in ~64 s with `LITHIA_LOOM_FAST_PATH=off`. Bound 4: ~5.6 million in ~10 min with it,
-  ~10.2 million in ~17 min without; all pass.
+  fast path racing a second write; v0.4.0.2 two the TLA+ model led to (two runs writing one source in one
+  epoch; a run superseded after publishing).
+- Default preemption bound 3: all 47 explore ~490 000 interleavings with the fast path, ~810 000 with
+  `LITHIA_LOOM_FAST_PATH=off`, in one to two minutes on two test threads. Bound 4 (v0.4.0.1's 45): ~5.6
+  million with it, ~10.2 million without; the two-writers model alone explores millions more at bound 4.
+  `extended.yml` runs bound 4 both ways on nightly.
 - A model must not hold a std lock across anything loom can switch on: a body that locks a std `Mutex` and
   then reads a node blocks the scheduler's only running thread. Read first, then lock.
 - Sweeps use ordered maps and loom builds always take the scoped path, so models stay deterministic when
@@ -227,6 +229,48 @@ creation is cut); Cases T and BG are extended.
   runtime, runner tasks across a shutdown, the cut-rerun race), one more loom model, and mutation checks
   (spec §11.4 table).
 
+## Verification follow-up (2026-11-20, branch `verify/v0.4.0.2`)
+
+After an adoption-readiness review of def9487 (v0.4.0.1):
+
+- Stress at v0.3.0's level on v0.4.0.1: every test binary (cases, consistency, deep_chain, edge, keyed,
+  support, the unit tests) 400/400 in release, 200/200 in debug and 250/250 pinned to one core; no
+  failures. `.github/scripts/stress.sh` runs the same on Linux x86-64 and ARM and on macOS in CI.
+- TLA+ (§11.4 step 8): `docs/tla/Scheduling.tla` models the scheduling protocol at the grain of its lock
+  sections; six TLC models check token conservation, waits only on owed releases, consistency whenever
+  `flush` returns, glitch freedom and termination. TLC found two races in v0.4.0.1, and the loom model
+  written for the first exposed a third (`docs/tla/README.md`, spec changes table):
+  two runs writing one source in one epoch could leave a node below waiting forever; a parent framed
+  again while its release was under way could settle its child without the change; a run superseded
+  after publishing dropped its item's stamp. Fixed by counted waits, releases that reach exactly the
+  children their framing counted, and carrying the stamp to the successor. An intermediate fix, an
+  entry per written node, was dropped once counting alone sufficed: it cost about 115 ns per outside
+  write.
+- TLC on the fixed protocol, two workers, exhaustive and with no error: `MCSupersede` 201 709 states
+  (depth 77, 2 min), `MCAsyncChain` 1 085 317 (depth 101, 9 min), `MCWriteBack` 2 645, `MCBinding` 1 145
+  (seconds each). `MCSharedTarget` and `MCDiamond` passed several million states without error; their
+  complete runs take hours here and run in CI.
+  Mutating the model the way the fixes changed the code makes it fail again: waits that do not count
+  break `NoStuckWait` on `MCSharedTarget` (24 s), and dropping the successor's stamp breaks
+  `ScopeConsistent` on `MCSupersede` (52 s).
+- Loom: 47 models, both new ones fail on v0.4.0.1 and pass now, at bound 3 both ways; bound 4 runs on
+  nightly.
+- CI: macOS and ARM join the gating test matrix (loom stays on Linux and Windows); a job runs the tests
+  on rustc 1.95, the declared minimum, and passes. `extended.yml`, on nightly pushes, weekly and pull
+  requests: Miri, loom at bound 4 both ways, stress runs, TLC per model, the kept mutations. Miri found
+  no undefined behaviour in the unit tests and the 45 validation cases before Case BV, which fails under
+  Miri only because Miri's slowness reorders the race its sleeps stage; the job now lists such failures
+  and fails only on undefined behaviour. Branches named `verify/…` run both workflows on push.
+- Mutations: `.github/scripts/mutations.py` keeps eight as code (W1–W3, F1–F5) and applies each to a copy
+  of the workspace; W3 and F5 are documented as uncaught. The older rows of the spec's table were applied
+  by hand and are not kept as code; no cargo-mutants run yet.
+- Benchmarks, A/B against v0.4.0.1 over seven alternating runs: no row moves beyond run-to-run noise
+  (about ±10% on this container); allocations per run unchanged, one fewer per write and per creation.
+- Docs: the README's glitch-freedom claim is limited to one batch; CONTRIBUTING describes the new CI and
+  moves `release` to a nightly release that has passed the extended checks and soaked, not to
+  `nightly`'s tip.
+- Not done here: benchmarks and stress on 8–64 cores, which this 2-core container cannot give.
+
 ## Design migration to v0.3.0 (ownership)
 
 - `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc), revision 12 plus its implementation notes. A node created in a run is
@@ -305,13 +349,18 @@ Five passes from `TODO.md`, run in series:
 
 ## Next steps
 
-1. Merge `release` into `main`; choose a license before making the repo public (`TODO.md`).
-2. A TLA+ specification of the protocol and of lifetimes (§11.4 step 8, §16, §17), which the spec asks for before shipping.
-3. v0.4.1: per-thread scratch buffers for a step's work lists and reuse of a run's `RunShared` (review
-   2.5, 2.6), about 7 of the 10 allocations a run still makes. Measure the fast path and padding on an
-   8–64 core machine; finer-grained sweep locking if the one sweep lock shows contention there (§16).
-4. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
-5. Decide the v0.4.0 open questions (§17): a bound for `WHOLE_EPOCHS`, and whether lineages should be interned.
-6. Make `blocked()` in `support.rs` cheap while scoped nodes exist: today `ANY_SCOPED` stays set once any
+1. Choose the license: the licensing review recommends MPL-2.0 over GPL-2.0-or-later.
+2. Trim the spec: a proposal cuts it from about 41 000 words to about 24 000 by moving the validation
+   cases' code, the benchmark history, the loom list and the mutation table out, and dropping the
+   mechanics behind the rarest rules.
+3. Extend the TLA+ model to node creation, creator order and lifetimes (§16); decide whether TLC gates a
+   release (§17).
+4. v0.4.1: per-thread scratch buffers for a step's work lists and reuse of a run's `RunShared` (review
+   2.5, 2.6), about 7 of the 10 allocations a run still makes. Measure the fast path and padding, and
+   stress every test binary, on an 8–64 core machine; finer-grained sweep locking if the one sweep lock
+   shows contention there (§16).
+5. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
+6. Decide the v0.4.0 open questions (§17): a bound for `WHOLE_EPOCHS`, and whether lineages should be interned.
+7. Make `blocked()` in `support.rs` cheap while scoped nodes exist: today `ANY_SCOPED` stays set once any
    node is scoped, and every sweep then walks handleless parents to an anchor, so a deep handleless chain
    costs quadratic time to build. A count of live scoped nodes, or a forward walk from them, would fix it.

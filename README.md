@@ -24,15 +24,17 @@ async fn main() {
 
 - **One primitive.** `effect!(value)` makes a source node you write to. `effect!(|a, b| …)` makes a derived
   node that reruns when `a` or `b` changes; one that returns `()` is an effect.
-- **Built for threads.** Handles are `Send + Sync` and every run is a tokio task. A write propagates
-  without glitches: a node that depends on it along two paths runs once, with both updated.
+- **Built for threads.** Handles are `Send + Sync` and every run is a tokio task. A batch of writes
+  propagates without glitches: a node that depends on it along two paths runs once, with both updated.
+  Batches written at the same time may meet at such a node, unless it asks to wait (`WHOLE_EPOCHS`).
 - **Async and generators.** Bodies can `.await`, and can `yield` several values in turn. Pending and failed
   are states a node can be in, and a panic fails its node instead of the program.
 - **Lifetimes without owners.** A node lives as long as something outside lithia can still make it run.
   Nodes created inside a body are rebuilt on each of its runs, or kept with `key = …`, which reruns only
   those whose inputs changed.
-- **Checked.** The spec's validation cases, compile-fail cases, and loom model checking of the scheduling
-  protocol run on Linux and Windows before every release.
+- **Checked.** The spec's validation cases, compile-fail cases and loom models of the scheduling protocol
+  run on Linux (x86-64 and ARM), macOS and Windows before every release. Miri, deeper loom runs, stress runs
+  and TLC on a [TLA+ model](docs/tla) of the protocol follow on nightly.
 
 ## Using it
 
@@ -48,9 +50,10 @@ it from inside any tokio runtime. Until 1.0, the API may still change between re
 
 ## Releases and docs
 
-Every push to `nightly` that passes CI on Ubuntu and Windows is released as `v<version>.<n>`, such as
-`v0.3.1.4`, with the crate packages, the docs and the spec attached, and the
-[docs site](https://lilybw.com/lithia/) is rebuilt. Each release's docs stay online: add `?v=0.3.1.4` to
+Every push to `nightly` that passes CI is released as `v<version>.<n>`, such as `v0.3.1.4`, with the crate
+packages, the docs and the spec attached, and the [docs site](https://lilybw.com/lithia/) is rebuilt.
+`release` moves to a nightly release once the nightly checks have passed on it and it has had time to
+settle. Each release's docs stay online: add `?v=0.3.1.4` to
 any page under `api/` or `spec/` to read that version.
 
 The [design spec](https://lilybw.com/lithia/spec/) is the full reference for how lithia behaves and why;
