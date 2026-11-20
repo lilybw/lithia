@@ -35,6 +35,7 @@ stress() {
                 ok=$((ok + 1))
             else
                 printf '%s\n' "$output" > "$out/fail-$mode-$name-$i.log"
+                printf '%s\n' "$output" | grep -E -m 8 "^---- |panicked at|timed out|left:|right:" | sed "s/^/  run $i: /"
                 failed=1
             fi
         done
