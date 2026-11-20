@@ -169,6 +169,7 @@ fn new_node<K: NodeValue>(
         }
     };
     let runtime: Option<Handle> = runtime_for(kind, site);
+    let sync_body: bool = matches!(body, Some(Body::Sync(_)));
     let mut parents: Vec<NodeRef> = Vec::with_capacity(deps.len());
     for dep in deps {
         let header: &Header = dep.0.header();
@@ -226,6 +227,7 @@ fn new_node<K: NodeValue>(
             ghost: options.shape.ghost,
             flags: options.shape.flags,
             runtime,
+            sync_body,
             scope,
             counted: AtomicBool::new(true),
             changes: Mutex::new(None),

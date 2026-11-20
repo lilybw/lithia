@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
 
-static WAITERS: AtomicUsize = AtomicUsize::new(0);
+/// Read by every step on every core, so kept apart from what steps write.
+static WAITERS: crate::sync::Padded<AtomicUsize> = crate::sync::Padded(AtomicUsize::new(0));
 static SEQ: AtomicU64 = AtomicU64::new(0);
 static NOTIFY: Notify = Notify::const_new();
 

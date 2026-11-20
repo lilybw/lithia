@@ -67,10 +67,17 @@ pub(crate) fn drain(work: Work) {
 
 /// Closes tokens; callers drop every strong node reference first, so a settled scope
 /// never finds a node kept alive only by lithia (spec §10.1).
-pub(crate) fn close_all(epochs: Vec<Arc<Epoch>>) {
-    for epoch in epochs {
-        epoch.close_token();
+pub(crate) fn close_all(mut epochs: Vec<Arc<Epoch>>) {
+    // Several tokens of one epoch close in one step, so fewer writes hit its shared counters;
+    // by id, not address, so loom models stay deterministic.
+    epochs.sort_by_key(|epoch: &Arc<Epoch>| epoch.id);
+    let mut at: usize = 0;
+    while at < epochs.len() {
+        let same: usize = epochs[at..].iter().take_while(|epoch: &&Arc<Epoch>| Arc::ptr_eq(epoch, &epochs[at])).count();
+        epochs[at].close_tokens(same);
+        at += same;
     }
+    drop(epochs);
     settle_wait::bump();
 }
 
@@ -115,9 +122,7 @@ pub(crate) fn drain_deferred(mut work: Work) -> Vec<Arc<Epoch>> {
     }
     spawns.sort_by_key(|node: &NodeRef| node.header().id);
     spawns.dedup_by_key(|node: &mut NodeRef| node.header().id);
-    for node in spawns {
-        node.spawn_run();
-    }
+    crate::inline::dispatch(spawns);
     for run in std::mem::take(&mut work.wakes) {
         run.wake();
     }
@@ -201,16 +206,8 @@ fn rerun_cut(rerun: CutRerun) {
     if header.is_ghost() {
         return;
     }
-    let written: Vec<NodeId> = parent.written_by(header.writer);
     let epoch: Arc<Epoch> = Epoch::child(&parent);
-    {
-        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
-        for id in written {
-            if !guard.suppress.contains(&id) {
-                guard.suppress.push(id);
-            }
-        }
-    }
+    header.sched.lock().suppress_in.push(parent.clone());
     let mut work: Work = Work::default();
     seed(&node, &epoch, &rerun.writers.without(Some(header.writer)), Seed::Rerun, &mut work);
     evaluate(&node, &mut work);
@@ -831,6 +828,8 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
     let mut work: Work = Work::default();
     let creator: Option<NodeRef> =
         header.creator.and_then(|_: NodeId| header.held_by.lock().as_ref().and_then(crate::node::WeakNodeRef::upgrade));
+    // Epochs a cut rerun read its writes from, dropped once the lock is released.
+    let mut suppress_from: Vec<Arc<Epoch>> = Vec::new();
     let started: bool = {
         let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
@@ -896,8 +895,19 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 };
                 shared.set_id(id);
                 shared.set_scope(served[0].epoch.scope.clone());
-                if !sched.suppress.is_empty() {
-                    shared.set_suppress(std::mem::take(&mut sched.suppress));
+                if !sched.suppress_in.is_empty() {
+                    // What the lineage wrote there by now: a run cut by a write from its own task
+                    // may record its earlier writes only after the cut (spec §7.4, Case AA).
+                    suppress_from = std::mem::take(&mut sched.suppress_in);
+                    let mut suppress: Vec<NodeId> = Vec::new();
+                    for epoch in &suppress_from {
+                        for written in epoch.written_by(header.writer) {
+                            if !suppress.contains(&written) {
+                                suppress.push(written);
+                            }
+                        }
+                    }
+                    shared.set_suppress(suppress);
                 }
                 header.begin_run();
                 sched.failed_by_fragility = false;
@@ -910,6 +920,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
         started
     };
     drop(creator);
+    drop(suppress_from);
     if started {
         diag::count_run(header);
     }

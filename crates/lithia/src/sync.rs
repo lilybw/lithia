@@ -14,6 +14,19 @@ pub(crate) use loom::sync::MutexGuard;
 #[cfg(lithia_loom)]
 pub(crate) use loom::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize};
 
+/// A static on cache lines of its own, so writes to its neighbours do not stall its readers on
+/// other cores; 128 bytes, as adjacent-line prefetchers fetch lines in pairs.
+#[repr(align(128))]
+pub(crate) struct Padded<T>(pub(crate) T);
+
+impl<T> std::ops::Deref for Padded<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 /// Non-poisoning mutex over loom's, with parking_lot's interface.
 #[cfg(lithia_loom)]
 pub(crate) struct Mutex<T>(loom::sync::Mutex<T>);

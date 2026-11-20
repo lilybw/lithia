@@ -22,7 +22,8 @@ crate::sync::thread_local! {
 }
 
 /// Payload drops queued on a pool or the drop thread and not yet run.
-static QUEUED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static QUEUED: crate::sync::Padded<std::sync::atomic::AtomicUsize> =
+    crate::sync::Padded(std::sync::atomic::AtomicUsize::new(0));
 
 /// Number of payload drops queued and not yet run.
 pub(crate) fn queued() -> usize {

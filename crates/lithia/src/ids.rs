@@ -5,16 +5,20 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::sync::Padded;
+
 /// Process-unique node identity in creation order; creation order is topological.
 pub(crate) type NodeId = u64;
 /// Process-unique epoch identity.
 pub(crate) type EpochId = u64;
 
-static NEXT_NODE: AtomicU64 = AtomicU64::new(1);
-static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
+// The clock and the two busiest counters each sit on lines of their own: every run reads the
+// clock, and every publish, delivery and creation writes one of them.
+static NEXT_NODE: Padded<AtomicU64> = Padded(AtomicU64::new(1));
+static NEXT_EPOCH: Padded<AtomicU64> = Padded(AtomicU64::new(1));
 static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
 #[cfg(not(lithia_loom))]
-static CLOCK: AtomicU64 = AtomicU64::new(1);
+static CLOCK: Padded<AtomicU64> = Padded(AtomicU64::new(1));
 #[cfg(lithia_loom)]
 loom::lazy_static! {
     static ref CLOCK: crate::sync::AtomicU64 = crate::sync::AtomicU64::new(1);

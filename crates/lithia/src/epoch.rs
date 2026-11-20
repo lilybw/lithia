@@ -151,10 +151,15 @@ impl Epoch {
 
     /// Closes one open entry; the last one settles the epoch.
     pub(crate) fn close_token(&self) {
-        if self.own.fetch_sub(1, Ordering::SeqCst) == 1 {
+        self.close_tokens(1);
+    }
+
+    /// Closes `count` open entries at once, as `count` closes in a row would.
+    pub(crate) fn close_tokens(&self, count: usize) {
+        if self.own.fetch_sub(count, Ordering::SeqCst) == count {
             self.on_settled();
         }
-        self.sub_dec();
+        self.sub_dec_by(count);
     }
 
     fn sub_inc(&self) {
@@ -167,7 +172,11 @@ impl Epoch {
     }
 
     fn sub_dec(&self) {
-        if self.sub.fetch_sub(1, Ordering::SeqCst) == 1 {
+        self.sub_dec_by(1);
+    }
+
+    fn sub_dec_by(&self, count: usize) {
+        if self.sub.fetch_sub(count, Ordering::SeqCst) == count {
             self.notify.notify_waiters();
             match &self.parent {
                 Some(parent) => parent.sub_dec(),

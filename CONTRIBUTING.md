@@ -40,7 +40,8 @@ python3 .github/scripts/site.py snapshot --version 0.0.0 --out target/site-snaps
 ```
 
 Loom explores every thread interleaving of the scheduling protocol up to a preemption bound (3 by
-default; `LOOM_MAX_PREEMPTIONS=4` goes deeper, in minutes rather than seconds). `.cargo/config.toml` runs
+default; `LOOM_MAX_PREEMPTIONS=4` goes deeper, in minutes rather than seconds). `LITHIA_LOOM_FAST_PATH=off`
+runs the models with every ready run in a task of its own, the path the fast path falls back to; CI runs both. `.cargo/config.toml` runs
 every `#[lithia::test]` under a timeout, so a `flush` or `settled` that never returns fails its test.
 
 The compile-fail cases' expected errors depend on the compiler: CI uses rustc 1.97.0, and

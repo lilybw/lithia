@@ -91,3 +91,12 @@ jobs:
         env:
           RUSTFLAGS: --cfg lithia_loom
           CARGO_TARGET_DIR: target/loom
+
+      # Again with every ready run in a task of its own, the path the fast path falls back to.
+      - name: Loom models (no fast path)
+        if: matrix.suite == 'loom'
+        run: cargo test -p lithia-test --test loom --release --locked
+        env:
+          RUSTFLAGS: --cfg lithia_loom
+          CARGO_TARGET_DIR: target/loom
+          LITHIA_LOOM_FAST_PATH: off

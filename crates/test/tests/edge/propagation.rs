@@ -377,3 +377,22 @@ async fn a_node_written_twice_in_one_batch_carries_its_newest_stamp() {
     lithia::test::settled(&c).await;
     assert_eq!(*c.get(), (3, 1));
 }
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_rerun_leaves_alone_what_its_run_recorded_after_the_cut() {
+    // Case AA with the race made certain: the blocking write is cut and its epoch settles while the
+    // first poll still holds the `runs` write, which it records only when the poll ends. The cut
+    // rerun still leaves `runs` alone, since it reads what to leave alone when it starts (7.4).
+    let input: SourceNode<u32> = effect!(3);
+    let result: SourceNode<u32> = effect!(0);
+    let runs: SourceNode<u32> = effect!(0);
+    let work: DerivedNode<()> = effect!(async |input, result| {
+        runs.update(|n: &u32| n + 1);
+        let (n, out): (u32, SourceNode<u32>) = (*input.get(), result.clone());
+        let blocking: tokio::task::JoinHandle<()> = lithia::spawn_blocking(move || out.set(n * n));
+        std::thread::sleep(Duration::from_millis(100)); // the poll goes on while the write lands
+        blocking.await.unwrap();
+    });
+    lithia::test::settled(&work).await;
+    assert_eq!((*result.get(), *runs.get()), (9, 1));
+}

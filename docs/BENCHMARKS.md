@@ -100,9 +100,46 @@ named rows.
   makes its channel on first use; detached writes cache their task's scope per thread.
 - Meshes vary with scheduling in both: n=8 over 15 runs each took 15–42 runs before, 18–58 after
   (medians 21–23 and 25–26), all below n² = 64.
-- Left out: the fast path and runner tasks (a design decision and a spec change, next steps); merging
-  a run's sched-lock round trips (reorders protocol steps for two uncontended locks); pooled scratch
-  buffers and `RunShared` reuse (seven of the ten allocations left per run, about 4% of a run);
-  batched token opens and cache-line padding (contention only 4+ cores would show); striped support
-  counters (top-level creation only); a slimmer node record (wide diff, unmeasured); reused sweep
-  buffers (a sweep usually asks once); a coarse rerun clock (a vDSO call on Linux).
+- Left out: merging a run's sched-lock round trips (reorders protocol steps for two uncontended locks;
+  deprioritized); pooled scratch buffers and `RunShared` reuse (seven of the ten allocations left per
+  run, about 4% of a run; planned for v0.4.1); writer sets kept inline (no allocation on runs that
+  write nothing); striped support counters (top-level creation only, beside the one sweep lock); a
+  slimmer node record (wide diff, unmeasured); reused sweep buffers (a sweep usually asks once); a
+  coarse rerun clock (a vDSO call on Linux). The fast path, runner tasks and padding follow below.
+
+## v0.4.0 fast path (2026-11-20)
+
+`crates/lithia/src/inline.rs`, spec §11.4 step 4. A run or runner task keeps the ready synchronous runs
+of its own runtime that its steps hand on (up to 16 queued) and polls each as its own `RunFuture` in a
+loop, up to 32 runs or 50 µs; then cheap leftovers go on in one runner task and, after a heavy run, each
+gets its own task. A step readying several synchronous runs of one runtime packs them into runner tasks,
+`ceil(n / workers)` clamped to 1..=16 each, the dispatching task keeping the first share when its fast
+path is open for that runtime. Async runs and generators keep their own tasks. Fast-path runs close their
+tokens when the task's poll ends, coalesced per epoch (`Epoch::close_tokens`). Hot statics (`CLOCK`,
+`NEXT_NODE`, `NEXT_EPOCH`, `WAITERS`, `QUEUED`, `SWEEP`, `ANY_SCOPED`) are 128-byte aligned: `nm` showed
+the clock and both id counters on one line, and the settle signal, sweep lock and drop count on another.
+
+Five runs alternated with five of 60b5ba8 (the performance pass), medians:
+
+| Benchmark | Before | After |
+|---|---|---|
+| Spawn overhead (chain) | 3.9 µs per run | 1.25 µs |
+| Framing, 1 000-wide fan-out | 4.0 ms per write | 1.2 ms |
+| Fan-in contention | 4.4 µs per write | 3.7 µs |
+| Clock contention | 0.64 / 0.79 / 0.74 µs per write | 0.60 / 0.60 / 0.57 µs |
+| Drop churn | 632 µs | 536 µs |
+| Rebuilding children | 614 µs | 471 µs |
+| Keyed rows | rebuilt 682–739 µs; keyed, all changed, 521 µs | 572–604 µs; 346 µs |
+| Wide creation | 67 ms | 42 ms |
+| Sweep freeing 10 000 watchers | 128 ms | 107 ms |
+
+- Unchanged within the noise: handles, last-handle drops (8 alternations: −0% and −29% on two),
+  discarded values, protocol overhead (+2%: on one thread a spawn is already cheap). Allocations per run
+  stay at 10: a fast-path run saves its task but boxes its future.
+- Meshes, n=8 over five runs each: 26–38 before, 15–24 after.
+- Not measurable on two cores: the padding and the coalesced closes, which cut cross-core traffic on
+  8–64 cores. Batched token opens (review item 2.8) were not done: the opens of a framing walk hit a
+  fresh epoch no other thread touches yet, and deferring them would let a concurrent disposal close an
+  entry's token first and settle the epoch early.
+- Loom: 45 models; bound 3 explores ~390 000 interleavings with the fast path and ~654 000 without
+  (`LITHIA_LOOM_FAST_PATH=off`), bound 4 ~5.6 million and ~10.2 million; all pass. CI runs both at bound 3.

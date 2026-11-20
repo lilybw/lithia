@@ -15,6 +15,7 @@ mod drops;
 mod epoch;
 mod handles;
 mod ids;
+mod inline;
 mod keyed;
 mod node;
 mod options;

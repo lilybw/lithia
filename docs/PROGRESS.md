@@ -21,7 +21,9 @@ Stress for v0.3.1: all 12 binaries, both `keyed` files included, 100/100 release
 single-core runs; 155 workspace tests; 35 loom models at bounds 3 and 4.
 v0.4.0: 44 loom models at bound 3 (~620 000 interleavings, ~72 s) and bound 4 (~9.5 million, ~17 min); the
 new cases 25/25 runs and 10/10 single-core, the edge suite 15/15 and 5/5 single-core. After the performance
-pass: 197 workspace tests; every validation and edge binary 10/10 runs and 3–5 single-core.
+pass: 197 workspace tests; every validation and edge binary 10/10 runs and 3–5 single-core. After the
+fast path: 203 workspace tests; every binary 10/10 and 3/3 single-core, the edge suite 20/20, 5/5
+single-core and 15/15 release; the cases binary 600/600 in three parallel loops.
 
 | Case | Status | Case | Status |
 |---|---|---|---|
@@ -74,7 +76,7 @@ creation is cut); Cases T and BG are extended.
 | §8 Pending/async/generators | done | |
 | §9 Failure, fragility | done | |
 | §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/support.rs`, `capture.rs`); v0.3.1: keyed nodes, holdover (`keyed.rs`, `create.rs`) |
-| §11 Concurrency, scopes | done | fast path (§11.2) left out, as v0 allows |
+| §11 Concurrency, scopes | done | fast path and runner tasks (§11.4 step 4, `crates/lithia/src/inline.rs`) since v0.4.0 |
 | §11.4 step 8 loom | done | 44 models, bound 3 by default; see "Model checking" below |
 | §11.4 step 8 TLA+ | pending | open question in §17 |
 | §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 1000/s); first-run, growth and unread-memo warnings |
@@ -95,7 +97,7 @@ creation is cut); Cases T and BG are extended.
 
 - Reflow of a source node re-emits its value to its children but sends nothing to `changes()`, since the value did not change.
 - Diagnostics raised while a scheduling lock is held are gathered and emitted after it is released (spec §11.4 step 1).
-- `lithia-test` holds 103 edge-case tests: 102 in `tests/edge/` (values, propagation, async/generators, lifetime,
+- `lithia-test` holds 109 edge-case tests: 108 in `tests/edge/` (values, propagation, async/generators, lifetime,
   capture, diagnostics, runtimes, support, keyed nodes; one module each, sharing one tracing collector in
   `events.rs`) and the 20 000-node chain in `tests/deep_chain.rs`. The chain runs alone because a sweep
   through handleless nodes walks to the top of the chain while any scoped node is alive, which makes
@@ -116,9 +118,11 @@ creation is cut); Cases T and BG are extended.
   plus concurrent outside writes, a write during a run, disposal during a run, and a generator; and since
   v0.3.0 twelve lifetime models (spec §11.4), which assert on `ModelScope::live()`; v0.3.1 adds three for keyed
   nodes (a reclaim racing a last-handle drop, a disposal during a reclaim, a supersede handing keyed nodes on);
-  v0.4.0 adds nine (spec §11.4), two of which found races the release fixes.
-- Default preemption bound 3: all 44 explore ~610 000 interleavings in ~62 s on two test threads. Bound 4:
-  ~9.3 million in ~16 min, all pass (after the performance pass; ~620 000 and ~9.5 million before).
+  v0.4.0 adds nine (spec §11.4), two of which found races the release fixes, and one for a chain on the
+  fast path racing a second write.
+- Default preemption bound 3: all 45 explore ~390 000 interleavings in ~38 s on two test threads with the
+  fast path, ~650 000 in ~64 s with `LITHIA_LOOM_FAST_PATH=off`. Bound 4: ~5.6 million in ~10 min with it,
+  ~10.2 million in ~17 min without; all pass.
 - A model must not hold a std lock across anything loom can switch on: a body that locks a std `Mutex` and
   then reads a node blocks the scheduler's only running thread. Read first, then lock.
 - Sweeps use ordered maps and loom builds always take the scoped path, so models stay deterministic when
@@ -192,8 +196,36 @@ creation is cut); Cases T and BG are extended.
 - Checked by four new edge tests (drops once per payload, discarded values, late streams, a node written
   twice in one batch), a unit test of the inline types, the loom models at bounds 3 and 4, and mutation
   checks (spec §11.4 table).
-- Left for a decision: the inline fast path and runner tasks (Next steps 3); the review's other items
-  are recorded as left out, with reasons, in `docs/BENCHMARKS.md`.
+- The review's other items are recorded as done or left out, with reasons, in `docs/BENCHMARKS.md`.
+
+## Fast path, runner tasks and many-core work (2026-11-20, branch `v0.4.0`)
+
+- Decided with you: the fast path (review 1.1) and runner tasks (1.2) go in, being non-breaking (no API
+  change; a synchronous body may run in another run's task); merging lock round trips (1.5) is out of
+  v0.4.0; pooled scratch buffers and `RunShared` reuse (2.5, 2.6) move to v0.4.1; inline writer sets
+  (2.3), striped support counters (3.3), a slimmer node (3.4), sweep buffers (5.4) and a coarse rerun
+  clock (5.5) are dropped as not significant. lithia targets 8–64 cores, so many-core items count even
+  where this 2-core container cannot measure them.
+- `inline.rs`: a run or runner task keeps the ready synchronous runs of its runtime its steps hand on
+  (up to 16 queued) and polls each as its own `RunFuture` in a loop, up to 32 runs or 50 µs; cheap
+  leftovers go on in one runner task, heavy ones get tasks of their own. A step readying several
+  synchronous runs packs them into runner tasks of `ceil(n / workers)` clamped to 1..=16, the task keeping
+  the first share when its fast path is open for that runtime. Fast-path runs close their tokens at the
+  end of the task's poll, coalesced per epoch. Loom builds take it unless `LITHIA_LOOM_FAST_PATH=off`;
+  CI runs the models both ways.
+- Many cores (review 2.8, 5.2): hot statics are 128-byte aligned (`sync::Padded`), since `nm` showed the
+  clock and id counters on one line and the settle signal, sweep lock and drop count on another. Batched
+  token opens were not done: deferring an open past the framing walk lets a concurrent disposal close
+  that entry's token first and settle the epoch early. Closes, which do contend, are coalesced instead.
+- Results (`docs/BENCHMARKS.md`, spec §15): a run along a chain 3.9 → 1.25 µs, a 1 000-wide fan-out
+  4.0 → 1.2 ms, keyed rebuilds a further 16–34%, wide creation 67 → 42 ms.
+- Found by stress runs while checking it: Case AA could run its effect twice (about 1 in 200 runs under
+  load, in v0.4.0 as first committed too). A cut writer's rerun read what to leave alone when the cut was
+  decided, which can precede the cut run's own first-poll writes being recorded; it now reads it when
+  the rerun starts (`Sched::suppress_in`, spec §7.4). A deterministic edge test covers it.
+- Checked by six edge tests (wide fan-out, long chain, a panic on the fast path, bodies on their own
+  runtime, runner tasks across a shutdown, the cut-rerun race), one more loom model, and mutation checks
+  (spec §11.4 table).
 
 ## Design migration to v0.3.0 (ownership)
 
@@ -275,9 +307,9 @@ Five passes from `TODO.md`, run in series:
 
 1. Merge `release` into `main`; choose a license before making the repo public (`TODO.md`).
 2. A TLA+ specification of the protocol and of lifetimes (§11.4 step 8, §16, §17), which the spec asks for before shipping.
-3. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`): after the
-   performance pass a spawned run still costs 3.9 µs against 1 ns for a cheap body inline, and it is the
-   largest item left. Runner tasks for wide fan-outs would follow it.
+3. v0.4.1: per-thread scratch buffers for a step's work lists and reuse of a run's `RunShared` (review
+   2.5, 2.6), about 7 of the 10 allocations a run still makes. Measure the fast path and padding on an
+   8–64 core machine; finer-grained sweep locking if the one sweep lock shows contention there (§16).
 4. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
 5. Decide the v0.4.0 open questions (§17): a bound for `WHOLE_EPOCHS`, and whether lineages should be interned.
 6. Make `blocked()` in `support.rs` cheap while scoped nodes exist: today `ANY_SCOPED` stays set once any

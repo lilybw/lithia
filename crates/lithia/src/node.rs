@@ -97,6 +97,8 @@ pub(crate) struct Header {
     pub(crate) ghost: GhostPolicy,
     pub(crate) flags: Flags,
     pub(crate) runtime: Option<Handle>,
+    /// Whether its body is synchronous, so its runs may take the fast path (spec §11.4, step 4).
+    pub(crate) sync_body: bool,
     pub(crate) scope: Arc<Scope>,
     /// Whether the node still counts towards its scope's live nodes.
     pub(crate) counted: AtomicBool,
@@ -177,8 +179,9 @@ pub(crate) struct Sched {
     pub(crate) failed_by_fragility: bool,
     /// Nodes this node created that wait for it to decide them before they run.
     pub(crate) gated: Vec<(NodeId, WeakNodeRef)>,
-    /// Nodes the next run must not write: what a cut writer already wrote in the epoch (spec §7.4).
-    pub(crate) suppress: Vec<NodeId>,
+    /// Epochs whose writes by this node's lineage its next run leaves alone, as a cut writer's
+    /// rerun does (spec §7.4); read when that run starts, so writes recorded after the cut count.
+    pub(crate) suppress_in: Vec<Arc<Epoch>>,
 }
 
 impl Sched {
@@ -201,7 +204,7 @@ impl Sched {
             releasing: false,
             failed_by_fragility: false,
             gated: Vec::new(),
-            suppress: Vec::new(),
+            suppress_in: Vec::new(),
         }
     }
 
@@ -578,6 +581,8 @@ pub(crate) trait AnyNode: Send + Sync + 'static {
     fn header(&self) -> &Header;
     /// Spawns a run task on the node's runtime.
     fn spawn_run(self: Arc<Self>);
+    /// The node's next run, to poll on this thread or to spawn (spec §11.4, step 4).
+    fn make_run(self: Arc<Self>) -> crate::inline::RunTask;
     /// Drops the value where the ghost policy says so, and the body.
     fn release_payload(&self);
     /// The node as `Any`, to recover its value type.
@@ -609,6 +614,12 @@ impl<K: NodeValue> AnyNode for Node<K> {
             }
             None => drop(future),
         }
+    }
+
+    fn make_run(self: Arc<Self>) -> crate::inline::RunTask {
+        let future: crate::run::RunFuture<K> = crate::run::RunFuture::new(Arc::downgrade(&self));
+        drop(self);
+        Box::pin(future)
     }
 
     fn release_payload(&self) {

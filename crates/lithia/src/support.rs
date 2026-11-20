@@ -12,7 +12,7 @@ use crate::node::{Header, NodeRef, WeakNodeRef};
 use crate::sync::{Mutex, MutexGuard};
 
 #[cfg(not(lithia_loom))]
-static SWEEP: Mutex<()> = Mutex::new(());
+static SWEEP: crate::sync::Padded<Mutex<()>> = crate::sync::Padded(Mutex::new(()));
 #[cfg(lithia_loom)]
 loom::lazy_static! {
     static ref SWEEP: Mutex<()> = Mutex::new(());
@@ -22,7 +22,8 @@ loom::lazy_static! {
 const START_BUDGET: usize = 64;
 
 /// Set once any node is scoped; until then no node can be blocked by a scoped parent.
-static ANY_SCOPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ANY_SCOPED: crate::sync::Padded<std::sync::atomic::AtomicBool> =
+    crate::sync::Padded(std::sync::atomic::AtomicBool::new(false));
 
 /// Starting points and returned anchors raised on this thread, handled when the outermost
 /// operation ends.

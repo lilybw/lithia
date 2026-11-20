@@ -477,6 +477,29 @@ fn a_write_during_a_run_is_never_lost() {
     });
 }
 
+/// A chain runs on the fast path on the worker while a second write frames it again: whichever
+/// run a write supersedes, every node ends on the last value (spec §11.4, step 4).
+#[test]
+fn an_inline_chain_races_a_second_write() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (a, m1, m2): (SourceNode<i32>, DerivedNode<i32>, DerivedNode<i32>) = scope.batch(|| {
+                let a: SourceNode<i32> = effect!(1);
+                let m1: DerivedNode<i32> = effect!(|a| *a.get() + 1);
+                let m2: DerivedNode<i32> = effect!(|m1| *m1.get() * 10);
+                (a, m1, m2)
+            });
+            scope.batch(|| a.set(2));
+            scope.batch(|| a.set(3));
+            scope.flush();
+            assert_eq!(*m1.get(), 4);
+            assert_eq!(*m2.get(), 40);
+            assert!(model::quiet(&m2));
+        });
+    });
+}
+
 /// Disposing a node while its run may be in flight settles the scope and leaves a ghost.
 #[test]
 fn dispose_during_a_run_settles() {

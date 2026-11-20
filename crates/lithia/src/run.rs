@@ -173,6 +173,8 @@ enum RunState<K: NodeValue> {
 /// The task of one run; holds its node weakly (spec §10.1).
 pub(crate) struct RunFuture<K: NodeValue> {
     node: Weak<Node<K>>,
+    /// The runtime its task runs on, for the fast path.
+    runtime: crate::inline::RuntimeKey,
     shared: Arc<RunShared>,
     state: RunState<K>,
     polls: u32,
@@ -180,21 +182,24 @@ pub(crate) struct RunFuture<K: NodeValue> {
 
 impl<K: NodeValue> RunFuture<K> {
     pub(crate) fn new(node: Weak<Node<K>>) -> RunFuture<K> {
-        let (node_id, scope, expected): (NodeId, Arc<Scope>, u64) = match node.upgrade() {
-            Some(strong) => {
-                let header: &Header = &strong.header;
-                let expected: u64 = if header.kind == crate::node::Kind::AsyncSource {
-                    header.block_run.load(Ordering::SeqCst)
-                } else {
-                    0
-                };
-                (header.id, header.scope.clone(), expected)
-            }
-            None => (0, Scope::new(), 0),
-        };
+        let (node_id, scope, expected, runtime): (NodeId, Arc<Scope>, u64, crate::inline::RuntimeKey) =
+            match node.upgrade() {
+                Some(strong) => {
+                    let header: &Header = &strong.header;
+                    let expected: u64 = if header.kind == crate::node::Kind::AsyncSource {
+                        header.block_run.load(Ordering::SeqCst)
+                    } else {
+                        0
+                    };
+                    let erased: NodeRef = strong.clone();
+                    (header.id, header.scope.clone(), expected, crate::inline::runtime_of(&erased))
+                }
+                None => (0, Scope::new(), 0, crate::inline::no_runtime()),
+            };
         let weak: WeakNodeRef = node.clone();
         RunFuture {
             node,
+            runtime,
             shared: Arc::new(RunShared::new(weak, node_id, scope, expected)),
             state: RunState::Init,
             polls: 0,
@@ -250,10 +255,19 @@ impl<K: NodeValue> Future for RunFuture<K> {
         let this: &mut RunFuture<K> = self.get_mut();
         // The poll's deferred drops are queued together when it ends (spec §10.3).
         let _drops: crate::drops::Batch = crate::drops::batch();
+        // A run task runs the ready runs its step hands it next (spec §11.4, step 4); a run it
+        // polls that way opens nothing of its own.
+        let open: Option<crate::inline::Open> = crate::inline::open(this.runtime);
         // Every strong reference to the node is gone before any token closes, so a settled
         // scope never finds the node alive only because its run task is finishing (spec §10.1).
         let (polled, closes): (Poll<()>, Vec<Arc<Epoch>>) = this.poll_run(cx);
-        protocol::close_all(closes);
+        match &open {
+            Some(open) => {
+                protocol::close_all(closes);
+                open.run(cx, &mut std::collections::VecDeque::new());
+            }
+            None => crate::inline::close_later(closes),
+        }
         polled
     }
 }
