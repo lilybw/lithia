@@ -343,7 +343,7 @@ async fn reads_of_a_join(flags: lithia::Flags) -> Vec<(u32, u32)> {
     reads
 }
 
-#[lithia::test]
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_join_reads_across_epochs_unless_it_takes_whole_epochs() {
     // Without the flag, `a`'s epoch runs the join while `b`'s is still on its way through `slow`.
     assert_eq!(reads_of_a_join(lithia::Flags::empty()).await, [(0, 0), (1, 0), (1, 10)]);

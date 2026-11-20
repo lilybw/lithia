@@ -397,6 +397,7 @@ async fn case_t_cut_writer_releases_children() {
     let shown: DerivedNode<i32> = effect!(|clamp, y| *y.get());
     x.set(15);
     lithia::flush().await; // returns only because the refused `clamp` settles unchanged
+    assert!(!*clamp.get()); // then it reran once the epoch settled, on doubled = 20 (7.4)
     y.set(1);
     lithia::flush().await;
     assert_eq!(*shown.get(), 1); // and `shown` still follows `y`
