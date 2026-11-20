@@ -225,10 +225,13 @@ async fn case_bu_a_cut_writer_reruns() {
 async fn reads_of_a_join(flags: lithia::Flags) -> Vec<(u32, u32)> {
     let a: SourceNode<u32> = effect!(0);
     let b: SourceNode<u32> = effect!(0);
+    // `slow` holds `b`'s epoch at the gate until `a`'s epoch has reached the join.
+    let (open, gate): (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) = std::sync::mpsc::channel();
+    let gate: Arc<Mutex<std::sync::mpsc::Receiver<()>>> = Arc::new(Mutex::new(gate));
     let slow: DerivedNode<u32> = effect!(|b| {
         let value: u32 = *b.get();
         if value > 0 {
-            std::thread::sleep(Duration::from_millis(40)); // still running when `a` changes
+            let _ = gate.lock().unwrap().recv();
         }
         value * 10
     });
@@ -242,8 +245,16 @@ async fn reads_of_a_join(flags: lithia::Flags) -> Vec<(u32, u32)> {
     );
     lithia::flush().await;
     b.set(1);
-    tokio::time::sleep(Duration::from_millis(5)).await; // `b`'s epoch has reached the join
+    tokio::task::yield_now().await; // delivers `b`'s epoch, which frames the join and waits in `slow`
     a.set(1);
+    tokio::task::yield_now().await;
+    if !flags.contains(lithia::WHOLE_EPOCHS) {
+        // `a`'s epoch runs the join while `b`'s is still held.
+        while seen.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+    open.send(()).unwrap();
     lithia::flush().await;
     let reads: Vec<(u32, u32)> = seen.lock().unwrap().clone();
     reads
