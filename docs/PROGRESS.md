@@ -20,7 +20,8 @@ seven other `lithia-test` files) 400/400 release runs, 200/200 debug runs, 250/2
 Stress for v0.3.1: all 12 binaries, both `keyed` files included, 100/100 release, 50/50 debug and 60/60
 single-core runs; 155 workspace tests; 35 loom models at bounds 3 and 4.
 v0.4.0: 44 loom models at bound 3 (~620 000 interleavings, ~72 s) and bound 4 (~9.5 million, ~17 min); the
-new cases 25/25 runs and 10/10 single-core, the edge suite 15/15 and 5/5 single-core.
+new cases 25/25 runs and 10/10 single-core, the edge suite 15/15 and 5/5 single-core. After the performance
+pass: 197 workspace tests; every validation and edge binary 10/10 runs and 3–5 single-core.
 
 | Case | Status | Case | Status |
 |---|---|---|---|
@@ -94,7 +95,7 @@ creation is cut); Cases T and BG are extended.
 
 - Reflow of a source node re-emits its value to its children but sends nothing to `changes()`, since the value did not change.
 - Diagnostics raised while a scheduling lock is held are gathered and emitted after it is released (spec §11.4 step 1).
-- `lithia-test` holds 75 edge-case tests: 74 in `tests/edge/` (values, propagation, async/generators, lifetime,
+- `lithia-test` holds 103 edge-case tests: 102 in `tests/edge/` (values, propagation, async/generators, lifetime,
   capture, diagnostics, runtimes, support, keyed nodes; one module each, sharing one tracing collector in
   `events.rs`) and the 20 000-node chain in `tests/deep_chain.rs`. The chain runs alone because a sweep
   through handleless nodes walks to the top of the chain while any scoped node is alive, which makes
@@ -116,8 +117,8 @@ creation is cut); Cases T and BG are extended.
   v0.3.0 twelve lifetime models (spec §11.4), which assert on `ModelScope::live()`; v0.3.1 adds three for keyed
   nodes (a reclaim racing a last-handle drop, a disposal during a reclaim, a supersede handing keyed nodes on);
   v0.4.0 adds nine (spec §11.4), two of which found races the release fixes.
-- Default preemption bound 3: all 44 explore ~620 000 interleavings in ~72 s on two test threads. Bound 4:
-  ~9.5 million in ~17 min, all pass.
+- Default preemption bound 3: all 44 explore ~610 000 interleavings in ~62 s on two test threads. Bound 4:
+  ~9.3 million in ~16 min, all pass (after the performance pass; ~620 000 and ~9.5 million before).
 - A model must not hold a std lock across anything loom can switch on: a body that locks a std `Mutex` and
   then reads a node blocks the scheduler's only running thread. Read first, then lock.
 - Sweeps use ordered maps and loom builds always take the scoped path, so models stay deterministic when
@@ -176,6 +177,23 @@ creation is cut); Cases T and BG are extended.
 - Implemented in stages on branch `v0.4.0` (macro and diagnostics; lifetimes; protocol), each tested,
   model-checked and mutation-checked before the next, then written into the spec, whose changes table says
   where each entry went and what settled it. Loom found two races on the way, both fixed.
+
+## Performance pass (2026-11-20, branch `v0.4.0`)
+
+- A reviewer's list of non-breaking performance items (Claude doc "lithia: non-breaking performance
+  improvements", written against v0.3.1) was checked against v0.4.0, measured, and the substantiated
+  items implemented: discarded values follow the `needs_drop` rule (a bug), strings and byte buffers drop
+  inline, drops are gathered per step into one blocking task per runtime, fewer allocations and locks per
+  run. Profiling found one item the review missed: freeing many children of one node was quadratic
+  (`Header::unsubscribe` scanned a `Vec`); subscribers are now a map by id.
+- Results in `docs/BENCHMARKS.md` and spec §15: drop churn, rebuilding and keyed rebuilds 68–80% faster,
+  runs 19–32% cheaper, allocations per chain run 17 to 10. New benchmarks: discarded values, wide
+  creation, and `benches/allocs.rs`.
+- Checked by four new edge tests (drops once per payload, discarded values, late streams, a node written
+  twice in one batch), a unit test of the inline types, the loom models at bounds 3 and 4, and mutation
+  checks (spec §11.4 table).
+- Left for a decision: the inline fast path and runner tasks (Next steps 3); the review's other items
+  are recorded as left out, with reasons, in `docs/BENCHMARKS.md`.
 
 ## Design migration to v0.3.0 (ownership)
 
@@ -257,7 +275,9 @@ Five passes from `TODO.md`, run in series:
 
 1. Merge `release` into `main`; choose a license before making the repo public (`TODO.md`).
 2. A TLA+ specification of the protocol and of lifetimes (§11.4 step 8, §16, §17), which the spec asks for before shipping.
-3. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
+3. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`): after the
+   performance pass a spawned run still costs 3.9 µs against 1 ns for a cheap body inline, and it is the
+   largest item left. Runner tasks for wide fan-outs would follow it.
 4. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
 5. Decide the v0.4.0 open questions (§17): a bound for `WHOLE_EPOCHS`, and whether lineages should be interned.
 6. Make `blocked()` in `support.rs` cheap while scoped nodes exist: today `ANY_SCOPED` stays set once any

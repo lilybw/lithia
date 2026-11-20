@@ -125,10 +125,8 @@ fn refresh<K: NodeValue>(
     if let Some(old) = old {
         crate::drops::drop_later(old, runtime.as_ref());
     }
-    // The unused initial value; only one whose drop does something leaves this thread.
-    if std::mem::needs_drop::<K>() {
-        crate::drops::drop_later(value, runtime.as_ref());
-    }
+    // The unused initial value; only one whose drop can run user code leaves this thread.
+    crate::drops::drop_owned(value, runtime.as_ref());
 }
 
 /// A lineage's writer identity: the creator's, the site, and the key or place among the site's
@@ -207,8 +205,6 @@ fn new_node<K: NodeValue>(
     let top_level: bool = run.is_none();
     let supportable: bool = top_level && !parents.is_empty() && kind != Kind::Source;
     let warn_first_run: bool = kind != Kind::Source && (top_level || (!held && !closed));
-    let (sender, _): (tokio::sync::watch::Sender<u64>, tokio::sync::watch::Receiver<u64>) =
-        tokio::sync::watch::channel(0u64);
     scope.live.fetch_add(1, Ordering::SeqCst);
     let node: Arc<Node<K>> = Arc::new(Node {
         header: Header {
@@ -232,7 +228,7 @@ fn new_node<K: NodeValue>(
             runtime,
             scope,
             counted: AtomicBool::new(true),
-            changes: Mutex::new(Some(sender)),
+            changes: Mutex::new(None),
             rate: Mutex::new(RateWindow { start_ms: 0, count: 0, warned: false }),
             anchors: AtomicUsize::new(1),
             captured: AtomicUsize::new(0),
@@ -270,7 +266,11 @@ fn new_node<K: NodeValue>(
     }
     if let Some(creator) = creator_node.as_ref() {
         let mut guard: MutexGuard<'_, Sched> = creator.header().sched.lock();
-        guard.created.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
+        // Pruned once doubled since the last prune, so a run creating many nodes stays linear.
+        if guard.created.len() >= 2 * guard.created_floor.max(8) {
+            guard.created.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
+            guard.created_floor = guard.created.len();
+        }
         guard.created.push(Arc::downgrade(&erased));
         let mut duplicate: bool = false;
         if !guard.closed {

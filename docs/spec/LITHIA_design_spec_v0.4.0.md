@@ -23,6 +23,7 @@ v0.4.0 empties section 14. Every behavioural inconsistency v0.3.1 tolerated is e
 | 10.5 | A new child of a ghost behaves as a surviving child; with only ghosts for parents it is disposed at once. Disposal handles children linked while it runs. | design; loom |
 | 11.3 | `lithia::test::settled` follows the subtree's writes. | design |
 | 11.4 | 44 loom models, nine new; new mutation checks. | loom; mutation checks |
+| 5, 10.3, 15 | A performance pass after a code review: values `equals` or a superseded run discards drop inline when they have no drop glue, as 10.3 already said, and strings and byte buffers join them; drops are gathered per step into one blocking task per runtime; a freed child leaves its parent's subscribers without a scan, so freeing many children of one node is linear; fewer allocations per run (17 to 10 on a chain). | review; benchmarks |
 | 12 | Duplicate keys warn; effect cuts log at debug; the unread-memo warning is also checked when a memo loses its last reader. | design |
 | 13 | Cases BL–BW; Case S rewritten; Cases T and BG extended. | validation |
 | 14 | Empty. | |
@@ -658,7 +659,7 @@ struct Header {
     runtime: Option<Handle>,           // the tokio runtime it was created on (11.3)
     scope: Arc<Scope>,                 // the scope it was created in, for live_nodes (11.3)
     counted: AtomicBool,               // still counted in its scope's live nodes
-    changes: Mutex<Option<watch::Sender<u64>>>, // feeds changes(); taken on disposal, which ends every stream
+    changes: Mutex<Option<watch::Sender<u64>>>, // feeds changes(); made by the first stream, taken on disposal, which ends every stream
     rate: Mutex<RateWindow>,           // runs in the current one-second window (12)
     anchors: AtomicUsize,              // outside handles that anchor it (10.1)
     captured: AtomicUsize,             // internal handles bodies hold, for the unread-memo warning (12)
@@ -680,14 +681,14 @@ struct Header {
 
 /// Scheduler state of one node, guarded by its scheduling lock.
 struct Sched {
-    entries: BTreeMap<EpochId, Entry>, // open entries not taken by a run, one per epoch it is framed in (7.3)
+    entries: Entries,                  // open entries not taken by a run, one per epoch it is framed in, in epoch order (7.3)
     run: Option<RunSlot>,              // the run in flight
     inherited: Vec<Served>,            // epochs a superseded run served, handed to the next run (7.3)
     queued: bool,                      // a run task was spawned and has not started yet
     unseeded: bool,                    // created, but its creation has not been delivered yet (7.1)
     ran_at: u64,                       // clock stamp when its last run started
-    subscribers: Vec<(NodeId, WeakNodeRef)>, // weak (Weak); a freed child removes itself (10.1)
-    created: Vec<WeakNodeRef>,         // nodes its runs created, for lithia::test::settled (11.3)
+    subscribers: BTreeMap<NodeId, WeakNodeRef>, // weak (Weak), by id; a freed child removes itself (10.1)
+    created: Vec<WeakNodeRef>,         // nodes its runs created, for lithia::test::settled (11.3); pruned when it doubles
     wrote: Vec<WeakNodeRef>,           // nodes its runs wrote or reflowed without an edge, for settled (11.3)
     generation: Vec<NodeRef>,          // the same nodes, held strongly until released (10.1)
     keyed: KeyedSet,                   // the generation's keyed nodes, by key hash; a release moves them to the holdover
@@ -702,7 +703,7 @@ struct Sched {
 /// What a node tracks for one epoch while no run has taken it.
 struct Entry {
     epoch: Arc<Epoch>,
-    waiting: ParentMask,               // parents not yet released, as a bitmask over parent_ids that grows past 64 bits
+    waiting: ParentMask,               // parents not yet released, as a bitmask over parent_ids: 64 bits inline, more on the heap
     writers: WriterSet,                // writers on the chains that reached it (7.4)
     newest: u64,                       // newest change stamp a release carried, or 0
     carry: u64,                        // change stamp to hand on to the children when it settles
@@ -1151,7 +1152,8 @@ Overlapping generations. Effects held in a replaced value live exactly as long a
 
 - When a new item replaces a node's value, the previous value is dropped. When a node is freed, its value and body are dropped.
 - Drops never run inside the scheduling protocol (11.4). Replaced values, values discarded by `equals` or by a superseded run, and the values and bodies of freed or disposed nodes, are dropped on the node's runtime, through `spawn_blocking` under `catch_unwind`, so a `Drop` may spawn tasks, block or write nodes. Its writes are detached work: an outside batch with an empty writer set (7.4). A panicking `Drop` is logged at warn (12).
-- A value whose type has no drop glue (`!needs_drop::<K>()`) is dropped inline, since dropping it can run no user code; this keeps plain numbers and strings off the blocking pool.
+- A value whose type has no drop glue (`!needs_drop::<K>()`) is dropped inline, since dropping it can run no user code; so are strings and byte buffers (`String`, `Box<str>`, `Arc<str>`, `Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>`). This keeps plain numbers and strings off the blocking pool, whether they are replaced or discarded.
+- The drops one protocol step or one run poll causes are gathered and queued when it ends, as one blocking task per runtime, at most 64 to a task; each still runs under its own `catch_unwind`. The drops those drops cause in turn, such as nodes whose last handle a dropped value held, are gathered the same way. A `Drop` that blocks therefore delays the others in its task, and one `Drop` must not wait for another to run. Drops outside a step, such as a value replaced by a write from a task, are queued one by one.
 - If the node's runtime has shut down, or the node has none, tokio would drop the payload on the spawning thread, which may be a worker in the middle of scheduling. Such drops go to a lithia-owned drop thread instead, also under `catch_unwind`.
 - An old value is dropped only after the node's write lock is released, so a `Drop` that writes nodes cannot deadlock.
 - If a reader still holds the previous `Arc<K>`, the drop happens on that reader's thread when it lets go. `Drop` cannot be async, so graceful async cleanup spawns a task.
@@ -1253,7 +1255,7 @@ Model checking with loom. Built with `RUSTFLAGS="--cfg lithia_loom"`, the engine
 
 - Models: Cases A, B, C, D, E, G, H, J, M, N, P, R, T, V, W and X, plus concurrent outside writes, a write during a run, disposal during a run, and a generator: the 20 models of v0.2.5, with Case J's rewritten for v0.3.0: an effect on a dropped source is freed, and a scoped one stops with its handle. Twelve more cover lifetimes: a last-handle drop racing a top-level creation on the same node; a parent's and its child's last handles dropping at once; a body anchoring a node for a moment while a sweep from upstream runs over it; one sweep's let-go racing another sweep's walk; a sweep inside an `update` closure whose drops raise further starting points; a sweep beside a fragile child's decision; a `move` body taking the only handle to a node whose watcher a sweep examines (Case AS); a scoped node's last handle dropping while a sweep from upstream runs over it (Case AT); an idle old child decided in the same step as its creator (Case AO); a supersede while the creator's run is being polled; a disposal while the body still creates (Case AR); and a write superseding an async block that created a node (Case AQ). v0.3.1 adds three for keyed nodes: a creator's rerun on a worker reclaiming a keyed child while the child's last outside handle drops on the main thread; a creator disposed while its rerun reclaims a keyed child; and a write superseding a creator's run after it created a keyed child, whose follow-up run reclaims that child. v0.4.0 adds nine: a creation racing the disposal of its only parent, and of one of two parents with a fragile child run on a worker; a handle a `move` block moved out dropping while the block's lease ends; a creator deciding its child before the child runs, unkeyed and keyed; a superseded async creator's creation waiting for the restart; a replacement run that new input does not replace before its item; a cut writer rerunning after its epoch; and a `WHOLE_EPOCHS` join under concurrent writes. That makes 44 models in `lithia-test` (`tests/loom.rs`). The lifetime models assert on each scope's live count, a per-node lifecycle counter loom does see.
 - Determinism: sweeps keep their maps ordered by `NodeId`, and loom builds always take the full path for scoped nodes instead of a process-wide shortcut, so models running side by side in one process explore the same interleavings.
-- Bound: a preemption bound of 3 by default: all 44 models explore about 620 000 interleavings in about 72 s on two test threads. At bound 4 they explore about 9.5 million in about 17 minutes, and all pass. `LOOM_MAX_PREEMPTIONS` overrides the bound.
+- Bound: a preemption bound of 3 by default: all 44 models explore about 610 000 interleavings in about 62 s on two test threads. At bound 4 they explore about 9.3 million in about 16 minutes, and all pass. `LOOM_MAX_PREEMPTIONS` overrides the bound.
 - Teeth: each mutation below, applied to the implementation, makes the named case, edge test or model fail.
 
 | Mutation | Fails |
@@ -1308,8 +1310,16 @@ Model checking with loom. Built with `RUSTFLAGS="--cfg lithia_loom"`, the engine
 | No cut rerun | Case BU |
 | A cut rerun that writes what it wrote | the suppression edge test |
 | `WHOLE_EPOCHS` not waiting | Case BV |
+| Drop batches that never hand their drops on | the 20 000-node chain test |
+| A freed child left in its parent's subscribers | the unread-memo edge tests |
+| No waker for a run's first poll of a future | Case BI |
+| A node's entries kept out of epoch order | the concurrent-writers edge test |
+| A node written twice in one batch carrying its older stamp | the twice-written edge test |
+| No delivery for a generator's later item when the poll wrote nothing else | the async source generator edge test |
+| Writes to an async source node not stopping its block | Case AQ |
+| A run start that keeps `Failed` | the fragility-recovery and panicking-comparator edge tests |
 
-  Dropping the walk's references under the sweep lock makes no model fail, since the operation context already defers the sweeps those drops raise. The rule stays so that no node's teardown runs under the lock. Leaving the holdover out of support's edges makes nothing fail either: a sweep then skips what lies past a held-over node, which can only delay a let-go, and releasing the holdover raises those nodes as starting points in the same operation. The edges stay so that a sweep sees the graph as it is.
+  Dropping the walk's references under the sweep lock makes no model fail, since the operation context already defers the sweeps those drops raise. The rule stays so that no node's teardown runs under the lock. Leaving the holdover out of support's edges makes nothing fail either: a sweep then skips what lies past a held-over node, which can only delay a let-go, and releasing the holdover raises those nodes as starting points in the same operation. The edges stay so that a sweep sees the graph as it is. Starting a `changes()` stream on a ghost without checking makes no test fail either: the stream's first item finds the ghost and ends it, so the check only keeps a ghost from getting a channel.
 - Not modelled: `Arc`/`Weak` reference counts and tokio's internals stay outside loom, so a race lying entirely between two loom-visible operations is collapsed. This is a limit of the method, not of the engine: every refcount-sensitive path in the protocol and in sweeps is bracketed by locks or atomics loom does see, and stress runs check the rest. Unlike v0.2.5's, the rewritten Case J model does not catch v0.2.5's Case J race, a run closing its tokens while still holding its node; stress runs are the check for that kind of race.
 
 Unlike in MV-RP, concurrent outside batches are not ordered as if they ran one after another: a join may combine changes from two epochs, unless it has `WHOLE_EPOCHS` (8). Within one epoch, everything in section 7 holds unchanged. MV-RP measured 20–25% single-threaded overhead for its full machinery (section 5.2 of the paper); lithia's subset is measured in section 15.
@@ -3863,7 +3873,7 @@ Lifetime costs, added by v0.3.0, from the same runs:
 | Last-handle drops | A body's `helper(&x.accessor())` idiom on a supported node: a temporary anchor whose drop runs a sweep that ends at its start check | 250–570 ns per drop on one thread; 1.0–3.7 µs on each of two threads at once | The budget of 1 µs per drop on one thread is met; the one sweep lock serializes concurrent drops (16) |
 
 - A last-handle drop can run a sweep on the dropping thread, under one process-wide sweep lock, and every clone and drop of a handle updates an atomic count: that is the price of lifetimes without owners (10.1). The budgets above hold it to a fraction of a run. Two threads dropping temporary anchors at once each pay several times as much as one, through the one lock and the shared atomics; finer-grained locking stays on the roadmap until a real workload shows it (16).
-- Freeing many children of one node costs time quadratic in their number, since each leaves the parent's subscriber list on its own; this predates v0.3.0, and only a sweep or a value that frees thousands at once shows it.
+- Freeing many children of one node cost time quadratic in their number, since each left the parent's subscriber list by a scan of it. Since v0.4.0 the list is keyed by id and freeing is linear (the wide-creation row below).
 
 Keyed rows, added by v0.3.1, from ten runs on 2026-11-17 alternated with ten runs of v0.3.0, as the median with the range in brackets:
 
@@ -3882,6 +3892,31 @@ v0.4.0 against v0.3.1, from runs alternated on 2026-11-20 in the same kind of co
 - A last-handle drop on a supported node costs 605–641 ns, against 499–528 ns: the temporary anchor's arrival now walks downstream to hold again what support let go of (10.1), which ends at once on a node support holds. It stays within the 1 µs budget.
 - Meshes run more, since every cut writer reruns once its epoch settles (7.4): n = 2: 3 runs; 3: 5; 4: 7; 6: 11; 8: 15–22, all still far below n².
 - The first v0.4.0 runs found three costs the implementation then removed: a lock-free swap cell in every handle, whose drop scans every thread's slots (a handle's clone and drop took 1.2 µs, now 20 ns, as in v0.3.1); a full delivery for each reclaimed keyed node (keyed rows took 350–440 µs); and an `Arc` clone on every anchoring handle.
+
+A performance pass after a code review, from five runs alternated on 2026-11-20 with five of v0.4.0 as first committed, as medians. Two benchmarks are new: values `equals` discards and replaced strings, and one run creating 10 000 children. Allocations are counted by a counting allocator on a one-thread runtime (`cargo bench -p lithia-bench --bench allocs`).
+
+| Benchmark | Before | After |
+| --- | --- | --- |
+| Spawn overhead | 4.8 µs per run | 3.9 µs |
+| Protocol overhead | 1.8 µs per node run | 1.25 µs |
+| Framing | 100 writes: 57 µs batched, 172 µs one batch per write | 35 µs, 123 µs; fan-out unchanged within the noise |
+| Fan-in contention | 5.9 µs per write | 3.8 µs |
+| Clock contention | 0.90, 1.10 and 1.05 µs per write with 1, 2 and 4 writers | 0.60, 0.64 and 0.59 µs |
+| Drop churn | 1.86 ms per rerun | 0.60 ms |
+| Rerun rates | 77 000 runs/s | 126 000 runs/s |
+| Creation and sweeps | a bound effect 1.0 µs; 10 000 watchers freed by a sweep in 177 ms | 0.86 µs; 147 ms |
+| Rebuilding children | 3.3 ms per rerun | 0.65 ms |
+| Keyed rows | rebuilt 2.7–2.9 ms per list rerun; keyed, every row changed, 2.2 ms | 0.69–0.75 ms; 0.60 ms; keyed with few changes unchanged at 73–82 µs |
+| Discarded values | a run whose value `equals` keeps 18 µs per write and flush; an equal write 9.2 µs; a `String` write 12.5 µs | 8.4 µs; 57 ns; 260 ns |
+| Wide creation | one run creating 10 000 children: 315 ms per rerun | 77 ms |
+| Allocations | 17 per run on a chain, 14.6 per child run on a fan-out, 24 per derived node created | 10, 7.5, 17 |
+
+- Values `equals` or a superseded run discarded went to the blocking pool whatever their type, against 10.3; they now follow its rule, and strings and byte buffers drop inline too. That is the discarded-values row.
+- Gathering a step's drops into one blocking task per runtime (10.3) accounts for the drop-churn, rebuilding and keyed rows: one `spawn_blocking` per freed body or replaced value had been most of their cost.
+- A freed child scanned its parent's whole subscriber list to leave it, so freeing many children of one node was quadratic; the list is now keyed by id. With a creator's list of creations pruned only when it doubles, the wide-creation row is linear.
+- The other rows gain from fewer allocations and locks per run: an inline mask for the first 64 parents, a small sorted vector for a node's entries instead of a tree whose first insert allocates about 1 KB that the node keeps, no copy of the served epochs and no delivery for a poll that wrote nothing, a waker only for runs that can suspend, a failure record cleared only when there is one, no supersede check on writes to plain source nodes, a `changes()` channel made by the first stream, and a per-thread cache of the scope of a task lithia did not start.
+- Handles and last-handle drops are unchanged. Mesh run counts vary with scheduling in both: over fifteen runs each, the eight-way mesh took 15–42 runs before and 18–58 after, medians 21–23 and 25–26, all below n² = 64.
+- Spawning a task per run is still the largest cost: 3.9 µs against 1 ns for a cheap body inline (16).
 
 ## 16. Roadmap
 

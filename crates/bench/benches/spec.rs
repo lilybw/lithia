@@ -637,6 +637,85 @@ fn last_handle_drops() -> Row {
     }
 }
 
+/// Values `equals` discards and replaced strings: each was a blocking-pool drop before v0.4.0's fixes.
+fn discarded_values() -> Row {
+    const ROUNDS: u64 = 2_000;
+    const WRITES: u64 = 20_000;
+    let rt: tokio::runtime::Runtime = runtime(2);
+    let (runs, equal, strings): (Duration, Duration, Duration) = rt.block_on(lithia_task(async {
+        let input: SourceNode<u64> = effect!(0);
+        let coarse: DerivedNode<u64> = effect!(|input| *input.get() / 1_000_000_000, equals = lithia::eq);
+        lithia::flush().await;
+        let start: Instant = Instant::now();
+        for round in 1..=ROUNDS {
+            input.set(round); // the run's value equals the last one
+            lithia::flush().await;
+        }
+        let runs: Duration = start.elapsed();
+        std::hint::black_box(*coarse.get());
+        let same: SourceNode<u64> = effect!(5, equals = lithia::eq);
+        let text: SourceNode<String> = effect!(String::new());
+        lithia::flush().await;
+        let start: Instant = Instant::now();
+        for _ in 0..WRITES {
+            same.set(5);
+        }
+        let equal: Duration = start.elapsed();
+        let start: Instant = Instant::now();
+        for round in 0..WRITES {
+            text.set(round.to_string());
+        }
+        let strings: Duration = start.elapsed();
+        lithia::flush().await;
+        (runs, equal, strings)
+    }));
+    Row {
+        name: "Discarded values (v0.4.0)",
+        result: format!(
+            "a run whose value `equals` keeps: {} per write and flush; an equal write: {}; a `String` write: {}",
+            per(runs, ROUNDS),
+            per(equal, WRITES),
+            per(strings, WRITES)
+        ),
+        informs: "Which drops stay off the blocking pool (10.3)",
+    }
+}
+
+/// One run creating many children: the creator's bookkeeping must stay linear.
+fn wide_creation() -> Row {
+    const CHILDREN: usize = 10_000;
+    const ROUNDS: u64 = 5;
+    let rt: tokio::runtime::Runtime = runtime(2);
+    let elapsed: Duration = rt.block_on(lithia_task(async {
+        let tick: SourceNode<u64> = effect!(0);
+        let k: SourceNode<u64> = effect!(0);
+        effect!(|tick| {
+            let _ = tick.get();
+            for _ in 0..CHILDREN {
+                effect!(|k| {
+                    let _ = k.get();
+                });
+            }
+        });
+        lithia::flush().await;
+        let start: Instant = Instant::now();
+        for round in 1..=ROUNDS {
+            tick.set(round);
+            lithia::flush().await;
+        }
+        start.elapsed()
+    }));
+    Row {
+        name: "Wide creation (v0.4.0)",
+        result: format!(
+            "one run creating {CHILDREN} children: {} per rerun, {} per child",
+            per(elapsed, ROUNDS),
+            per(elapsed, ROUNDS * CHILDREN as u64)
+        ),
+        informs: "Creation bookkeeping per run (10.1)",
+    }
+}
+
 /// Runs a future as a lithia task, so its polls form batches like `#[lithia::main]`.
 async fn lithia_task<F>(future: F) -> F::Output
 where
@@ -652,24 +731,32 @@ where
 }
 
 fn main() {
-    let rows: Vec<Row> = vec![
-        spawn_overhead(),
-        framing(),
-        fan_in(),
-        clock_contention(),
-        protocol_overhead(),
-        meshes(),
-        drop_churn(),
-        rerun_rates(),
-        handle_clone(),
-        creation_and_sweep(),
-        rebuild_children(),
-        last_handle_drops(),
-        keyed_rows(),
+    let benches: [(&str, fn() -> Row); 15] = [
+        ("spawn", spawn_overhead),
+        ("framing", framing),
+        ("fan-in", fan_in),
+        ("clock", clock_contention),
+        ("protocol", protocol_overhead),
+        ("meshes", meshes),
+        ("drop-churn", drop_churn),
+        ("rerun-rates", rerun_rates),
+        ("handles", handle_clone),
+        ("creation", creation_and_sweep),
+        ("rebuild", rebuild_children),
+        ("last-handle", last_handle_drops),
+        ("keyed", keyed_rows),
+        ("discarded", discarded_values),
+        ("wide-creation", wide_creation),
     ];
+    // `LITHIA_BENCH=spawn,clock` runs only those rows.
+    let only: Option<String> = std::env::var("LITHIA_BENCH").ok();
     println!("| Benchmark | Result | Informs |");
     println!("|---|---|---|");
-    for row in rows {
+    for (name, bench) in benches {
+        if only.as_deref().is_some_and(|list: &str| !list.split(',').any(|wanted: &str| wanted.trim() == name)) {
+            continue;
+        }
+        let row: Row = bench();
         println!("| {} | {} | {} |", row.name, row.result, row.informs);
     }
 }

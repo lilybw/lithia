@@ -84,6 +84,8 @@ crate::sync::thread_local! {
     static CLOSURE_DEPTH: Cell<u32> = Cell::new(0);
     static CLOSURE_CREATIONS: RefCell<Vec<WeakNodeRef>> = RefCell::new(Vec::new());
     static THREAD_SCOPE: RefCell<Option<Arc<Scope>>> = RefCell::new(None);
+    /// The task whose scope this thread looked up last, so its repeated writes skip `TASK_SCOPES`.
+    static LAST_TASK: RefCell<Option<(tokio::task::Id, Weak<Scope>)>> = RefCell::new(None);
 }
 
 /// Restores the previous frame when dropped.
@@ -144,17 +146,38 @@ static TASK_SCOPES: parking_lot::Mutex<BTreeMap<tokio::task::Id, Weak<Scope>>> =
     parking_lot::Mutex::new(BTreeMap::new());
 
 fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
-    let mut map: parking_lot::MutexGuard<'_, BTreeMap<tokio::task::Id, Weak<Scope>>> = TASK_SCOPES.lock();
-    if let Some(scope) = map.get(&id).and_then(Weak::upgrade) {
+    // A live cached scope is the one the map holds: an entry is replaced only once its scope is gone.
+    let cached: Option<Arc<Scope>> = LAST_TASK
+        .try_with(|last: &RefCell<Option<(tokio::task::Id, Weak<Scope>)>>| {
+            last.borrow()
+                .as_ref()
+                .filter(|(known, _): &&(tokio::task::Id, Weak<Scope>)| *known == id)
+                .and_then(|(_, weak): &(tokio::task::Id, Weak<Scope>)| weak.upgrade())
+        })
+        .ok()
+        .flatten();
+    if let Some(scope) = cached {
         return scope;
     }
-    if map.len() >= 64 {
-        map.retain(|_, weak: &mut Weak<Scope>| weak.strong_count() > 0);
-    }
-    // Open epochs hold their scope, so a flush finds it while work remains; once the
-    // scope is gone there is nothing left to wait for, and a fresh one is equivalent.
-    let scope: Arc<Scope> = Scope::new();
-    map.insert(id, Arc::downgrade(&scope));
+    let scope: Arc<Scope> = {
+        let mut map: parking_lot::MutexGuard<'_, BTreeMap<tokio::task::Id, Weak<Scope>>> = TASK_SCOPES.lock();
+        match map.get(&id).and_then(Weak::upgrade) {
+            Some(scope) => scope,
+            None => {
+                if map.len() >= 64 {
+                    map.retain(|_, weak: &mut Weak<Scope>| weak.strong_count() > 0);
+                }
+                // Open epochs hold their scope, so a flush finds it while work remains; once the
+                // scope is gone there is nothing left to wait for, and a fresh one is equivalent.
+                let scope: Arc<Scope> = Scope::new();
+                map.insert(id, Arc::downgrade(&scope));
+                scope
+            }
+        }
+    };
+    let _ = LAST_TASK.try_with(|last: &RefCell<Option<(tokio::task::Id, Weak<Scope>)>>| {
+        *last.borrow_mut() = Some((id, Arc::downgrade(&scope)));
+    });
     scope
 }
 

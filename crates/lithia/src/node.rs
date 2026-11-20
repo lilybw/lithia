@@ -100,6 +100,7 @@ pub(crate) struct Header {
     pub(crate) scope: Arc<Scope>,
     /// Whether the node still counts towards its scope's live nodes.
     pub(crate) counted: AtomicBool,
+    /// The `changes()` channel, made by the first stream.
     pub(crate) changes: Mutex<Option<watch::Sender<u64>>>,
     pub(crate) rate: Mutex<RateWindow>,
     /// Outside handles that anchor the node.
@@ -143,7 +144,7 @@ pub(crate) struct Header {
 /// Scheduler state of one node, guarded by its scheduling lock.
 pub(crate) struct Sched {
     /// Open entries not taken by a run, one per epoch the node is framed in.
-    pub(crate) entries: BTreeMap<EpochId, Entry>,
+    pub(crate) entries: Entries,
     /// The run in flight, if any.
     pub(crate) run: Option<RunSlot>,
     /// Epochs a superseded run served, handed to the next run.
@@ -154,10 +155,12 @@ pub(crate) struct Sched {
     pub(crate) unseeded: bool,
     /// Clock stamp when the last run started.
     pub(crate) ran_at: u64,
-    /// Children, held weakly; a freed child removes itself.
-    pub(crate) subscribers: Vec<(NodeId, WeakNodeRef)>,
+    /// Children by id, held weakly; a freed child removes itself, without a scan of the others.
+    pub(crate) subscribers: BTreeMap<NodeId, WeakNodeRef>,
     /// Nodes created by this node's runs, held weakly, for `lithia::test::settled`.
     pub(crate) created: Vec<WeakNodeRef>,
+    /// Length of `created` after its last prune; it is pruned again once twice as long.
+    pub(crate) created_floor: usize,
     /// Nodes its runs wrote or reflowed without an edge, held weakly, for `lithia::test::settled`.
     pub(crate) wrote: Vec<WeakNodeRef>,
     /// The generation: nodes the runs created without a key, held until the next run is decided.
@@ -181,14 +184,15 @@ pub(crate) struct Sched {
 impl Sched {
     pub(crate) fn new(unseeded: bool) -> Sched {
         Sched {
-            entries: BTreeMap::new(),
+            entries: Entries::default(),
             run: None,
             inherited: Vec::new(),
             queued: false,
             unseeded,
             ran_at: 0,
-            subscribers: Vec::new(),
+            subscribers: BTreeMap::new(),
             created: Vec::new(),
+            created_floor: 0,
             wrote: Vec::new(),
             generation: Vec::new(),
             keyed: KeyedSet::default(),
@@ -269,6 +273,95 @@ impl Sched {
     /// Whether any run work is pending or in flight.
     pub(crate) fn busy(&self) -> bool {
         self.run.is_some() || self.queued || !self.inherited.is_empty() || self.releasing
+    }
+}
+
+/// A node's open entries in ascending epoch order; most nodes hold none or one at a time.
+#[derive(Default)]
+pub(crate) struct Entries(Vec<(EpochId, Entry)>);
+
+impl Entries {
+    fn position(&self, epoch: EpochId) -> Result<usize, usize> {
+        self.0.binary_search_by_key(&epoch, |(id, _): &(EpochId, Entry)| *id)
+    }
+
+    pub(crate) fn get(&self, epoch: &EpochId) -> Option<&Entry> {
+        self.position(*epoch).ok().map(|at: usize| &self.0[at].1)
+    }
+
+    pub(crate) fn get_mut(&mut self, epoch: &EpochId) -> Option<&mut Entry> {
+        self.position(*epoch).ok().map(|at: usize| &mut self.0[at].1)
+    }
+
+    pub(crate) fn contains_key(&self, epoch: &EpochId) -> bool {
+        self.position(*epoch).is_ok()
+    }
+
+    /// Inserts or replaces the entry for `epoch`.
+    pub(crate) fn insert(&mut self, epoch: EpochId, entry: Entry) {
+        match self.position(epoch) {
+            Ok(at) => self.0[at].1 = entry,
+            Err(at) => self.0.insert(at, (epoch, entry)),
+        }
+    }
+
+    /// The entry for `epoch`, made by `make` if there is none.
+    pub(crate) fn get_or_insert_with(&mut self, epoch: EpochId, make: impl FnOnce() -> Entry) -> &mut Entry {
+        let at: usize = match self.position(epoch) {
+            Ok(at) => at,
+            Err(at) => {
+                self.0.insert(at, (epoch, make()));
+                at
+            }
+        };
+        &mut self.0[at].1
+    }
+
+    pub(crate) fn remove(&mut self, epoch: &EpochId) -> Option<Entry> {
+        let at: usize = self.position(*epoch).ok()?;
+        let (_, entry): (EpochId, Entry) = self.0.remove(at);
+        self.shrink();
+        Some(entry)
+    }
+
+    /// Removes, in epoch order, every entry `accept` takes, handing each to `take`.
+    pub(crate) fn take_where(&mut self, mut accept: impl FnMut(&Entry) -> bool, mut take: impl FnMut(Entry)) {
+        for (_, entry) in self.0.extract_if(.., |(_, entry): &mut (EpochId, Entry)| accept(entry)) {
+            take(entry);
+        }
+        self.shrink();
+    }
+
+    /// Lets go of a buffer an epoch backlog grew, once it is empty again.
+    fn shrink(&mut self) {
+        if self.0.is_empty() && self.0.capacity() > 8 {
+            self.0 = Vec::new();
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&EpochId, &Entry)> {
+        self.0.iter().map(|(id, entry): &(EpochId, Entry)| (id, entry))
+    }
+
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &EpochId> {
+        self.0.iter().map(|(id, _): &(EpochId, Entry)| id)
+    }
+
+    pub(crate) fn values(&self) -> impl Iterator<Item = &Entry> {
+        self.0.iter().map(|(_, entry): &(EpochId, Entry)| entry)
+    }
+}
+
+impl IntoIterator for Entries {
+    type Item = (EpochId, Entry);
+    type IntoIter = std::vec::IntoIter<(EpochId, Entry)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }
 
@@ -390,6 +483,24 @@ impl Header {
         }
     }
 
+    /// Enters `Pending` for a starting run and leaves `Failed` in one step; clears a failure record.
+    pub(crate) fn begin_run(&self) {
+        let update = |bits: u32| Some((bits | phase::PENDING) & !phase::FAILED);
+        let before: u32 = match self.phase.fetch_update(Ordering::SeqCst, Ordering::SeqCst, update) {
+            Ok(bits) | Err(bits) => bits,
+        };
+        if before & phase::FAILED != 0 {
+            self.failure.store(None);
+        }
+    }
+
+    /// Leaves `Pending` and `Failed`, as a write does; clears a failure record only if there is one.
+    pub(crate) fn clear_pending_failed(&self) {
+        if self.phase.fetch_and(!(phase::PENDING | phase::FAILED), Ordering::SeqCst) & phase::FAILED != 0 {
+            self.failure.store(None);
+        }
+    }
+
     /// Records a failure and enters `Failed`.
     pub(crate) fn fail(&self, failure: Failure) {
         self.failure.store(Some(Arc::new(failure)));
@@ -406,7 +517,7 @@ impl Header {
     pub(crate) fn subscribers(&self) -> Vec<NodeRef> {
         let mut guard: MutexGuard<'_, Sched> = self.sched.lock();
         let mut out: Vec<NodeRef> = Vec::with_capacity(guard.subscribers.len());
-        guard.subscribers.retain(|(_, weak): &(NodeId, WeakNodeRef)| match weak.upgrade() {
+        guard.subscribers.retain(|_: &NodeId, weak: &mut WeakNodeRef| match weak.upgrade() {
             Some(node) => {
                 out.push(node);
                 true
@@ -421,9 +532,7 @@ impl Header {
     /// a memo unread (spec §12).
     pub(crate) fn unsubscribe(&self, child: NodeId) {
         let mut guard: MutexGuard<'_, Sched> = self.sched.lock();
-        let before: usize = guard.subscribers.len();
-        guard.subscribers.retain(|(id, _): &(NodeId, WeakNodeRef)| *id != child);
-        let last: bool = guard.subscribers.len() < before && guard.subscribers.is_empty();
+        let last: bool = guard.subscribers.remove(&child).is_some() && guard.subscribers.is_empty();
         drop(guard);
         if last {
             crate::support::check_unread(self);

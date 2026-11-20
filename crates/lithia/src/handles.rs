@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::capture::Lease;
 use crate::changes::Changes;
 use crate::context::{self, ClosureCreations, ClosureGuard};
-use crate::node::{Header, Kind, Node, NodeRef, phase};
+use crate::node::{Header, Kind, Node, NodeRef};
 use crate::sync::MutexGuard;
 use crate::{GhostPolicy, Ghosted, NodeValue, Status, diag, ids, protocol};
 
@@ -157,8 +157,7 @@ impl<K: NodeValue> Node<K> {
                 None
             } else {
                 header.runs.fetch_add(1, Ordering::SeqCst);
-                header.clear_bits(phase::PENDING | phase::FAILED);
-                header.failure.store(None);
+                header.clear_pending_failed();
                 if equal {
                     discarded = Some(next);
                 } else {
@@ -171,14 +170,17 @@ impl<K: NodeValue> Node<K> {
             }
         };
         if let Some(value) = discarded {
-            crate::drops::drop_later(value, header.runtime.as_ref());
+            crate::drops::drop_owned(value, header.runtime.as_ref());
         }
         if let Some(old) = replaced {
             crate::drops::drop_value(old, header.runtime.as_ref());
         }
         if let Some(stamp) = stamp {
             let erased: NodeRef = self.clone();
-            protocol::kill_run(&erased);
+            // A plain source node is never framed or seeded, so it never has a run to stop.
+            if header.kind != Kind::Source {
+                protocol::kill_run(&erased);
+            }
             context::record_write(&erased, stamp);
         }
         Ok(())

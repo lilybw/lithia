@@ -74,6 +74,15 @@ pub(crate) fn close_all(epochs: Vec<Arc<Epoch>>) {
     settle_wait::bump();
 }
 
+/// Appends `more` to `closes`, taking over `more`'s buffer when `closes` is empty.
+pub(crate) fn append_closes(closes: &mut Vec<Arc<Epoch>>, more: Vec<Arc<Epoch>>) {
+    if closes.is_empty() {
+        *closes = more;
+    } else {
+        closes.extend(more);
+    }
+}
+
 /// Like `drain`, but hands the token closes back to the caller.
 #[must_use = "the returned tokens must be closed with close_all"]
 pub(crate) fn drain_deferred(mut work: Work) -> Vec<Arc<Epoch>> {
@@ -536,17 +545,20 @@ pub(crate) struct OwnItem<'a> {
     pub(crate) stamp: u64,
 }
 
-fn upgrade_sorted(list: Vec<(crate::node::WeakNodeRef, NodeId, u64)>) -> Vec<(NodeRef, u64)> {
+/// Live nodes of `list` by id, once each, with the newest stamp recorded for each.
+fn upgrade_sorted(mut list: Vec<(crate::node::WeakNodeRef, NodeId, u64)>) -> Vec<(NodeRef, u64)> {
+    list.sort_by_key(|(_, id, _): &(crate::node::WeakNodeRef, NodeId, u64)| *id);
     let mut out: Vec<(NodeRef, u64)> = Vec::with_capacity(list.len());
-    for (weak, _, stamp) in list {
-        if let Some(node) = weak.upgrade() {
-            match out.iter_mut().find(|(existing, _): &&mut (NodeRef, u64)| existing.header().id == node.header().id) {
-                Some((_, existing)) => *existing = (*existing).max(stamp),
-                None => out.push((node, stamp)),
+    for (weak, id, stamp) in list {
+        match out.last_mut() {
+            Some((last, newest)) if last.header().id == id => *newest = (*newest).max(stamp),
+            _ => {
+                if let Some(node) = weak.upgrade() {
+                    out.push((node, stamp));
+                }
             }
         }
     }
-    out.sort_by_key(|(node, _): &(NodeRef, u64)| node.header().id);
     out
 }
 
@@ -565,6 +577,9 @@ pub(crate) fn deliver_into(
     writer: Option<NodeId>,
     own: Option<OwnItem<'_>>,
 ) {
+    if batch.is_empty() && own.is_none() {
+        return;
+    }
     let Batch { writes, reflows, creations, reruns, refreshes, defers } = batch;
     let writes: Vec<(NodeRef, u64)> = upgrade_sorted(writes);
     let reflows: Vec<(NodeRef, u64)> = upgrade_sorted(reflows);
@@ -751,7 +766,7 @@ pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) -> bool {
             let mut parent_guard: MutexGuard<'_, Sched> = parent_header.sched.lock();
             let parent_sched: &mut Sched = &mut parent_guard;
             all_closed &= parent_sched.closed;
-            parent_sched.subscribers.push((header.id, weak.clone()));
+            parent_sched.subscribers.insert(header.id, weak.clone());
             let mut list: Vec<Arc<Epoch>> =
                 parent_sched.entries.values().map(|entry: &Entry| entry.epoch.clone()).collect();
             if let Some(slot) = &parent_sched.run {
@@ -766,7 +781,7 @@ pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) -> bool {
             continue;
         };
         for epoch in epochs {
-            let entry: &mut Entry = guard.entries.entry(epoch.id).or_insert_with(|| {
+            let entry: &mut Entry = guard.entries.get_or_insert_with(epoch.id, || {
                 epoch.open_token();
                 Entry::new(epoch.clone())
             });
@@ -834,26 +849,19 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
         } else {
             let replaced: bool = !sched.inherited.is_empty();
             let mut served: Vec<Served> = std::mem::take(&mut sched.inherited);
-            let ready: Vec<EpochId> = sched
-                .entries
-                .iter()
-                .filter(|(_, entry): &(&EpochId, &Entry)| entry.runnable && entry.waiting.is_empty())
-                .map(|(id, _): (&EpochId, &Entry)| *id)
-                .collect();
-            for epoch in ready {
-                if let Some(entry) = sched.entries.remove(&epoch) {
-                    merge_served(
-                        &mut served,
-                        Served {
-                            epoch: entry.epoch,
-                            writers: entry.writers,
-                            tokens: 1,
-                            released: false,
-                            carry: entry.carry,
-                        },
-                    );
-                }
-            }
+            sched.entries.take_where(
+                |entry: &Entry| entry.runnable && entry.waiting.is_empty(),
+                |entry: Entry| {
+                    let record: Served = Served {
+                        epoch: entry.epoch,
+                        writers: entry.writers,
+                        tokens: 1,
+                        released: false,
+                        carry: entry.carry,
+                    };
+                    merge_served(&mut served, record);
+                },
+            );
             let killed: bool =
                 header.kind == Kind::AsyncSource && header.runs.load(Ordering::SeqCst) != shared.expected();
             let fragile: Option<Vec<Arc<Failure>>> = match header.fragility {
@@ -891,9 +899,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 if !sched.suppress.is_empty() {
                     shared.set_suppress(std::mem::take(&mut sched.suppress));
                 }
-                header.set_bits(phase::PENDING);
-                header.clear_bits(phase::FAILED);
-                header.failure.store(None);
+                header.begin_run();
                 sched.failed_by_fragility = false;
                 sched.run = Some(RunSlot { id, shared: shared.clone(), served, restart: false, replaced });
                 sched.release_generation(&mut work.released);
@@ -955,11 +961,18 @@ pub(crate) fn after_poll(
         diag::run_panicked(header.site, message);
         header.fail(Failure { message: message.clone(), site: *header.site, causes: Vec::new() });
     }
+    let first: bool = !shared.first_done();
+    // The served epochs are copied only when there is something to deliver into them.
+    let delivers: bool = !batch.is_empty() || (!first && own_stamp > 0);
     let snapshot: Option<(ServedEpochs, bool)> = {
         let guard: MutexGuard<'_, Sched> = header.sched.lock();
         match &guard.run {
             Some(slot) if slot.id == shared.id() => Some((
-                slot.served.iter().map(|s: &Served| (s.epoch.clone(), s.writers.clone())).collect(),
+                if delivers {
+                    slot.served.iter().map(|s: &Served| (s.epoch.clone(), s.writers.clone())).collect()
+                } else {
+                    Vec::new()
+                },
                 slot.restart || shared.is_cancelled(),
             )),
             _ => None,
@@ -969,14 +982,13 @@ pub(crate) fn after_poll(
         // The run was torn down meanwhile; its writes are applied and still propagate.
         return deliver_outside_deferred(batch, &shared.scope());
     };
-    let first: bool = !shared.first_done();
     let mut pending: Vec<Arc<Epoch>> = Vec::new();
     if first {
         shared.set_first_done();
         deliver_into(batch, &served, Some(header.writer), None);
     } else {
         let stamp: u64 = if cancelled { 0 } else { own_stamp };
-        pending.extend(deliver_children(node, &served, batch, stamp));
+        append_closes(&mut pending, deliver_children(node, &served, batch, stamp));
     }
     if matches!(outcome, Outcome::Yielded) && !cancelled {
         protect_ends(node, shared);
@@ -984,7 +996,7 @@ pub(crate) fn after_poll(
     let closes_tokens: bool = !matches!(outcome, Outcome::Yielded);
     if cancelled {
         if !matches!(outcome, Outcome::Yielded | Outcome::Suspended) {
-            pending.extend(finalize(node, shared, End::Finished));
+            append_closes(&mut pending, finalize(node, shared, End::Finished));
         }
         return pending;
     }
@@ -1021,9 +1033,9 @@ pub(crate) fn after_poll(
             }
         }
     }
-    pending.extend(drain_deferred(work));
+    append_closes(&mut pending, drain_deferred(work));
     if matches!(outcome, Outcome::Ended | Outcome::Panicked(_)) {
-        pending.extend(finalize(node, shared, End::Finished));
+        append_closes(&mut pending, finalize(node, shared, End::Finished));
     }
     pending
 }
@@ -1167,7 +1179,7 @@ pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunShared>) -> Vec<Arc<Epoch>
     if !header.is_ghost() {
         header.fail(Failure { message: "runtime shut down".to_string(), site: *header.site, causes: Vec::new() });
     }
-    pending.extend(drain_deferred(work));
+    append_closes(&mut pending, drain_deferred(work));
     pending
 }
 

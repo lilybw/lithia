@@ -55,36 +55,48 @@ impl WriterSet {
     }
 }
 
-/// Parents not yet released, as a bitmask over the node's parents that grows past 64 bits.
+/// Parents not yet released, as a bitmask over the node's parents: the first 64 inline, the rest
+/// in words allocated only for nodes with more parents.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ParentMask(Vec<u64>);
+pub(crate) struct ParentMask {
+    low: u64,
+    high: Vec<u64>,
+}
 
 impl ParentMask {
     pub(crate) fn new() -> ParentMask {
-        ParentMask(Vec::new())
+        ParentMask { low: 0, high: Vec::new() }
     }
 
     pub(crate) fn set(&mut self, index: usize) {
-        let word: usize = index / 64;
-        if self.0.len() <= word {
-            self.0.resize(word + 1, 0);
+        if index < 64 {
+            self.low |= 1u64 << index;
+            return;
         }
-        self.0[word] |= 1u64 << (index % 64);
+        let word: usize = index / 64 - 1;
+        if self.high.len() <= word {
+            self.high.resize(word + 1, 0);
+        }
+        self.high[word] |= 1u64 << (index % 64);
     }
 
     pub(crate) fn clear(&mut self, index: usize) {
-        let word: usize = index / 64;
-        if let Some(bits) = self.0.get_mut(word) {
+        if index < 64 {
+            self.low &= !(1u64 << index);
+        } else if let Some(bits) = self.high.get_mut(index / 64 - 1) {
             *bits &= !(1u64 << (index % 64));
         }
     }
 
     pub(crate) fn get(&self, index: usize) -> bool {
-        self.0.get(index / 64).is_some_and(|bits: &u64| bits & (1u64 << (index % 64)) != 0)
+        if index < 64 {
+            return self.low & (1u64 << index) != 0;
+        }
+        self.high.get(index / 64 - 1).is_some_and(|bits: &u64| bits & (1u64 << (index % 64)) != 0)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.iter().all(|bits: &u64| *bits == 0)
+        self.low == 0 && self.high.iter().all(|bits: &u64| *bits == 0)
     }
 }
 
@@ -114,5 +126,27 @@ mod tests {
         mask.clear(70);
         mask.clear(1);
         assert!(mask.is_empty());
+    }
+
+    #[test]
+    fn mask_word_edges() {
+        let mut mask: ParentMask = ParentMask::new();
+        for index in [0usize, 63, 64, 127, 128, 200] {
+            assert!(!mask.get(index));
+            mask.set(index);
+            assert!(mask.get(index) && !mask.is_empty());
+        }
+        assert!(!mask.get(62) && !mask.get(65) && !mask.get(129) && !mask.get(500));
+        assert!(mask.high.len() == 3);
+        for index in [0usize, 63, 64, 127, 128] {
+            mask.clear(index);
+            assert!(!mask.get(index) && !mask.is_empty());
+        }
+        mask.clear(500);
+        mask.clear(200);
+        assert!(mask.is_empty());
+        let mut fresh: ParentMask = ParentMask::new();
+        fresh.set(5);
+        assert!(fresh.high.is_empty());
     }
 }

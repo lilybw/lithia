@@ -40,13 +40,17 @@ crate::sync::thread_local! {
         RefCell::new(Op { depth: 0, running: false, starts: Vec::new(), returns: Vec::new(), resumes: Vec::new() });
 }
 
-/// An operation that drops references; its sweeps run when the outermost one ends.
-pub(crate) struct OpGuard(());
+/// An operation that drops references; its sweeps run when the outermost one ends, and the
+/// payloads they free are queued together once they have run.
+pub(crate) struct OpGuard {
+    _drops: crate::drops::Batch,
+}
 
 /// Enters an operation on this thread.
 pub(crate) fn enter() -> OpGuard {
+    let drops: crate::drops::Batch = crate::drops::batch();
     let _ = OP.try_with(|op: &RefCell<Op>| op.borrow_mut().depth += 1);
-    OpGuard(())
+    OpGuard { _drops: drops }
 }
 
 impl Drop for OpGuard {

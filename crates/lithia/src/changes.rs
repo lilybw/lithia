@@ -23,10 +23,18 @@ pub struct Changes<K: NodeValue> {
 
 impl<K: NodeValue> Changes<K> {
     pub(crate) fn new(node: &Arc<Node<K>>) -> Changes<K> {
-        let receiver: Option<tokio::sync::watch::Receiver<u64>> = if node.header.is_ghost() {
-            None
-        } else {
-            node.header.changes.lock().as_ref().map(|sender: &tokio::sync::watch::Sender<u64>| sender.subscribe())
+        let receiver: Option<tokio::sync::watch::Receiver<u64>> = {
+            let mut slot: crate::sync::MutexGuard<'_, Option<tokio::sync::watch::Sender<u64>>> =
+                node.header.changes.lock();
+            // The channel is made by the first stream. Disposal marks the node a ghost before it
+            // takes the sender under this lock, so no stream starts on a channel it never ends.
+            if node.header.is_ghost() {
+                None
+            } else {
+                let sender: &tokio::sync::watch::Sender<u64> =
+                    slot.get_or_insert_with(|| tokio::sync::watch::channel(0u64).0);
+                Some(sender.subscribe())
+            }
         };
         Changes { node: Arc::downgrade(node), inner: receiver.map(WatchStream::new) }
     }

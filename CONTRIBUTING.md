@@ -33,7 +33,8 @@ Only pull requests change `nightly` and `release`; the maintainer can also push 
 cargo test --workspace          # everything, including the compile-fail cases
 cargo test -p lithia-validation # the spec's cases
 cargo test -p lithia-test --test edge  # the edge-case tests
-cargo bench -p lithia-bench     # prints a results table
+cargo bench -p lithia-bench     # prints a results table; LITHIA_BENCH=spawn,clock runs only those rows
+cargo bench -p lithia-bench --bench allocs  # heap allocations per run, per write and per node
 RUSTFLAGS="--cfg lithia_loom" CARGO_TARGET_DIR=target/loom cargo test --release -p lithia-test --test loom
 python3 .github/scripts/site.py snapshot --version 0.0.0 --out target/site-snapshot  # needs pandoc and npx
 ```

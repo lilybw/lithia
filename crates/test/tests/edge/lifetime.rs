@@ -4,9 +4,25 @@
 //! Reference counting, disposal and ghosts (spec §10).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use lithia::{Changes, DerivedNode, SourceNode, Status, effect};
+
+/// A value that counts its drops; every two compare equal.
+struct Counted(Arc<AtomicUsize>);
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl PartialEq for Counted {
+    fn eq(&self, _: &Counted) -> bool {
+        true
+    }
+}
 
 #[lithia::test]
 async fn changes_end_when_the_node_is_freed() {
@@ -192,4 +208,72 @@ async fn a_keyed_child_never_runs_with_the_captures_its_creator_replaces() {
     lithia::test::settled(&input).await;
     let runs: Vec<(u32, u32)> = seen.lock().unwrap().clone();
     assert!(runs.iter().all(|(label, value): &(u32, u32)| label == value), "{runs:?}");
+}
+
+#[lithia::test]
+async fn replaced_values_from_one_step_all_drop_once() {
+    // More nodes than one gathered parcel holds, all replaced in the same propagation.
+    const NODES: usize = 150;
+    let dropped: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let tick: SourceNode<u64> = effect!(0);
+    let nodes: Vec<DerivedNode<Counted>> = (0..NODES)
+        .map(|_| {
+            let counter: Arc<AtomicUsize> = dropped.clone();
+            effect!(
+                |tick| {
+                    let _ = tick.get();
+                    Counted(counter.clone())
+                },
+                init = Counted(Arc::new(AtomicUsize::new(0)))
+            )
+        })
+        .collect();
+    lithia::flush().await;
+    for round in 1..=3 {
+        tick.set(round);
+        lithia::flush().await;
+    }
+    let _ = lithia::test::live_nodes().await; // waits for queued drops
+    assert_eq!(dropped.load(Ordering::SeqCst), 3 * NODES, "each replaced value dropped once");
+    drop(nodes);
+    drop(tick); // support held the nodes through their parent until now
+    let _ = lithia::test::live_nodes().await;
+    assert_eq!(dropped.load(Ordering::SeqCst), 4 * NODES, "the last values go with their nodes");
+}
+
+#[lithia::test]
+async fn values_equals_discards_drop_once() {
+    let dropped: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let kept: SourceNode<Counted> = effect!(Counted(dropped.clone()), equals = lithia::eq);
+    for _ in 0..100 {
+        kept.set(Counted(dropped.clone())); // equal: discarded, and dropped off the writing thread
+    }
+    let plain: SourceNode<u64> = effect!(5, equals = lithia::eq);
+    for _ in 0..100 {
+        plain.set(5); // no drop glue: dropped at once
+    }
+    let _ = lithia::test::live_nodes().await;
+    assert_eq!(dropped.load(Ordering::SeqCst), 100);
+    assert_eq!(*plain.get(), 5);
+    drop(kept);
+    let _ = lithia::test::live_nodes().await;
+    assert_eq!(dropped.load(Ordering::SeqCst), 101);
+}
+
+#[lithia::test]
+async fn a_stream_started_late_or_across_disposal_sees_the_right_values() {
+    let n: SourceNode<u32> = effect!(1);
+    for value in 2..=5 {
+        n.set(value); // no stream yet: nothing to notify
+    }
+    let mut early: Changes<u32> = n.changes();
+    assert_eq!(*early.next().await.unwrap(), 5, "a first stream starts at the current value");
+    n.set(6);
+    assert_eq!(*early.next().await.unwrap(), 6);
+    let mut second: Changes<u32> = n.changes();
+    assert_eq!(*second.next().await.unwrap(), 6);
+    lithia::dispose(&n);
+    assert!(early.next().await.is_none(), "disposal ends a stream started before it");
+    assert!(second.next().await.is_none());
+    assert!(n.changes().next().await.is_none(), "a stream started after it ends at once");
 }

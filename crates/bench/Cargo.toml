@@ -15,5 +15,9 @@ tokio = { workspace = true }
 name = "spec"
 harness = false
 
+[[bench]]
+name = "allocs"
+harness = false
+
 [lints]
 workspace = true

@@ -61,3 +61,48 @@ built, and three after the fixes below.
   comparator), whose drop scans every thread's debt slots, so a handle's clone and drop took 1.2 µs (now
   20 ns, as before); a full delivery for every reclaimed keyed node (keyed rows took 350–440 µs); an `Arc`
   clone on every anchoring handle (handles took 32–37 ns).
+
+## v0.4.0 performance pass (2026-11-20)
+
+After a code review. Five runs alternated with five of v0.4.0 as first committed (c5b1216), medians. New
+rows: `Discarded values` and `Wide creation` in `benches/spec.rs`; `benches/allocs.rs` counts heap
+allocations with a counting allocator on a one-thread runtime. `LITHIA_BENCH=spawn,clock` runs only the
+named rows.
+
+| Benchmark | Before | After |
+|---|---|---|
+| Spawn overhead | 4.8 µs per run | 3.9 µs |
+| Protocol overhead | 1.8 µs per node run | 1.25 µs |
+| Framing | 100 writes: 57 µs batched, 172 µs one batch per write | 35 µs, 123 µs; fan-out unchanged (10 framing-only alternations: +1%) |
+| Fan-in contention | 5.9 µs per write | 3.8 µs |
+| Clock contention | 0.90 / 1.10 / 1.05 µs per write (1 / 2 / 4 writers) | 0.60 / 0.64 / 0.59 µs |
+| Drop churn | 1.86 ms per rerun | 0.60 ms |
+| Rerun rates | 77 000 runs/s | 126 000 runs/s |
+| Creation and sweeps | bound effect 1.0 µs; sweep freeing 10 000 watchers 177 ms | 0.86 µs; 147 ms |
+| Rebuilding children | 3.3 ms per rerun | 0.65 ms |
+| Keyed rows | rebuilt 2.7–2.9 ms; keyed, all changed, 2.2 ms | 0.69–0.75 ms; 0.60 ms; keyed with few changes unchanged (73–82 µs) |
+| Discarded values | equal run 18 µs; equal write 9.2 µs; `String` write 12.5 µs | 8.4 µs; 57 ns; 260 ns |
+| Wide creation | 10 000 children per run: 315 ms per rerun | 77 ms |
+| Allocations | chain 17 per run; fan-out 14.6 per child run; detached write 25; creation 24 per node | 10; 7.5; 18; 17 |
+
+- Bug: values `equals` or a superseded run discarded skipped the `needs_drop` check (spec §10.3), so an
+  equal `u64` write cost a `spawn_blocking`. Strings and byte buffers now also drop inline, as §10.3 says.
+- Drops are gathered per protocol step, run poll and dropped parcel into one blocking task per runtime
+  (at most 64 payloads each): most of drop churn, rebuilding and keyed rebuilds was `spawn_blocking`.
+- `Header::unsubscribe` scanned the parent's subscriber `Vec`, so freeing n children of one node was
+  O(n²) (31% of instructions at 2 000 children in callgrind); subscribers are now a `BTreeMap` by id.
+  The creator's `created` list is pruned when it doubles.
+- Allocation diet: `ParentMask` keeps 64 bits inline; `Sched::entries` is a sorted `Vec` instead of a
+  `BTreeMap` (whose first insert keeps a ~1 KB leaf per framed node); empty polls skip the served-epoch
+  copy and `deliver_into`; token lists are moved, not extended; `start_run` takes ready entries in place.
+- Locks: the run waker is set only for futures; `failure` is swapped only when `FAILED` was set, and a
+  run start updates the phase in one step; writes to plain source nodes skip `kill_run`; `changes()`
+  makes its channel on first use; detached writes cache their task's scope per thread.
+- Meshes vary with scheduling in both: n=8 over 15 runs each took 15–42 runs before, 18–58 after
+  (medians 21–23 and 25–26), all below n² = 64.
+- Left out: the fast path and runner tasks (a design decision and a spec change, next steps); merging
+  a run's sched-lock round trips (reorders protocol steps for two uncontended locks); pooled scratch
+  buffers and `RunShared` reuse (seven of the ten allocations left per run, about 4% of a run);
+  batched token opens and cache-line padding (contention only 4+ cores would show); striped support
+  counters (top-level creation only); a slimmer node record (wide diff, unmeasured); reused sweep
+  buffers (a sweep usually asks once); a coarse rerun clock (a vDSO call on Linux).

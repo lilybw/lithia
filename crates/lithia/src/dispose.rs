@@ -129,8 +129,7 @@ fn teardown(node: &NodeRef) -> Vec<NodeRef> {
     let (generation, linked): (Vec<NodeRef>, Vec<NodeRef>) = {
         let mut guard: MutexGuard<'_, crate::node::Sched> = header.sched.lock();
         guard.closed = true;
-        let linked: Vec<NodeRef> =
-            guard.subscribers.iter().filter_map(|(_, weak): &(NodeId, WeakNodeRef)| weak.upgrade()).collect();
+        let linked: Vec<NodeRef> = guard.subscribers.values().filter_map(WeakNodeRef::upgrade).collect();
         (guard.release_all(), linked)
     };
     let me: Option<NodeRef> = header.support.lock().take();

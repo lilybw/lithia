@@ -248,6 +248,8 @@ impl<K: NodeValue> Future for RunFuture<K> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this: &mut RunFuture<K> = self.get_mut();
+        // The poll's deferred drops are queued together when it ends (spec §10.3).
+        let _drops: crate::drops::Batch = crate::drops::batch();
         // Every strong reference to the node is gone before any token closes, so a settled
         // scope never finds the node alive only because its run task is finishing (spec §10.1).
         let (polled, closes): (Poll<()>, Vec<Arc<Epoch>>) = this.poll_run(cx);
@@ -261,7 +263,10 @@ impl<K: NodeValue> RunFuture<K> {
         if matches!(self.state, RunState::Done) {
             return (Poll::Ready(()), Vec::new());
         }
-        self.shared.set_waker(cx.waker());
+        // Only a run that can suspend is woken: a synchronous body ends within its first poll.
+        if matches!(self.state, RunState::Future(_)) {
+            self.shared.set_waker(cx.waker());
+        }
         let Some(node) = self.node.upgrade() else {
             self.stop();
             return (Poll::Ready(()), Vec::new());
@@ -270,7 +275,7 @@ impl<K: NodeValue> RunFuture<K> {
         let mut closes: Vec<Arc<Epoch>> = Vec::new();
         if matches!(self.state, RunState::Init) {
             let (started, pending): (bool, Vec<Arc<Epoch>>) = protocol::start_run(&erased, &self.shared);
-            closes.extend(pending);
+            protocol::append_closes(&mut closes, pending);
             if !started {
                 self.stop();
                 return (Poll::Ready(()), closes);
@@ -286,17 +291,27 @@ impl<K: NodeValue> RunFuture<K> {
                     let batch: Batch = frame.take_batch();
                     let outcome: Outcome = Outcome::Panicked(panic_message(&*panic));
                     self.stop();
-                    closes.extend(protocol::after_poll(&erased, &self.shared, batch, &outcome, 0));
+                    protocol::append_closes(
+                        &mut closes,
+                        protocol::after_poll(&erased, &self.shared, batch, &outcome, 0),
+                    );
                     return (Poll::Ready(()), closes);
                 }
             }
             if matches!(self.state, RunState::Done) {
-                closes.extend(protocol::after_poll(&erased, &self.shared, frame.take_batch(), &Outcome::Ended, 0));
+                protocol::append_closes(
+                    &mut closes,
+                    protocol::after_poll(&erased, &self.shared, frame.take_batch(), &Outcome::Ended, 0),
+                );
                 return (Poll::Ready(()), closes);
+            }
+            // A cancel before this point finds no waker; the check after the poll catches it.
+            if matches!(self.state, RunState::Future(_)) {
+                self.shared.set_waker(cx.waker());
             }
         } else if self.shared.is_cancelled() {
             self.stop();
-            closes.extend(protocol::finalize(&erased, &self.shared, End::Finished));
+            protocol::append_closes(&mut closes, protocol::finalize(&erased, &self.shared, End::Finished));
             return (Poll::Ready(()), closes);
         }
 
@@ -340,13 +355,13 @@ impl<K: NodeValue> RunFuture<K> {
             self.stop();
         }
         let stamp: u64 = self.shared.stamp.swap(0, Ordering::SeqCst);
-        closes.extend(protocol::after_poll(&erased, &self.shared, batch, &outcome, stamp));
+        protocol::append_closes(&mut closes, protocol::after_poll(&erased, &self.shared, batch, &outcome, stamp));
         if ended {
             return (Poll::Ready(()), closes);
         }
         if self.shared.is_cancelled() {
             self.stop();
-            closes.extend(protocol::finalize(&erased, &self.shared, End::Finished));
+            protocol::append_closes(&mut closes, protocol::finalize(&erased, &self.shared, End::Finished));
             return (Poll::Ready(()), closes);
         }
         (Poll::Pending, closes)
@@ -404,7 +419,7 @@ impl<K: NodeValue> Future for YieldItem<'_, K> {
             Some(value) => {
                 match this.yielder.node.upgrade() {
                     Some(node) => node.publish(&this.yielder.shared, value),
-                    None => crate::drops::drop_later(value, None),
+                    None => crate::drops::drop_owned(value, None),
                 }
                 this.yielder.shared.yielded.store(true, Ordering::SeqCst);
                 cx.waker().wake_by_ref();
@@ -454,7 +469,7 @@ impl<K: NodeValue> Node<K> {
             }
         }
         if let Some(value) = discarded {
-            crate::drops::drop_later(value, header.runtime.as_ref());
+            crate::drops::drop_owned(value, header.runtime.as_ref());
         }
         if let Some(old) = replaced {
             crate::drops::drop_value(old, header.runtime.as_ref());

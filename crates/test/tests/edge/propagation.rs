@@ -350,3 +350,30 @@ async fn a_join_reads_across_epochs_unless_it_takes_whole_epochs() {
     // With it, the join waits for `b`'s epoch too, and runs once for both.
     assert_eq!(reads_of_a_join(lithia::WHOLE_EPOCHS).await, [(0, 0), (1, 10)]);
 }
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 3)]
+async fn a_node_written_twice_in_one_batch_carries_its_newest_stamp() {
+    // A run of `c` starts between the batch's two writes of `s` and reads the first: the batch
+    // must carry the second write's stamp, or `c` looks up to date and keeps the stale read.
+    let s: SourceNode<u32> = effect!(0);
+    let t: SourceNode<u32> = effect!(0);
+    let c: DerivedNode<(u32, u32)> = effect!(|s, t| (*s.get(), *t.get()));
+    lithia::flush().await;
+    let (go, started): (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) = std::sync::mpsc::channel();
+    let other: SourceNode<u32> = t.clone();
+    // A plain thread, so its wake-up does not wait in the writing worker's own queue.
+    let poke: std::thread::JoinHandle<()> = std::thread::spawn(move || {
+        started.recv().unwrap();
+        other.set(1); // an outside batch of its own: `c` runs now on another worker, reading `s` = 2
+    });
+    let writes: tokio::task::JoinHandle<()> = lithia::spawn(async move {
+        s.set(2);
+        go.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(100)); // still the same poll, so the same batch
+        s.set(3);
+    });
+    writes.await.unwrap();
+    poke.join().unwrap();
+    lithia::test::settled(&c).await;
+    assert_eq!(*c.get(), (3, 1));
+}
