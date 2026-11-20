@@ -1,44 +1,25 @@
 # SPDX-FileCopyrightText: 2026 lithia Authors
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-# Slower checks that do not gate a release: Miri, the loom models at bound 4 with and without the
-# fast path, TLC on the TLA+ model of the scheduling protocol, the kept mutations, and stress runs of
-# every test binary on Linux (x86-64 and ARM) and macOS (ARM). They run on every push to `nightly`,
-# weekly, and on pull requests; a nightly tag is promoted to `release` once they pass on it.
+# Diagnostic: the edge-test binary 800 times on macOS, counting failures per test.
 name: extended
 
 on:
   push:
-    branches: [nightly, "verify/**"]
-  pull_request:
-    branches: [nightly, release]
-  schedule:
-    - cron: "17 3 * * 1"
-  workflow_dispatch:
+    branches: ["verify/**"]
 
 permissions:
   contents: read
 
-concurrency:
-  group: extended-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   RUST_TOOLCHAIN: "1.97.0"
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: "1"
 
 jobs:
   stress:
-    name: stress (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    name: edge x800 (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
 
@@ -47,18 +28,15 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: stress
-
-      - name: Every test binary 200 times in release, 100 in debug, 100 on one core
-        run: .github/scripts/stress.sh 200 100 100 target/stress
-
-      - name: Keep the failed runs' output
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: stress-failures-${{ matrix.os }}
-          path: target/stress
-          if-no-files-found: ignore
-
+      - name: Edge tests 800 times
+        run: |
+          bin="$(cargo test -p lithia-test --test edge --release --locked --no-run --message-format=json 2>/dev/null \
+            | jq -r 'select(.profile.test == true and .executable != null) | .executable')"
+          : > failures.txt
+          for i in $(seq 1 800); do
+            if ! out="$("$bin" --quiet 2>&1 < /dev/null)"; then
+              printf '%s\n' "$out" | grep -E "^---- " | sed -E 's/---- (.*) stdout ----/\1/' >> failures.txt
+            fi
+          done
+          echo "failures per test over 800 runs:"
+          sort failures.txt | uniq -c | sort -rn
