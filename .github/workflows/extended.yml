@@ -1,0 +1,163 @@
+# SPDX-FileCopyrightText: 2026 lithia Authors
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Slower checks that do not gate a release: Miri, the loom models at bound 4 with and without the
+# fast path, TLC on the TLA+ model of the scheduling protocol, the kept mutations, and stress runs of
+# every test binary on Linux (x86-64 and ARM) and macOS (ARM). They run on every push to `nightly`,
+# weekly, and on pull requests; a nightly tag is promoted to `release` once they pass on it.
+name: extended
+
+on:
+  push:
+    branches: [nightly]
+  pull_request:
+    branches: [nightly, release]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.97.0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      # Isolation off for the real clock and environment; Miri runs far slower than native code.
+      MIRIFLAGS: -Zmiri-disable-isolation
+      LITHIA_TEST_TIMEOUT_MS: "3600000"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust nightly with Miri
+        run: |
+          rustup toolchain install nightly --profile minimal --component miri,rust-src --allow-downgrade
+          rustup default nightly
+          cargo miri setup
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: miri
+
+      - name: Unit tests
+        run: cargo miri test -p lithia --lib --locked
+
+      - name: Validation cases
+        run: cargo miri test -p lithia-validation --locked --test cases --test consistency --test support --test keyed
+
+      - name: Edge-case tests
+        run: cargo miri test -p lithia-test --locked --test edge
+
+  loom-deep:
+    name: loom bound 4 (fast path ${{ matrix.fast_path }})
+    strategy:
+      fail-fast: false
+      matrix:
+        fast_path: ["on", "off"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      RUSTFLAGS: --cfg lithia_loom
+      CARGO_TARGET_DIR: target/loom
+      LOOM_MAX_PREEMPTIONS: "4"
+      LITHIA_LOOM_FAST_PATH: ${{ matrix.fast_path }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: loom-deep
+
+      - name: Loom models at bound 4
+        run: cargo test -p lithia-test --test loom --release --locked -- --nocapture
+
+  stress:
+    name: stress (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: stress
+
+      - name: Every test binary 200 times in release, 100 in debug, 100 on one core
+        run: .github/scripts/stress.sh 200 100 100 target/stress
+
+      - name: Keep the failed runs' output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-failures-${{ matrix.os }}
+          path: target/stress
+          if-no-files-found: ignore
+
+  tla:
+    name: tlc (${{ matrix.model }})
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [MCSupersede, MCSharedTarget, MCWriteBack, MCBinding, MCAsyncChain, MCDiamond]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: TLC
+        working-directory: docs/tla/models
+        run: |
+          curl -sSLf -o "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+          java -XX:+UseParallelGC -Xmx6g -DTLA-Library=.. -cp "$RUNNER_TEMP/tla2tools.jar" tlc2.TLC \
+            -workers auto -metadir "$RUNNER_TEMP/states" ${{ matrix.model }}
+
+  mutations:
+    name: mutations
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mutations
+
+      - name: Each kept mutation fails the test named for it
+        run: python3 .github/scripts/mutations.py
