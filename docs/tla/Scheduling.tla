@@ -67,13 +67,13 @@ VARIABLES
     ent, run, inh, queued, spawned, suppIn,
     epOn, epPar, own, sub, settled, wlog, hooks, scope, nextE,
     undelivered,
-    pc, fr, plan, wop, wst, rl, sp, hk, cl, cd, loc,
+    pc, fr, plan, rl, sp, hk, cl, cd, loc,
     hookFree, anomaly, glitch
 
 timeV == <<clock, version, ranAt>>
 nodeV == <<ent, run, inh, queued>>
 epV == <<epOn, epPar, own, sub, settled, wlog, hooks, scope, nextE>>
-workV == <<fr, plan, wop, wst, rl, sp, hk, cl, cd>>
+workV == <<fr, plan, rl, sp, hk, cl, cd>>
 miscV == <<spawned, suppIn, undelivered, hookFree, anomaly, glitch>>
 vars == <<timeV, nodeV, epV, workV, miscV, pc, loc>>
 
@@ -174,47 +174,17 @@ FrameStep(p) ==
                 /\ sub' = si[1] /\ scope' = si[2]
                 /\ fr' = [fr EXCEPT ![p] = (@ \ {x}) \cup (IF owes THEN {} ELSE {<<c, g, e>> : g \in Children(c)})]
     /\ UNCHANGED <<timeV, run, inh, queued, epOn, epPar, settled, wlog, hooks, nextE>>
-    /\ UNCHANGED <<plan, wop, wst, rl, sp, hk, cl, cd, miscV, pc, loc>>
-
-\* open_write (protocol.rs): a written node owes its children one release per epoch; a write
-\* joins the entry another delivery opened there, else opens one and frames its region.
-OpenStep(p) ==
-    /\ pc[p] \in FramePC
-    /\ \E x \in wop[p] :
-        LET t == x.t  e == x.e IN
-        /\ wop' = [wop EXCEPT ![p] = @ \ {x}]
-        /\ IF e \in DOMAIN ent[t]
-           THEN /\ ent' = [ent EXCEPT ![t][e].ca = Max(@, x.ca), ![t][e].wr = @ \cup x.wr]
-                /\ UNCHANGED <<own, sub, scope, fr, wst>>
-           ELSE LET si == SubInc(sub, scope, e, epPar) IN
-                /\ ent' = [ent EXCEPT ![t] = Put(@, e, [NewEntry(NoWait, x.wr, FALSE) EXCEPT !.ca = x.ca])]
-                /\ own' = [own EXCEPT ![e] = @ + 1]
-                /\ sub' = si[1] /\ scope' = si[2]
-                /\ fr' = [fr EXCEPT ![p] = @ \cup {<<t, c, e>> : c \in Children(t)}]
-                /\ wst' = [wst EXCEPT ![p] = @ \cup {<<t, e>>}]
-    /\ UNCHANGED <<timeV, run, inh, queued, epOn, epPar, settled, wlog, hooks, nextE>>
     /\ UNCHANGED <<plan, rl, sp, hk, cl, cd, miscV, pc, loc>>
 
 \* The whole region is framed: the delivery's own releases start.
 FrameEnd(p) ==
-    /\ pc[p] \in FramePC /\ fr[p] = {} /\ wop[p] = {}
+    /\ pc[p] \in FramePC /\ fr[p] = {}
     /\ rl' = [rl EXCEPT ![p] = @ \cup (UNION {RelTo(x.f, x.e, x.ca, x.wr) : x \in plan[p]})]
     /\ plan' = [plan EXCEPT ![p] = {}]
     /\ pc' = [pc EXCEPT ![p] = CASE pc[p] = "w_frame" -> "w_drain"
                                  [] pc[p] = "t_frame" -> "t_drain"
                                  [] OTHER -> "h_eval"]
-    /\ UNCHANGED <<timeV, nodeV, epV, fr, wop, wst, sp, hk, cl, cd, miscV, loc>>
-
-\* A written node's entry settles once its region is framed, carrying every write that joined it.
-WSettleStep(p) ==
-    /\ pc[p] \in DrainPC
-    /\ \E x \in wst[p] :
-        LET t == x[1]  e == x[2]  w0 == WK(p) IN
-        /\ wst' = [wst EXCEPT ![p] = @ \ {x}]
-        /\ IF e \in DOMAIN ent[t]
-           THEN LET r == Settle(t, e, NS(t), w0) IN SetNS(t, r[1]) /\ SetWK(p, r[2])
-           ELSE UNCHANGED <<nodeV, rl, sp, hk, cl>>
-    /\ UNCHANGED <<timeV, epV, fr, plan, wop, cd, miscV, pc, loc>>
+    /\ UNCHANGED <<timeV, nodeV, epV, fr, sp, hk, cl, cd, miscV, loc>>
 
 \* release_children (protocol.rs), one child under its lock.
 ReleaseStep(p) ==
@@ -230,11 +200,11 @@ ReleaseStep(p) ==
              IN SetNS(c, r[1]) /\ SetWK(p, r[2])
         ELSE /\ rl' = [rl EXCEPT ![p] = @ \ {m}]
              /\ UNCHANGED <<nodeV, sp, hk, cl>>
-    /\ UNCHANGED <<timeV, epV, fr, plan, wop, wst, cd, miscV, pc, loc>>
+    /\ UNCHANGED <<timeV, epV, fr, plan, cd, miscV, pc, loc>>
 
 \* The end of drain_deferred: cut reruns wait for their epoch, spawned tasks become runnable.
 DrainEnd(p) ==
-    /\ pc[p] \in DrainPC /\ rl[p] = {} /\ wst[p] = {}
+    /\ pc[p] \in DrainPC /\ rl[p] = {}
     /\ hooks' = [e \in Epoch |-> hooks[e] \cup {[n |-> h.n, wr |-> h.wr] : h \in {h2 \in hk[p] : h2.e = e}}]
     /\ anomaly' = IF \E h \in hk[p] : own[h.e] = 0 THEN anomaly \cup {"cut rerun waits on a settled epoch"} ELSE anomaly
     /\ spawned' = [n \in Node |-> spawned[n] \/ n \in sp[p]]
@@ -246,7 +216,7 @@ DrainEnd(p) ==
                                  [] pc[p] = "t_fdrain" -> "t_end"
                                  [] OTHER -> "h_close"]
     /\ UNCHANGED <<timeV, nodeV, epOn, epPar, own, sub, settled, wlog, scope, nextE>>
-    /\ UNCHANGED <<fr, plan, wop, wst, rl, cl, cd, suppIn, undelivered, hookFree, glitch, loc>>
+    /\ UNCHANGED <<fr, plan, rl, cl, cd, suppIn, undelivered, hookFree, glitch, loc>>
 
 \* Tokens a close step may close: a writer and a cut rerun close their drain's tokens before
 \* their guard; deliver_into closes its drain's at once; a run task closes the rest at its poll's end.
@@ -293,7 +263,7 @@ CloseStep(p) ==
                                       THEN [loc[q] EXCEPT !.n = L[Ix(q)].n, !.wr = L[Ix(q)].wr,
                                                           !.e = nextE + Ix(q) - 1, !.par = e]
                                       ELSE loc[q]]
-    /\ UNCHANGED <<timeV, nodeV, wlog, fr, plan, wop, wst, rl, sp, hk, spawned, suppIn, undelivered, glitch>>
+    /\ UNCHANGED <<timeV, nodeV, wlog, fr, plan, rl, sp, hk, spawned, suppIn, undelivered, glitch>>
 
 CloseEnd(p) ==
     /\ pc[p] \in ClosePC
@@ -328,10 +298,11 @@ W_Deliver(p) ==
             /\ sub' = [sub EXCEPT ![e] = 1]
             /\ scope' = scope + 1
             /\ cd' = [cd EXCEPT ![p][e] = 1]
-            /\ wop' = [wop EXCEPT ![p] = {[t |-> x[1], e |-> e, ca |-> x[2], wr |-> {}] : x \in loc[p].ws}]
+            /\ fr' = [fr EXCEPT ![p] = UNION {{<<x[1], c, e>> : c \in Children(x[1])} : x \in loc[p].ws}]
+            /\ plan' = [plan EXCEPT ![p] = {[f |-> x[1], e |-> e, ca |-> x[2], wr |-> {}] : x \in loc[p].ws}]
             /\ undelivered' = undelivered \ loc[p].ws
             /\ pc' = [pc EXCEPT ![p] = "w_frame"]
-            /\ UNCHANGED <<timeV, nodeV, epPar, settled, wlog, hooks, fr, plan, wst, rl, sp, hk, cl>>
+            /\ UNCHANGED <<timeV, nodeV, epPar, settled, wlog, hooks, rl, sp, hk, cl>>
             /\ UNCHANGED <<spawned, suppIn, hookFree, anomaly, glitch, loc>>
 
 -----------------------------------------------------------------------------
@@ -415,13 +386,14 @@ T_Rec(p) ==
     /\ LET n == loc[p].n  ws == loc[p].ws  snap == loc[p].snap IN
        IF ws = {}
        THEN /\ pc' = [pc EXCEPT ![p] = "t_mark"]
-            /\ UNCHANGED <<wlog, wop, undelivered>>
+            /\ UNCHANGED <<wlog, fr, plan, undelivered>>
        ELSE /\ wlog' = [e \in Epoch |-> IF \E y \in snap : y[1] = e THEN wlog[e] \cup {<<n, x[1]>> : x \in ws} ELSE wlog[e]]
-            /\ wop' = [wop EXCEPT ![p] = {[t |-> x[1], e |-> y[1], ca |-> x[2], wr |-> y[2] \cup {n}] : x \in ws, y \in snap}]
+            /\ fr' = [fr EXCEPT ![p] = UNION {{<<x[1], c, y[1]>> : c \in Children(x[1])} : x \in ws, y \in snap}]
+            /\ plan' = [plan EXCEPT ![p] = {[f |-> x[1], e |-> y[1], ca |-> x[2], wr |-> y[2] \cup {n}] : x \in ws, y \in snap}]
             /\ undelivered' = undelivered \ ws
             /\ pc' = [pc EXCEPT ![p] = "t_frame"]
     /\ UNCHANGED <<timeV, nodeV, epOn, epPar, own, sub, settled, hooks, scope, nextE>>
-    /\ UNCHANGED <<fr, plan, wst, rl, sp, hk, cl, cd, spawned, suppIn, hookFree, anomaly, glitch, loc>>
+    /\ UNCHANGED <<rl, sp, hk, cl, cd, spawned, suppIn, hookFree, anomaly, glitch, loc>>
 
 \* deliver_children: one child epoch per epoch in `es` (<<epoch, writers>> pairs), carrying the
 \* writes `ws` and, with a stamp, the node's own item.
@@ -435,11 +407,11 @@ ChildDel(p, es, ws, stamp) ==
         si == SubIncAll(sub, scope, [i \in 1..cnt |-> S[i][1]], epPar)
     IN IF (ws = {} /\ stamp = 0) \/ cnt = 0
        THEN /\ pc' = [pc EXCEPT ![p] = "t_mark"]
-            /\ UNCHANGED <<epV, fr, plan, wop, cd, anomaly>>
+            /\ UNCHANGED <<epV, fr, plan, cd, anomaly>>
        ELSE IF nextE + cnt - 1 > MaxEpochs
        THEN /\ anomaly' = anomaly \cup {"out of epochs or cut-rerun slots"}
             /\ pc' = [pc EXCEPT ![p] = "t_mark"]
-            /\ UNCHANGED <<epV, fr, plan, wop, cd>>
+            /\ UNCHANGED <<epV, fr, plan, cd>>
        ELSE /\ nextE' = nextE + cnt
             /\ epOn' = epOn \cup {x \in Epoch : New(x)}
             /\ epPar' = [x \in Epoch |-> IF New(x) THEN Of(x)[1] ELSE epPar[x]]
@@ -448,11 +420,12 @@ ChildDel(p, es, ws, stamp) ==
             /\ scope' = si[2]
             /\ cd' = [cd EXCEPT ![p] = [x \in Epoch |-> IF New(x) THEN @[x] + 1 ELSE @[x]]]
             /\ wlog' = [x \in Epoch |-> IF New(x) THEN {<<n, y[1]>> : y \in ws} ELSE wlog[x]]
-            /\ wop' = [wop EXCEPT ![p] =
-                  {[t |-> y[1], e |-> kids[i], ca |-> y[2], wr |-> S[i][2] \cup {n}] : y \in ws, i \in 1..cnt}]
-            /\ fr' = [fr EXCEPT ![p] = IF stamp > 0 THEN {<<n, c, kids[i]>> : c \in Children(n), i \in 1..cnt} ELSE {}]
+            /\ fr' = [fr EXCEPT ![p] =
+                  (UNION {{<<y[1], c, kids[i]>> : c \in Children(y[1])} : y \in ws, i \in 1..cnt})
+                  \cup (IF stamp > 0 THEN {<<n, c, kids[i]>> : c \in Children(n), i \in 1..cnt} ELSE {})]
             /\ plan' = [plan EXCEPT ![p] =
-                  IF stamp > 0 THEN {[f |-> n, e |-> kids[i], ca |-> stamp, wr |-> S[i][2]] : i \in 1..cnt} ELSE {}]
+                  {[f |-> y[1], e |-> kids[i], ca |-> y[2], wr |-> S[i][2] \cup {n}] : y \in ws, i \in 1..cnt}
+                  \cup (IF stamp > 0 THEN {[f |-> n, e |-> kids[i], ca |-> stamp, wr |-> S[i][2]] : i \in 1..cnt} ELSE {})]
             /\ pc' = [pc EXCEPT ![p] = "t_frame"]
             /\ UNCHANGED <<settled, hooks, anomaly>>
 
@@ -461,7 +434,7 @@ T_Child(p) ==
     /\ pc[p] = "t_child"
     /\ undelivered' = undelivered \ (loc[p].ws \cup {<<loc[p].n, loc[p].own>>})
     /\ ChildDel(p, loc[p].snap, loc[p].ws, loc[p].own)
-    /\ UNCHANGED <<timeV, nodeV, wst, rl, sp, hk, cl, spawned, suppIn, hookFree, glitch, loc>>
+    /\ UNCHANGED <<timeV, nodeV, rl, sp, hk, cl, spawned, suppIn, hookFree, glitch, loc>>
 
 \* after_poll once the batch is delivered: a first item reaches the epochs released already
 \* through child epochs; a superseded run hands its item's stamp to the run replacing it;
@@ -473,7 +446,7 @@ T_Mark(p) ==
        IF first /\ it > 0 /\ loc[p].rel # {} /\ ~loc[p].done
        THEN /\ ChildDel(p, loc[p].rel, {}, it)
             /\ loc' = [loc EXCEPT ![p].done = TRUE]
-            /\ UNCHANGED <<timeV, nodeV, wst, rl, sp, hk, cl, miscV>>
+            /\ UNCHANGED <<timeV, nodeV, rl, sp, hk, cl, miscV>>
        ELSE IF loc[p].cx
        THEN /\ run' = [run EXCEPT ![n].sv = [e \in DOMAIN sv |->
                      IF first /\ it > 0 /\ ~sv[e].rel THEN [sv[e] EXCEPT !.ca = Max(@, it)] ELSE sv[e]]]
@@ -491,7 +464,7 @@ T_Mark(p) ==
                /\ rl' = [rl EXCEPT ![p] = @ \cup (UNION {RelTo(n, e, sv2[e].ca, sv[e].wr) : e \in toRel})]
                /\ cl' = [cl EXCEPT ![p] = [e \in Epoch |-> @[e] + (IF e \in DOMAIN sv THEN sv[e].tok ELSE 0)]]
                /\ pc' = [pc EXCEPT ![p] = "t_mdrain"]
-               /\ UNCHANGED <<timeV, inh, queued, epV, fr, plan, wop, wst, sp, hk, cd, miscV, loc>>
+               /\ UNCHANGED <<timeV, inh, queued, epV, fr, plan, sp, hk, cd, miscV, loc>>
 
 \* poll_run after after_poll: an ended run finalizes; a suspended one finalizes if superseded.
 T_AfterMark(p) ==
@@ -523,7 +496,7 @@ T_Fin(p) ==
                   /\ UNCHANGED inh
     /\ loc' = [loc EXCEPT ![p].live = FALSE]
     /\ pc' = [pc EXCEPT ![p] = "t_fdrain"]
-    /\ UNCHANGED <<timeV, epV, fr, plan, wop, wst, hk, cd, miscV>>
+    /\ UNCHANGED <<timeV, epV, fr, plan, hk, cd, miscV>>
 
 \* A suspended run is woken: superseded, it finalizes; otherwise its body is polled again.
 T_Resume(p) ==
@@ -556,7 +529,7 @@ H_Seed(p) ==
                /\ fr' = [fr EXCEPT ![p] = IF owes THEN {} ELSE {<<n, c, e>> : c \in Children(n)}]
     /\ pc' = [pc EXCEPT ![p] = "h_frame"]
     /\ UNCHANGED <<timeV, run, inh, queued, epOn, epPar, settled, wlog, hooks, nextE>>
-    /\ UNCHANGED <<plan, wop, wst, rl, sp, hk, cl, cd, miscV, loc>>
+    /\ UNCHANGED <<plan, rl, sp, hk, cl, cd, miscV, loc>>
 
 \* evaluate: decide every ready entry not yet runnable.
 H_Eval(p) ==
@@ -565,12 +538,12 @@ H_Eval(p) ==
            r == DecideAll(n, SetToSeq(DOMAIN ent[n]), NS(n), WK(p))
        IN SetNS(n, r[1]) /\ SetWK(p, r[2])
     /\ pc' = [pc EXCEPT ![p] = "h_drain"]
-    /\ UNCHANGED <<timeV, epV, fr, plan, wop, wst, cd, miscV, loc>>
+    /\ UNCHANGED <<timeV, epV, fr, plan, cd, miscV, loc>>
 
 -----------------------------------------------------------------------------
 
 ProcNext(p) ==
-    \/ FrameStep(p) \/ OpenStep(p) \/ FrameEnd(p) \/ ReleaseStep(p) \/ WSettleStep(p) \/ DrainEnd(p) \/ CloseStep(p) \/ CloseEnd(p)
+    \/ FrameStep(p) \/ FrameEnd(p) \/ ReleaseStep(p) \/ DrainEnd(p) \/ CloseStep(p) \/ CloseEnd(p)
     \/ W_Write(p) \/ W_Deliver(p)
     \/ T_Pick(p) \/ T_Start(p) \/ T_Poll(p) \/ T_Snap(p) \/ T_Rec(p) \/ T_Child(p) \/ T_Mark(p)
     \/ T_AfterMark(p) \/ T_Fin(p) \/ T_Resume(p)
@@ -585,7 +558,6 @@ Init ==
     /\ scope = 0 /\ nextE = 1 /\ undelivered = {}
     /\ pc = [p \in Procs |-> CASE p[1] = "W" -> "w_apply" [] p[1] = "T" -> "idle" [] OTHER -> "free"]
     /\ fr = [p \in Procs |-> {}] /\ plan = [p \in Procs |-> {}] /\ rl = [p \in Procs |-> {}]
-    /\ wop = [p \in Procs |-> {}] /\ wst = [p \in Procs |-> {}]
     /\ sp = [p \in Procs |-> {}] /\ hk = [p \in Procs |-> {}]
     /\ cl = [p \in Procs |-> Zero] /\ cd = [p \in Procs |-> Zero]
     /\ loc = [p \in Procs |-> InitLoc(p)]

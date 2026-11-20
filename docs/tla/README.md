@@ -17,8 +17,8 @@ Each process step is one lock section or one atomic operation of `protocol.rs`, 
   value or not, and suspend to poll again), the poll's delivery, releasing or handing over its epochs,
   supersession, protection of a replacement run, and the fast path's task boundaries;
 - cut reruns, started when their epoch settles;
-- framing, releases, deciding and settling entries, written nodes' entries, counted waits, and the epoch
-  tree's token accounting.
+- framing, releases, deciding and settling entries, counted waits, and the epoch tree's token
+  accounting.
 
 A process's pending frame visits and releases are sets, handled in every order: a superset of the
 engine's. Bodies are abstract: a run changes its value or not, and writes any subset of its targets,
@@ -64,13 +64,15 @@ java -XX:+UseParallelGC -DTLA-Library=.. -cp ../../../tla2tools.jar tlc2.TLC -wo
 TLC's first runs found two races in v0.4.0.1, and the loom model written for the first exposed a third.
 Each is reproduced in the engine by a loom model and fixed in v0.4.0.2 (spec §7.2, §7.3, §11.4):
 
-1. Two runs serving one epoch that wrote the same source each released its children. One delivery's
-   release could reach a child while the other still framed the child's region, so a node below waited
-   forever and the epoch never settled. A written node now owes one release per epoch, like any other:
-   a write joins an entry another delivery has open.
+1. Two runs serving one epoch that wrote the same source each released its children, through one wait
+   per child. One delivery's release could reach a child while the other still framed the child's
+   region, so a node below waited forever and the epoch never settled.
 2. A run superseded after publishing its value dropped the value's stamp, so its children never reran
    if the run replacing it computed an equal value. The successor now releases with that stamp.
 3. A parent framed again in an epoch while its earlier release there was still under way gave its
    child two releases for one wait; the one carrying no change could arrive first and settle the child,
-   which then never saw the change. A child now counts the releases each parent owes it, and a release
-   reaches exactly the children subscribed when it was gathered.
+   which then never saw the change.
+
+The fix for the first and third: a child counts the releases each parent owes it, and each release
+reaches exactly the children its framing counted. For the second, the run that takes over a superseded
+run's epochs releases with the stamp of the item it published.

@@ -162,42 +162,48 @@ fn wake_gated(sched: &mut Sched, work: &mut Work) {
 }
 
 /// Opens an entry on every node downstream of `root` in `epoch`, waiting on its parent. `children`
-/// are `root`'s subscribers when its obligation opened; a node framed anew is walked through the
+/// are `root`'s subscribers as its obligation captured them; a node framed anew is walked through the
 /// subscribers it had then, so each wait counted here is one its parent's release will meet.
-pub(crate) fn frame(root: &NodeRef, children: Vec<NodeRef>, epoch: &Arc<Epoch>, work: &mut Work) {
-    let mut stack: Vec<(NodeRef, Vec<NodeRef>)> = vec![(root.clone(), children)];
+pub(crate) fn frame(root: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, work: &mut Work) {
+    let mut stack: Vec<(NodeRef, Vec<NodeRef>)> = Vec::new();
+    frame_level(root, children, epoch, &mut stack);
     while let Some((parent, children)) = stack.pop() {
-        let parent_id: NodeId = parent.header().id;
-        for child in children {
-            let recurse: Option<Vec<NodeRef>> = {
-                let header: &Header = child.header();
-                let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
-                let sched: &mut Sched = &mut guard;
-                match header.parent_index(parent_id) {
-                    None => None,
-                    Some(_) if header.is_ghost() => None,
-                    Some(index) => {
-                        if let Some(entry) = sched.entries.get_mut(&epoch.id) {
-                            entry.waiting.add(index);
-                            entry.runnable = false;
-                            None
-                        } else {
-                            let owes: bool = sched.owes(epoch.id);
-                            epoch.open_token();
-                            let mut entry: Entry = Entry::new(epoch.clone());
-                            entry.waiting.add(index);
-                            sched.entries.insert(epoch.id, entry);
-                            (!owes).then(|| sched.children())
-                        }
+        frame_level(parent.header().id, &children, epoch, &mut stack);
+        work.keep.push(parent);
+        work.keep.extend(children);
+    }
+}
+
+/// Frames `children` of `parent_id` in `epoch`; those it opens an entry on go on `stack` with
+/// their subscribers, unless a run of theirs still owes the epoch.
+fn frame_level(parent_id: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, stack: &mut Vec<(NodeRef, Vec<NodeRef>)>) {
+    for child in children {
+        let recurse: Option<Vec<NodeRef>> = {
+            let header: &Header = child.header();
+            let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+            let sched: &mut Sched = &mut guard;
+            match header.parent_index(parent_id) {
+                None => None,
+                Some(_) if header.is_ghost() => None,
+                Some(index) => {
+                    if let Some(entry) = sched.entries.get_mut(&epoch.id) {
+                        entry.waiting.add(index);
+                        entry.runnable = false;
+                        None
+                    } else {
+                        let owes: bool = sched.owes(epoch.id);
+                        epoch.open_token();
+                        let mut entry: Entry = Entry::new(epoch.clone());
+                        entry.waiting.add(index);
+                        sched.entries.insert(epoch.id, entry);
+                        (!owes).then(|| sched.children())
                     }
                 }
-            };
-            if let Some(grandchildren) = recurse {
-                stack.push((child.clone(), grandchildren));
             }
-            work.keep.push(child);
+        };
+        if let Some(grandchildren) = recurse {
+            stack.push((child.clone(), grandchildren));
         }
-        work.keep.push(parent);
     }
 }
 
@@ -503,7 +509,8 @@ fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, wor
         }
     };
     if let Some(children) = created {
-        frame(node, children, epoch, work);
+        frame(header.id, &children, epoch, work);
+        work.keep.extend(children);
     }
 }
 
@@ -538,27 +545,9 @@ fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet, stamp: u64
         }
     };
     if let Some(children) = created {
-        frame(node, children, epoch, work);
+        frame(header.id, &children, epoch, work);
+        work.keep.extend(children);
     }
-}
-
-/// Opens the entry a write owes `node`'s children in `epoch`, or joins the one open there, which
-/// then carries this write too. Opening it returns the children to frame; the caller settles it.
-fn open_write(node: &NodeRef, epoch: &Arc<Epoch>, stamp: u64, chain: &WriterSet) -> Option<Vec<NodeRef>> {
-    let header: &Header = node.header();
-    let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
-    if let Some(entry) = guard.entries.get_mut(&epoch.id) {
-        entry.carry = entry.carry.max(stamp);
-        entry.writers.union(chain);
-        return None;
-    }
-    epoch.open_token();
-    let mut entry: Entry = Entry::new(epoch.clone());
-    entry.carry = stamp;
-    entry.writers = chain.clone();
-    entry.origin = Some(header.site);
-    guard.entries.insert(epoch.id, entry);
-    Some(guard.children())
 }
 
 /// A node's own item delivered in a later poll: its children run in the child epoch.
@@ -617,11 +606,9 @@ pub(crate) fn deliver_into(
         }
     }
 
-    // Framing: the whole downstream region opens its entries before anything is released.
-    // A written node owes one release per epoch: a write joins one another delivery still frames.
-    let mut opened: Vec<(&NodeRef, &Arc<Epoch>)> = Vec::new();
-    // An own item has no entry: its release reaches the children its framing counted.
-    let mut own_children: Vec<Vec<NodeRef>> = Vec::new();
+    // Framing: the whole downstream region opens its entries before anything is released. Each
+    // written node's release reaches the subscribers its framing counted, in the same order.
+    let mut counted: Vec<Vec<NodeRef>> = Vec::new();
     for (epoch, base) in targets {
         let chain: WriterSet = base.with(writer);
         let seed_writers: WriterSet = base.without(writer);
@@ -636,34 +623,43 @@ pub(crate) fn deliver_into(
             // A reclaimed node reruns on new captures, seeded like a creation.
             seed(node, epoch, &seed_writers, Seed::Rerun, &mut work);
         }
-        for (node, stamp) in &writes {
-            if let Some(children) = open_write(node, epoch, *stamp, &chain) {
-                frame(node, children, epoch, &mut work);
-                opened.push((node, epoch));
-            }
+        for (node, _) in &writes {
+            let children: Vec<NodeRef> = node.header().subscribers();
+            frame(node.header().id, &children, epoch, &mut work);
+            counted.push(children);
         }
         for (node, stamp) in &reflows {
             if node.header().kind == Kind::Derived {
                 seed_reflow(node, epoch, &chain, *stamp, &mut work);
-            } else if let Some(children) = open_write(node, epoch, *stamp, &chain) {
-                frame(node, children, epoch, &mut work);
-                opened.push((node, epoch));
+            } else {
+                let children: Vec<NodeRef> = node.header().subscribers();
+                frame(node.header().id, &children, epoch, &mut work);
+                counted.push(children);
             }
         }
         if let Some(item) = &own {
             let children: Vec<NodeRef> = item.node.header().subscribers();
-            frame(item.node, children.clone(), epoch, &mut work);
-            own_children.push(children);
+            frame(item.node.header().id, &children, epoch, &mut work);
+            counted.push(children);
         }
     }
 
     // Releases.
-    for (node, epoch) in opened {
-        let mut guard: MutexGuard<'_, Sched> = node.header().sched.lock();
-        settle(node, &mut guard, epoch.id, &mut work);
-    }
-    if let Some(item) = &own {
-        for ((epoch, base), children) in targets.iter().zip(own_children) {
+    let mut counted: std::vec::IntoIter<Vec<NodeRef>> = counted.into_iter();
+    for (epoch, base) in targets {
+        let chain: WriterSet = base.with(writer);
+        for (node, stamp) in &writes {
+            let children: Vec<NodeRef> = counted.next().unwrap_or_default();
+            release_children(node, children, epoch, *stamp, &chain, Some(node.header().site), &mut work);
+        }
+        for (node, stamp) in &reflows {
+            if node.header().kind != Kind::Derived {
+                let children: Vec<NodeRef> = counted.next().unwrap_or_default();
+                release_children(node, children, epoch, *stamp, &chain, Some(node.header().site), &mut work);
+            }
+        }
+        if let Some(item) = &own {
+            let children: Vec<NodeRef> = counted.next().unwrap_or_default();
             release_children(item.node, children, epoch, item.stamp, base, None, &mut work);
         }
     }

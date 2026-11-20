@@ -38,22 +38,25 @@ class Mutation:
 
 MUTATIONS: list[Mutation] = [
     Mutation(
-        "W1", "A write joining another's open entry frames the region again", "crates/lithia/src/protocol.rs",
-        "        entry.writers.union(chain);\n        return None;\n",
-        "        entry.writers.union(chain);\n        return Some(guard.children());\n",
+        "W1", "A parent framed again before its release arrived counted once", "crates/lithia/src/protocol.rs",
+        "                        entry.waiting.add(index);\n                        entry.runnable = false;",
+        "                        entry.waiting.ensure(index);\n                        entry.runnable = false;",
         "loom", "two_runs_write_one_source_in_one_epoch",
     ),
     Mutation(
-        "W2", "A parent framed again before its release arrived counted once", "crates/lithia/src/protocol.rs",
-        "                            entry.waiting.add(index);\n                            entry.runnable = false;",
-        "                            entry.waiting.ensure(index);\n                            entry.runnable = false;",
-        "loom", "two_runs_write_one_source_in_one_epoch",
-    ),
-    Mutation(
-        "W3", "A superseded run's published first item not carried to its successor", "crates/lithia/src/protocol.rs",
+        "W2", "A superseded run's published first item not carried to its successor", "crates/lithia/src/protocol.rs",
         "            carry_published(node, shared, own_stamp);\n",
         "            let _ = (node, shared, own_stamp);\n",
         "loom", "a_change_published_before_a_supersede_reaches_the_children",
+    ),
+    Mutation(
+        "W3", "A written node's release reaching its subscribers at release time, not those it framed "
+        "(uncaught: no test creates a node between a write's framing and its release)",
+        "crates/lithia/src/protocol.rs",
+        "        for (node, stamp) in &writes {\n            let children: Vec<NodeRef> = counted.next().unwrap_or_default();\n",
+        "        for (node, stamp) in &writes {\n            let _ = counted.next();\n"
+        "            let children: Vec<NodeRef> = node.header().subscribers();\n",
+        "edge", "", caught=False,
     ),
     Mutation(
         "F1", "The fast path keeping runs of another runtime", "crates/lithia/src/inline.rs",
