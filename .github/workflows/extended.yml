@@ -9,7 +9,7 @@ name: extended
 
 on:
   push:
-    branches: [nightly]
+    branches: [nightly, "verify/**"]
   pull_request:
     branches: [nightly, release]
   schedule:
