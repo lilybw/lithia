@@ -257,10 +257,17 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   nightly.
 - CI: macOS and ARM join the gating test matrix (loom stays on Linux and Windows); a job runs the tests
   on rustc 1.95, the declared minimum, and passes. `extended.yml`, on nightly pushes, weekly and pull
-  requests: Miri, loom at bound 4 both ways, stress runs, TLC per model, the kept mutations. Miri found
-  no undefined behaviour in the unit tests and the 45 validation cases before Case BV, which fails under
-  Miri only because Miri's slowness reorders the race its sleeps stage; the job now lists such failures
-  and fails only on undefined behaviour. Branches named `verify/…` run both workflows on push.
+  requests: Miri, loom at bound 4 both ways, stress runs, TLC per model, the kept mutations. Loom at
+  bound 4 passes all 47 models both ways in CI. Miri found no undefined behaviour in the unit tests and
+  the 44 validation cases before Case BV, which failed under Miri only because its sleeps staged a race
+  Miri's slowness reordered; the job lists such failures and fails only on undefined behaviour. Branches
+  named `verify/…` run both workflows on push.
+- Stress in CI passes on Linux x86-64 and ARM. On macOS runners Case BV and its edge test failed up to
+  one run in ten, in v0.4.0.1 alike: a 40 ms sleep was to keep `slow` running past a write 5 ms later.
+  They now hold `slow` at a gate the test opens, and pass 1 000 runs here on two cores and one. One more
+  test, `defer_outside_lithia_tasks_follows_the_latest_write`, failed 3 times in about 2 200 macOS runs
+  across v0.4.0.1 and this branch (`flush` returned before the deferred function had run) and never in
+  3 000 runs here; it is open.
 - Mutations: `.github/scripts/mutations.py` keeps eight as code (W1–W3, F1–F5) and applies each to a copy
   of the workspace; W3 and F5 are documented as uncaught. The older rows of the spec's table were applied
   by hand and are not kept as code; no cargo-mutants run yet.
