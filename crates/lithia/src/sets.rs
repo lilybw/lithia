@@ -55,20 +55,55 @@ impl WriterSet {
     }
 }
 
-/// Parents not yet released, as a bitmask over the node's parents: the first 64 inline, the rest
-/// in words allocated only for nodes with more parents.
+/// Releases parents still owe, as a bitmask over the node's parents (the first 64 inline, the rest in
+/// words allocated only for nodes with more parents), plus counts past one, which few entries need.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ParentMask {
     low: u64,
     high: Vec<u64>,
+    /// (parent index, releases owed beyond the first): a parent framed again before it released.
+    more: Vec<(usize, u32)>,
 }
 
 impl ParentMask {
     pub(crate) fn new() -> ParentMask {
-        ParentMask { low: 0, high: Vec::new() }
+        ParentMask { low: 0, high: Vec::new(), more: Vec::new() }
     }
 
-    pub(crate) fn set(&mut self, index: usize) {
+    /// Parent `index` owes one more release.
+    pub(crate) fn add(&mut self, index: usize) {
+        if !self.get(index) {
+            self.set(index);
+        } else if let Some((_, count)) = self.more.iter_mut().find(|(at, _): &&mut (usize, u32)| *at == index) {
+            *count += 1;
+        } else {
+            self.more.push((index, 1));
+        }
+    }
+
+    /// Parent `index` owes at least one release.
+    pub(crate) fn ensure(&mut self, index: usize) {
+        if !self.get(index) {
+            self.set(index);
+        }
+    }
+
+    /// Takes one release parent `index` owes; false if it owes none.
+    pub(crate) fn take(&mut self, index: usize) -> bool {
+        if !self.get(index) {
+            return false;
+        }
+        match self.more.iter().position(|(at, _): &(usize, u32)| *at == index) {
+            Some(at) if self.more[at].1 > 1 => self.more[at].1 -= 1,
+            Some(at) => {
+                self.more.swap_remove(at);
+            }
+            None => self.clear(index),
+        }
+        true
+    }
+
+    fn set(&mut self, index: usize) {
         if index < 64 {
             self.low |= 1u64 << index;
             return;
@@ -80,7 +115,7 @@ impl ParentMask {
         self.high[word] |= 1u64 << (index % 64);
     }
 
-    pub(crate) fn clear(&mut self, index: usize) {
+    fn clear(&mut self, index: usize) {
         if index < 64 {
             self.low &= !(1u64 << index);
         } else if let Some(bits) = self.high.get_mut(index / 64 - 1) {
@@ -148,5 +183,19 @@ mod tests {
         let mut fresh: ParentMask = ParentMask::new();
         fresh.set(5);
         assert!(fresh.high.is_empty());
+    }
+
+    #[test]
+    fn mask_counts_repeated_releases() {
+        let mut mask: ParentMask = ParentMask::new();
+        assert!(!mask.take(3));
+        mask.add(3);
+        mask.add(3);
+        mask.add(70);
+        mask.ensure(70);
+        mask.add(3);
+        assert!(mask.take(3) && mask.take(3) && mask.get(3) && mask.more.is_empty());
+        assert!(mask.take(3) && !mask.get(3) && !mask.take(3));
+        assert!(mask.take(70) && mask.is_empty() && !mask.take(70));
     }
 }

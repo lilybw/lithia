@@ -268,6 +268,19 @@ impl Sched {
         self.inherited.iter_mut().find(|s: &&mut Served| s.epoch.id == epoch && !s.released)
     }
 
+    /// The live subscribers in id order, pruning freed ones; the caller drops them after unlocking.
+    pub(crate) fn children(&mut self) -> Vec<NodeRef> {
+        let mut out: Vec<NodeRef> = Vec::with_capacity(self.subscribers.len());
+        self.subscribers.retain(|_: &NodeId, weak: &mut WeakNodeRef| match weak.upgrade() {
+            Some(node) => {
+                out.push(node);
+                true
+            }
+            None => false,
+        });
+        out
+    }
+
     /// Whether the node still owes its children a release for `epoch` through a run.
     pub(crate) fn owes(&mut self, epoch: EpochId) -> bool {
         self.owed_mut(epoch).is_some()
@@ -518,17 +531,8 @@ impl Header {
 
     /// Strong references to the live children, pruning freed ones.
     pub(crate) fn subscribers(&self) -> Vec<NodeRef> {
-        let mut guard: MutexGuard<'_, Sched> = self.sched.lock();
-        let mut out: Vec<NodeRef> = Vec::with_capacity(guard.subscribers.len());
-        guard.subscribers.retain(|_: &NodeId, weak: &mut WeakNodeRef| match weak.upgrade() {
-            Some(node) => {
-                out.push(node);
-                true
-            }
-            None => false,
-        });
-        drop(guard);
-        out
+        let children: Vec<NodeRef> = self.sched.lock().children();
+        children
     }
 
     /// Removes a freed or disposed child from the subscriber list; the last one leaving may leave

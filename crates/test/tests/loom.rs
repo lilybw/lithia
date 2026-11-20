@@ -500,6 +500,56 @@ fn an_inline_chain_races_a_second_write() {
     });
 }
 
+/// Two runs serving one epoch write the same source, on two threads: one's release may reach the
+/// source's child while the other still frames the child's region, so the region waits on one
+/// release per write, and every node below settles (found by the TLA+ model, `docs/tla`).
+#[test]
+fn two_runs_write_one_source_in_one_epoch() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (a, f): (SourceNode<i32>, DerivedNode<i32>) = scope.batch(|| {
+                let a: SourceNode<i32> = effect!(0);
+                let t: SourceNode<i32> = effect!(0);
+                let _b: DerivedNode<()> = effect!(|a| t.set(*a.get()));
+                let _c: DerivedNode<()> = effect!(|a| t.set(*a.get()));
+                let d: DerivedNode<i32> = effect!(|t| *t.get() + 1);
+                let f: DerivedNode<i32> = effect!(|d| *d.get() * 10);
+                (a, f)
+            });
+            scope.flush();
+            scope.batch(|| a.set(1));
+            scope.flush();
+            assert_eq!(*f.get(), 20);
+            assert!(model::quiet(&a));
+        });
+    });
+}
+
+/// A run publishes its value and is superseded before its poll's batch is delivered; the run that
+/// replaces it computes an equal value. The published change still reaches the children
+/// (found by the TLA+ model, `docs/tla`).
+#[test]
+fn a_change_published_before_a_supersede_reaches_the_children() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let (a, c): (SourceNode<i32>, DerivedNode<i32>) = scope.batch(|| {
+                let a: SourceNode<i32> = effect!(0);
+                let b: DerivedNode<i32> = effect!(|a| *a.get() % 2, equals = lithia::eq);
+                let c: DerivedNode<i32> = effect!(|b| *b.get() + 100);
+                (a, c)
+            });
+            scope.flush();
+            scope.batch(|| a.set(1));
+            scope.batch(|| a.set(3));
+            scope.flush();
+            assert_eq!(*c.get(), 101);
+            assert!(model::quiet(&a));
+        });
+    });
+}
+
 /// Disposing a node while its run may be in flight settles the scope and leaves a ghost.
 #[test]
 fn dispose_during_a_run_settles() {
