@@ -34,8 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
-      # Isolation off for the real clock and environment; Miri runs far slower than native code.
-      MIRIFLAGS: -Zmiri-disable-isolation
+      # Isolation off for the real clock and environment. tokio's blocking pool and the runtimes lithia
+      # starts for detached work outlive a test, so Miri's check for leaks and live threads is off.
+      MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
       LITHIA_TEST_TIMEOUT_MS: "3600000"
     steps:
       - uses: actions/checkout@v5
