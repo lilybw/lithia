@@ -72,7 +72,7 @@ impl Lease {
             let header: &crate::node::Header = node.header();
             // Anchors first, so the node never looks unanchored in between.
             if anchoring {
-                crate::support::add_anchors(node.clone(), count);
+                crate::support::add_anchors(header, count, || node.clone());
             }
             if header.captured.fetch_sub(count, Ordering::SeqCst) == count {
                 crate::support::check_unread(header);

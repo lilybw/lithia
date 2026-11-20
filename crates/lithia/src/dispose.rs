@@ -150,7 +150,8 @@ fn teardown(node: &NodeRef) -> Vec<NodeRef> {
     }
     node.release_payload();
     // Handles its block moved out count before disposal recomputes support.
-    if let Some(lease) = header.lease.swap(None) {
+    let lease: Option<Arc<crate::capture::Lease>> = header.lease.lock().take();
+    if let Some(lease) = lease {
         lease.end();
     }
     crate::support::release_generation(generation);

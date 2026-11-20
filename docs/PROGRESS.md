@@ -1,7 +1,7 @@
 # lithia implementation progress
 
-Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.3.1.md` (PDF alongside), which adds keyed
-nodes to v0.3.0's lifetime rule; v0.3.0, v0.2.5 and v0.2.4 are kept for reference.
+Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.4.0.md` (PDF alongside), which empties
+v0.3.1's section 14; v0.3.1, v0.3.0, v0.2.5 and v0.2.4 are kept for reference.
 
 ## Layout
 
@@ -9,16 +9,18 @@ nodes to v0.3.0's lifetime rule; v0.3.0, v0.2.5 and v0.2.4 are kept for referenc
 |---|---|---|
 | `crates/lithia` | `lithia` | Engine and public API: nodes, handles, epochs, scheduling protocol, drops, diagnostics; re-exports the macros; `lithia::test` utilities |
 | `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
-| `crates/validation` | `lithia-validation` | Spec §13 cases, verbatim (`tests/cases.rs` A–AG, `tests/support.rs` AI–BC, `tests/keyed.rs` BD–BK, `tests/compile.rs` AH) |
+| `crates/validation` | `lithia-validation` | Spec §13 cases, verbatim (`tests/cases.rs` A–AG, `tests/support.rs` AI–BC, `tests/keyed.rs` BD–BK, `tests/consistency.rs` BL–BW, `tests/compile.rs` AH) |
 | `crates/test` | `lithia-test` | Edge-case tests: `tests/edge/` (one module per area, one binary), `tests/deep_chain.rs`, `tests/loom.rs` |
 | `crates/bench` | `lithia-bench` | Spec §15 benchmarks |
 
 ## Validation cases (spec §13)
 
-All of A–BK pass (63 cases). Stress for v0.3.0: every test binary (cases, both `support` files, and the
+All of A–BW pass (75 cases). Stress for v0.3.0: every test binary (cases, both `support` files, and the
 seven other `lithia-test` files) 400/400 release runs, 200/200 debug runs, 250/250 single-core runs.
 Stress for v0.3.1: all 12 binaries, both `keyed` files included, 100/100 release, 50/50 debug and 60/60
 single-core runs; 155 workspace tests; 35 loom models at bounds 3 and 4.
+v0.4.0: 44 loom models at bound 3 (~620 000 interleavings, ~72 s) and bound 4 (~9.5 million, ~17 min); the
+new cases 25/25 runs and 10/10 single-core, the edge suite 15/15 and 5/5 single-core.
 
 | Case | Status | Case | Status |
 |---|---|---|---|
@@ -51,6 +53,12 @@ Cases BD–BK (v0.3.1, `tests/keyed.rs`): BD rows keep their nodes, BE keyed sou
 parents make a new node, BG duplicate keys, BH keyed async nodes, BI a superseded creator hands its keyed nodes on,
 BJ a key outside a body, BK captures without `PartialEq`: all pass.
 
+Cases BL–BW (v0.4.0, `tests/consistency.rs`): BL captures by reference, BM `ALWAYS_PROPAGATE` without
+`equals`, BN reclaim shape and comparator, BO new children of ghosts, BP a handle moved out of a block, BQ an
+anchor returns, BR creator order, BS progress under fast input, BT fragility recovers by status, BU a cut
+writer reruns, BV `WHOLE_EPOCHS`, BW `settled` follows writes: all pass. Case S is rewritten (a loop through
+creation is cut); Cases T and BG are extended.
+
 ## Spec sections
 
 | Section | Status | Notes |
@@ -66,7 +74,7 @@ BJ a key outside a body, BK captures without `PartialEq`: all pass.
 | §9 Failure, fragility | done | |
 | §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/support.rs`, `capture.rs`); v0.3.1: keyed nodes, holdover (`keyed.rs`, `create.rs`) |
 | §11 Concurrency, scopes | done | fast path (§11.2) left out, as v0 allows |
-| §11.4 step 8 loom | done | 35 models, bound 3 by default; see "Model checking" below |
+| §11.4 step 8 loom | done | 44 models, bound 3 by default; see "Model checking" below |
 | §11.4 step 8 TLA+ | pending | open question in §17 |
 | §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 1000/s); first-run, growth and unread-memo warnings |
 | §15 Benchmarks | done | results and observations in `docs/BENCHMARKS.md` |
@@ -92,6 +100,12 @@ BJ a key outside a body, BK captures without `PartialEq`: all pass.
   through handleless nodes walks to the top of the chain while any scoped node is alive, which makes
   building it beside other tests' scoped nodes quadratic (see Next steps).
 
+- v0.4.0 (spec §14 emptied; `docs/design/v0.4.0-consistency.md` has the plan and what the implementation
+  settled): captures by reference in every form; leases for handles a `move` block takes over; reclaim by
+  shape, comparator adopted; unread memos checked when a reader goes; `settled` follows writes; children of
+  ghosts; re-holding on anchor return; creator order at run start; protected replacement runs; fragility
+  recovery by status; lineages in writer sets; cut writers rerun; `WHOLE_EPOCHS`.
+
 ## Model checking (loom)
 
 - `--cfg lithia_loom` (not `--cfg loom`, which tokio reacts to) swaps the engine's mutexes, atomics,
@@ -100,9 +114,12 @@ BJ a key outside a body, BK captures without `PartialEq`: all pass.
 - Models live in `crates/test/tests/loom.rs`: Cases A, B, C, D, E, G, H, J, M, N, P, R, T, V, W, X,
   plus concurrent outside writes, a write during a run, disposal during a run, and a generator; and since
   v0.3.0 twelve lifetime models (spec §11.4), which assert on `ModelScope::live()`; v0.3.1 adds three for keyed
-  nodes (a reclaim racing a last-handle drop, a disposal during a reclaim, a supersede handing keyed nodes on).
-- Default preemption bound 3: all 35 explore ~340 000 interleavings in ~31 s on two test threads. Bound 4:
-  ~4.7 million in ~7 min, all pass.
+  nodes (a reclaim racing a last-handle drop, a disposal during a reclaim, a supersede handing keyed nodes on);
+  v0.4.0 adds nine (spec §11.4), two of which found races the release fixes.
+- Default preemption bound 3: all 44 explore ~620 000 interleavings in ~72 s on two test threads. Bound 4:
+  ~9.5 million in ~17 min, all pass.
+- A model must not hold a std lock across anything loom can switch on: a body that locks a std `Mutex` and
+  then reads a node blocks the scheduler's only running thread. Read first, then lock.
 - Sweeps use ordered maps and loom builds always take the scoped path, so models stay deterministic when
   several run in one process.
 - Mutation checks for v0.3.1 keyed nodes: 10 mutations; nine are caught (spec §11.4 table), and leaving the
@@ -149,6 +166,16 @@ BJ a key outside a body, BK captures without `PartialEq`: all pass.
   a plain source node is written. Different write targets give a new node. Options stay as first created.
 - Implemented on branch `v0.3.1-keyed`, then written into the spec, which says what the implementation settled.
 - Parked: option C, a keyed collection node (spec §16).
+
+## Spec v0.4.0 (section 14 emptied)
+
+- Every v0.3.1 section 14 entry was checked, still held, and is now fixed or a rule where it applies:
+  async runs make progress; captures are references in every form; all three cycle and epoch entries are
+  fixed; by-design entries became rules (Lily's decisions, 2026-11-18). lithia is the general-purpose core
+  of a family (LiSP, lithia-gui; project doc `ECOSYSTEM.md`), so restrictions belong in variants.
+- Implemented in stages on branch `v0.4.0` (macro and diagnostics; lifetimes; protocol), each tested,
+  model-checked and mutation-checked before the next, then written into the spec, whose changes table says
+  where each entry went and what settled it. Loom found two races on the way, both fixed.
 
 ## Design migration to v0.3.0 (ownership)
 
@@ -232,7 +259,7 @@ Five passes from `TODO.md`, run in series:
 2. A TLA+ specification of the protocol and of lifetimes (§11.4 step 8, §16, §17), which the spec asks for before shipping.
 3. The inline fast path (§11.2), once you decide it belongs in v0 (see `docs/BENCHMARKS.md`).
 4. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
-5. Decide the keyed open questions (§17): options of a later creation, and whether duplicate keys warn.
+5. Decide the v0.4.0 open questions (§17): a bound for `WHOLE_EPOCHS`, and whether lineages should be interned.
 6. Make `blocked()` in `support.rs` cheap while scoped nodes exist: today `ANY_SCOPED` stays set once any
    node is scoped, and every sweep then walks handleless parents to an anchor, so a deep handleless chain
    costs quadratic time to build. A count of live scoped nodes, or a forward walk from them, would fix it.

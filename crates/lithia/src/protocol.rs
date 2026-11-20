@@ -132,9 +132,11 @@ fn queue_if_runnable(node: &NodeRef) -> bool {
 
 /// Starts a gated node again, if it has work left (spec §7.2, Creator order).
 pub(crate) fn resume(node: &NodeRef) {
-    let mut work: Work = Work::default();
-    work.resumes.push(Arc::downgrade(node));
-    drain(work);
+    if queue_if_runnable(node) {
+        let mut work: Work = Work::default();
+        work.spawns.push(node.clone());
+        drain(work);
+    }
 }
 
 /// Hands the nodes this creator gated to `work`, to start again; they gate again if it still decides them.
@@ -886,7 +888,9 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 };
                 shared.set_id(id);
                 shared.set_scope(served[0].epoch.scope.clone());
-                shared.set_suppress(std::mem::take(&mut sched.suppress));
+                if !sched.suppress.is_empty() {
+                    shared.set_suppress(std::mem::take(&mut sched.suppress));
+                }
                 header.set_bits(phase::PENDING);
                 header.clear_bits(phase::FAILED);
                 header.failure.store(None);

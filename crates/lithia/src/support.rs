@@ -71,11 +71,11 @@ pub(crate) fn is_anchor(header: &Header) -> bool {
 
 /// Counts `count` more anchors on `node`; one that was not an anchor holds again what support let
 /// go of downstream and that still lives, as far as its support reaches (spec §10.1).
-pub(crate) fn add_anchors(node: NodeRef, count: usize) {
-    if node.header().anchors.fetch_add(count, Ordering::SeqCst) != 0 || node.header().is_ghost() {
+pub(crate) fn add_anchors(header: &Header, count: usize, node: impl FnOnce() -> NodeRef) {
+    if header.anchors.fetch_add(count, Ordering::SeqCst) != 0 || header.is_ghost() {
         return;
     }
-    let mut node: Option<NodeRef> = Some(node);
+    let mut node: Option<NodeRef> = Some(node());
     let now: Option<bool> = OP
         .try_with(|op: &RefCell<Op>| {
             let mut op = op.borrow_mut();

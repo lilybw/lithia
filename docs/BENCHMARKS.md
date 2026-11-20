@@ -44,3 +44,20 @@ show orders of magnitude and relative costs only; re-run on your own machine bef
 - **v0.3.1 against v0.3.0** (2026-11-17, ten alternated runs each): every median of v0.3.1's common
   benchmarks falls within v0.3.0's range, so unkeyed nodes pay nothing for keys. That container ran faster
   than the one behind the table above, so compare within a session only.
+
+## v0.4.0 against v0.3.1 (2026-11-20)
+
+Runs alternated in the same 2-core container: two of v0.3.1 (`release`, 38899ee), two of v0.4.0 as first
+built, and three after the fixes below.
+
+- Every benchmark falls within v0.3.1's range, keyed rows included (70–90 µs per unchanged list rerun,
+  against 72–90 µs), except two:
+  - Last-handle drops on a supported node: 605–641 ns, against 499–528 ns. The temporary anchor's arrival
+    walks downstream to re-hold what support let go of (spec §10.1), which stops at once at a held node.
+    Still within the 1 µs budget.
+  - Writer sets in meshes run more, since cut writers rerun once their epoch settles (spec §7.4):
+    n=2: 3 runs; 3: 5; 4: 7; 6: 11; 8: 15–22 (v0.3.1: 2, 3, 4–5, 7–10, 9–16), all far below n².
+- Found by the first v0.4.0 runs and removed: `arc_swap` cells in every handle (lease) and node (lease,
+  comparator), whose drop scans every thread's debt slots, so a handle's clone and drop took 1.2 µs (now
+  20 ns, as before); a full delivery for every reclaimed keyed node (keyed rows took 350–440 µs); an `Arc`
+  clone on every anchoring handle (handles took 32–37 ns).

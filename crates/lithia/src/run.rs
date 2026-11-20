@@ -37,7 +37,7 @@ pub(crate) struct RunShared {
     /// Creations so far at each site, by site address: an unkeyed node's place in its lineage.
     creations: Mutex<Vec<(usize, u64)>>,
     /// Nodes this run's writes and reflows leave alone: a cut writer's rerun (spec §7.4).
-    suppress: Mutex<Vec<NodeId>>,
+    suppress: std::sync::OnceLock<Vec<NodeId>>,
 }
 
 impl RunShared {
@@ -54,17 +54,18 @@ impl RunShared {
             yielded: AtomicBool::new(false),
             stamp: AtomicU64::new(0),
             creations: Mutex::new(Vec::new()),
-            suppress: Mutex::new(Vec::new()),
+            suppress: std::sync::OnceLock::new(),
         }
     }
 
+    /// Sets, once, the nodes this run leaves alone.
     pub(crate) fn set_suppress(&self, nodes: Vec<NodeId>) {
-        *self.suppress.lock() = nodes;
+        let _ = self.suppress.set(nodes);
     }
 
     /// Whether this run leaves writes to `node` alone.
     pub(crate) fn suppresses(&self, node: NodeId) -> bool {
-        self.suppress.lock().contains(&node)
+        self.suppress.get().is_some_and(|nodes: &Vec<NodeId>| nodes.contains(&node))
     }
 
     /// The place of the next node this run creates at `site` among its creations there.

@@ -137,7 +137,7 @@ pub(crate) struct Header {
     /// reclaimed until its refresh is done (spec §7.2, Creator order).
     pub(crate) undecided: AtomicBool,
     /// The lease of an async source block's `move` captures, ended once the block stops for good.
-    pub(crate) lease: ArcCell<crate::capture::Lease>,
+    pub(crate) lease: Mutex<Option<Arc<crate::capture::Lease>>>,
 }
 
 /// Scheduler state of one node, guarded by its scheduling lock.
@@ -446,21 +446,21 @@ pub(crate) struct Node<K: NodeValue> {
     /// Empty for source nodes; taken on disposal.
     pub(crate) body: Mutex<Option<Body<K>>>,
     /// Empty without `equals`; a reclaiming creation replaces it (spec §10.1, Keyed nodes).
-    pub(crate) equals: Option<ArcCell<Equals<K>>>,
+    pub(crate) equals: Option<Mutex<Equals<K>>>,
 }
 
 impl<K: NodeValue> Node<K> {
     /// The current comparator, if the node has one.
-    pub(crate) fn comparator(&self) -> Option<Arc<Equals<K>>> {
-        self.equals.as_ref().and_then(ArcCell::load_full)
+    pub(crate) fn comparator(&self) -> Option<Equals<K>> {
+        self.equals.as_ref().map(|cell: &Mutex<Equals<K>>| cell.lock().clone())
     }
 
     /// Takes a reclaiming creation's comparator; returns the one it replaced.
-    pub(crate) fn adopt_equals(&self, equals: Option<Equals<K>>) -> Option<Arc<Equals<K>>> {
+    pub(crate) fn adopt_equals(&self, equals: Option<Equals<K>>) -> Option<Equals<K>> {
         let (Some(cell), Some(equals)) = (&self.equals, equals) else {
             return None;
         };
-        cell.swap(Some(Arc::new(equals)))
+        Some(std::mem::replace(&mut *cell.lock(), equals))
     }
 }
 
@@ -572,7 +572,8 @@ impl<K: NodeValue> Drop for Node<K> {
             crate::drops::drop_later(body, runtime.as_ref());
         }
         // Handles its block moved out count before its targets lose its support.
-        if let Some(lease) = self.header.lease.swap(None) {
+        let lease: Option<Arc<crate::capture::Lease>> = self.header.lease.lock().take();
+        if let Some(lease) = lease {
             lease.end();
         }
         // A freed writer no longer supports its targets; its generation loses its creation edges.

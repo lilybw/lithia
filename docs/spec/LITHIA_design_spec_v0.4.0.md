@@ -1,6 +1,6 @@
 # LITHIA design spec v0.4.0
 
-2026-11-18 · Lily
+2026-11-20 · Lily
 
 ## Changes since v0.3.1
 
@@ -636,7 +636,7 @@ struct Node<K> {
     header: Header,
     value: ArcCell<K>,                 // lock-free reads; emptied only by disposal under ON_GHOST_CAUSE_FAILURE
     body: Mutex<Option<Body<K>>>,      // empty for source nodes; taken on disposal
-    equals: Option<ArcCell<Equals<K>>>, // a reclaiming creation replaces the comparator (10.1, Keyed nodes)
+    equals: Option<Mutex<Equals<K>>>,  // a reclaiming creation replaces the comparator (10.1, Keyed nodes)
 }
 
 struct Header {
@@ -675,7 +675,7 @@ struct Header {
     block_run: AtomicU64,              // the run id an async source block's current block runs under (8)
     supportable: bool,                 // support holds it while an anchor reaches it: a top-level node with parents
     undecided: AtomicBool,             // its creator has yet to finish deciding it: being let go of, in the holdover, or being reclaimed (7.2)
-    lease: ArcCell<Lease>,             // an async source block's lease on the handles it moved in (4.2)
+    lease: Mutex<Option<Arc<Lease>>>,  // an async source block's lease on the handles it moved in (4.2)
 }
 
 /// Scheduler state of one node, guarded by its scheduling lock.
@@ -869,7 +869,7 @@ One obligation per epoch. A node owes its children at most one release per epoch
 
 Every run carries a writer set: the nodes that wrote to another node, or called `reflow`, on the causal chains that led to it. Producing its own items never makes a node a writer. A write from body W to a source node T is always applied, and T's subscribers are routed against C, that writer set plus W itself (diagram below).
 
-![write routing · 2 decisions, 4 outcomes](write-routing.png)
+![write routing · 2 decisions, 4 outcomes](write-routing-v0.4.0.png)
 
 A subscriber already in C settles unchanged; any other subscriber runs, joins the entry it already holds in that epoch, or supersedes its run in flight.
 
@@ -3875,6 +3875,13 @@ Keyed rows, added by v0.3.1, from ten runs on 2026-11-17 alternated with ten run
 - A reordered list costs no more than an unchanged one, since a key follows its row wherever it moves.
 - When every row changed, each keyed row is refreshed and reruns in place, which still costs a little less than a new node: about 23 µs against 28 µs per row.
 - Nodes created without a key pay nothing measurable: in the same session, every median of v0.3.1's common benchmarks falls within the range of v0.3.0's ten runs. Both ran faster than the figures above, on a different container, so only the comparison between them carries over.
+
+v0.4.0 against v0.3.1, from runs alternated on 2026-11-20 in the same kind of container (two of each, and three of v0.4.0 after the fixes below):
+
+- Every benchmark falls within the range of v0.3.1's runs, keyed rows included (70–90 µs per unchanged list rerun, against 72–90 µs), except two.
+- A last-handle drop on a supported node costs 605–641 ns, against 499–528 ns: the temporary anchor's arrival now walks downstream to hold again what support let go of (10.1), which ends at once on a node support holds. It stays within the 1 µs budget.
+- Meshes run more, since every cut writer reruns once its epoch settles (7.4): n = 2: 3 runs; 3: 5; 4: 7; 6: 11; 8: 15–22, all still far below n².
+- The first v0.4.0 runs found three costs the implementation then removed: a lock-free swap cell in every handle, whose drop scans every thread's slots (a handle's clone and drop took 1.2 µs, now 20 ns, as in v0.3.1); a full delivery for each reclaimed keyed node (keyed rows took 350–440 µs); and an `Arc` clone on every anchoring handle.
 
 ## 16. Roadmap
 

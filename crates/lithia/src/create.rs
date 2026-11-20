@@ -84,7 +84,7 @@ fn refresh<K: NodeValue>(
     lease: Option<Arc<Lease>>,
 ) {
     let header: &Header = &node.header;
-    crate::support::add_anchors(node.clone(), 1);
+    crate::support::add_anchors(header, 1, || node.clone());
     let runtime: Option<Handle> = header.runtime.clone();
     if let Some(old) = node.adopt_equals(equals) {
         crate::drops::drop_later(old, runtime.as_ref());
@@ -108,7 +108,8 @@ fn refresh<K: NodeValue>(
     if header.kind == Kind::AsyncSource {
         protocol::kill_run(&erased);
         // The old block stops: what it moved out counts from now on.
-        if let Some(old) = header.lease.swap(lease) {
+        let old: Option<Arc<Lease>> = std::mem::replace(&mut *header.lease.lock(), lease);
+        if let Some(old) = old {
             old.end();
         }
     }
@@ -248,11 +249,11 @@ fn new_node<K: NodeValue>(
             block_run: AtomicU64::new(if kind == Kind::AsyncSource { 1 } else { 0 }),
             supportable,
             undecided: AtomicBool::new(false),
-            lease: ArcCell::new(if kind == Kind::AsyncSource { captured.2.clone() } else { None }),
+            lease: Mutex::new(if kind == Kind::AsyncSource { captured.2.clone() } else { None }),
         },
         value: ArcCell::new(Some(Arc::new(value))),
         body: Mutex::new(body),
-        equals: options.equals.map(|equals: Equals<K>| ArcCell::new(Some(Arc::new(equals)))),
+        equals: options.equals.map(Mutex::new),
     });
     let erased: NodeRef = node.clone();
     // A new child of ghosts is linked as disposal leaves a surviving one; with only ghosts for
