@@ -20,7 +20,7 @@ and [`known_bugs.md`](known_bugs.md) what they have not ruled out.
 ## Random differential test
 
 `random_graphs_settle_on_their_definition_and_free_everything` builds random graphs of sync, async,
-`WHOLE_EPOCHS`, creator and keyed-creator nodes over a few sources, writes from three lithia tasks at
+`WHOLE_EPOCHS`, creator, keyed-creator and writer nodes over a few sources, writes from three lithia tasks at
 once, and checks once everything has settled that every node's last run, and every creator's child,
 computed its definition from the current values. It then drops the handles of nodes nothing depends on,
 checks that support keeps them running, and checks at the end that every node and body is freed. 24

@@ -24,7 +24,7 @@ async fn main() {
 
 - **One primitive.** `effect!(value)` makes a source node you write to. `effect!(|a, b| …)` makes a derived
   node that reruns when `a` or `b` changes; one that returns `()` is an effect.
-- **Built for threads.** Handles are `Send + Sync` and every run is a tokio task. A batch of writes
+- **Built for threads.** Handles are `Send + Sync`, and runs execute on tokio's worker threads. A batch of writes
   propagates without glitches: a node that depends on it along two paths runs once, with both updated.
   Batches written at the same time may meet at such a node, unless it asks to wait (`WHOLE_EPOCHS`).
 - **Async and generators.** Bodies can `.await`, and can `yield` several values in turn. Pending and failed
@@ -56,9 +56,11 @@ packages, the docs and the spec attached, and the [docs site](https://lilybw.com
 settle. Each release's docs stay online: add `?v=0.3.1.4` to
 any page under `api/` or `spec/` to read that version.
 
-The [design spec](https://lilybw.com/lithia/spec/) is the full reference for how lithia behaves and why;
-[`docs/PROGRESS.md`](docs/PROGRESS.md) tracks the implementation, and [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
-its measurements.
+The [design spec](https://lilybw.com/lithia/spec/) is the full reference for how lithia behaves and why.
+[`CHANGELOG.md`](CHANGELOG.md) lists what changed in each version, [`docs/known_bugs.md`](docs/known_bugs.md)
+what is known to be wrong or missing, [`docs/VERIFICATION.md`](docs/VERIFICATION.md) how lithia is checked,
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) its measurements, and [`docs/PROGRESS.md`](docs/PROGRESS.md) the
+implementation's progress.
 
 ## Contributing
 

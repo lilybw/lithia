@@ -298,7 +298,7 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   `docs/tla/tlc.sh` pins the TLA+ tools at v1.7.4 by hash. `ci.yml` runs TLC on eight models on each
   push and pull request; `extended.yml` runs `MCSharedTarget` and `MCDiamond`.
 - A random differential test (`crates/test/tests/edge/random.rs`): random graphs of sync, async,
-  `WHOLE_EPOCHS`, creator and keyed-creator nodes under writes from three lithia tasks, checked against
+  `WHOLE_EPOCHS`, creator, keyed-creator and writer nodes under writes from three lithia tasks, checked against
   their definition once settled, with handles dropped from leaves and bodies counted to zero at the end.
   3 000 graphs in release, 1 000 in debug and 2 000 on one core pass.
 - Benchmarks, A/B of the lifetime rows against v0.4.0.2 over three alternating runs: within noise.

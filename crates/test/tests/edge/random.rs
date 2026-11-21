@@ -67,6 +67,8 @@ enum Kind {
     Creator {
         keyed: bool,
     },
+    /// Writes what it computes into a source node of its own, which a reader watches.
+    Writer,
 }
 
 impl Kind {
@@ -77,6 +79,7 @@ impl Kind {
             Kind::Whole => "whole-epochs",
             Kind::Creator { keyed: false } => "creator",
             Kind::Creator { keyed: true } => "keyed creator",
+            Kind::Writer => "writer",
         }
     }
 }
@@ -88,6 +91,8 @@ struct Derived {
     slot: Arc<AtomicU64>,
     /// A creator's child's last value.
     child: Option<Arc<AtomicU64>>,
+    /// A writer's target, and the last value of the reader watching it.
+    out: Option<(SourceNode<u64>, Arc<AtomicU64>)>,
     handle: Option<DerivedNode<u64>>,
 }
 
@@ -113,9 +118,10 @@ impl Graph {
         }
     }
 
-    /// The bodies alive once dropped nodes' bodies are gone: one per derived node and per child.
+    /// The bodies alive once dropped nodes' bodies are gone: one per derived node, child and reader.
     fn bodies(&self) -> usize {
-        self.derived.len() + self.derived.iter().filter(|n: &&Derived| n.child.is_some()).count()
+        let extra: usize = self.derived.iter().filter(|n: &&Derived| n.child.is_some() || n.out.is_some()).count();
+        self.derived.len() + extra
     }
 
     fn build(rng: &mut Rng) -> Graph {
@@ -124,14 +130,16 @@ impl Graph {
         for _ in 0..6 + rng.below(9) {
             let count: usize = graph.sources.len() + graph.derived.len();
             let kind: Kind = match rng.below(20) {
-                0..=11 => Kind::Sync,
-                12..=14 => Kind::Async,
-                15 | 16 => Kind::Whole,
-                17 | 18 => Kind::Creator { keyed: false },
-                _ => Kind::Creator { keyed: true },
+                0..=10 => Kind::Sync,
+                11..=13 => Kind::Async,
+                14 | 15 => Kind::Whole,
+                16 => Kind::Creator { keyed: false },
+                17 => Kind::Creator { keyed: true },
+                _ => Kind::Writer,
             };
             let arity: usize = match kind {
                 Kind::Creator { .. } => 1,
+                Kind::Writer => 1 + rng.below(2.min(count as u64)) as usize,
                 Kind::Whole => 2 + rng.below(2.min(count as u64 - 1)) as usize,
                 _ => 1 + rng.below(3.min(count as u64)) as usize,
             };
@@ -146,8 +154,21 @@ impl Graph {
             let slot: Arc<AtomicU64> = Arc::new(AtomicU64::new(u64::MAX));
             let child: Option<Arc<AtomicU64>> =
                 matches!(kind, Kind::Creator { .. }).then(|| Arc::new(AtomicU64::new(u64::MAX)));
-            let handle: DerivedNode<u64> = graph.node(&parents, &kind, slot.clone(), child.clone());
-            graph.derived.push(Derived { parents, kind: kind.name(), slot, child, handle: Some(handle) });
+            let out: Option<(SourceNode<u64>, Arc<AtomicU64>)> = matches!(kind, Kind::Writer).then(|| {
+                let target: SourceNode<u64> = effect!(u64::MAX);
+                let seen: Arc<AtomicU64> = Arc::new(AtomicU64::new(u64::MAX));
+                let (o, mine, last): (Accessor<u64>, Arc<Token>, Arc<AtomicU64>) =
+                    (target.accessor(), Token::new(&graph.alive), seen.clone());
+                effect!(|o| {
+                    let _ = &mine;
+                    put(last, mix(&[*o.get(), 2]))
+                });
+                (target, seen)
+            });
+            let target: Option<SourceNode<u64>> =
+                out.as_ref().map(|(t, _): &(SourceNode<u64>, Arc<AtomicU64>)| t.clone());
+            let handle: DerivedNode<u64> = graph.node(&parents, &kind, slot.clone(), child.clone(), target);
+            graph.derived.push(Derived { parents, kind: kind.name(), slot, child, out, handle: Some(handle) });
         }
         graph
     }
@@ -158,10 +179,34 @@ impl Graph {
         kind: &Kind,
         slot: Arc<AtomicU64>,
         child: Option<Arc<AtomicU64>>,
+        target: Option<SourceNode<u64>>,
     ) -> DerivedNode<u64> {
         let p: Vec<Accessor<u64>> = parents.iter().map(|&at: &usize| self.accessor(at)).collect();
         let token: Arc<Token> = Token::new(&self.alive);
         let alive: Arc<AtomicUsize> = self.alive.clone();
+        if let Some(target) = target {
+            return match p.as_slice() {
+                [p0] => {
+                    let p0: Accessor<u64> = p0.clone();
+                    effect!(|p0| {
+                        let _ = &token;
+                        let value: u64 = mix(&[*p0.get()]);
+                        target.set(value);
+                        put(slot, value)
+                    })
+                }
+                [p0, p1] => {
+                    let (p0, p1): (Accessor<u64>, Accessor<u64>) = (p0.clone(), p1.clone());
+                    effect!(|p0, p1| {
+                        let _ = &token;
+                        let value: u64 = mix(&[*p0.get(), *p1.get()]);
+                        target.set(value);
+                        put(slot, value)
+                    })
+                }
+                _ => unreachable!("a writer has one or two parents"),
+            };
+        }
         match (kind, p.as_slice(), child) {
             (Kind::Creator { keyed: true }, [p0], Some(child)) => {
                 let p0: Accessor<u64> = p0.clone();
@@ -273,6 +318,11 @@ impl Graph {
             );
             if let Some(handle) = &node.handle {
                 assert_eq!(*handle.get(), last, "seed {seed}, {phase}: node {d}'s value is not its last run's");
+            }
+            if let Some((target, seen)) = &node.out {
+                assert_eq!(*target.get(), last, "seed {seed}, {phase}: writer {d}'s target is stale");
+                let want: u64 = mix(&[last, 2]);
+                assert_eq!(seen.load(Ordering::SeqCst), want, "seed {seed}, {phase}: writer {d}'s reader is stale");
             }
             if let Some(child) = &node.child {
                 let want: u64 = mix(&[inputs[0], 1]);
