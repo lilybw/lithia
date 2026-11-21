@@ -11,7 +11,10 @@ design spec §11.4 step 8 asks for:
 
 Each step of either is one lock section or one atomic operation of the engine. TLC checks the models
 on each push and pull request (`ci.yml`), and the two largest, `MCSharedTarget` and `MCDiamond`, before
-a nightly release is promoted (`extended.yml`), so a model that fails blocks a release.
+a nightly release is promoted (`extended.yml`), so a model that fails blocks a release. `MCDiamond`
+does not finish within a CI runner's six hours (11 million states and depth 65 after two hours
+here), so `extended.yml` explores it breadth-first for 270 minutes, which checks every state up to
+the depth reached.
 
 ## Scheduling
 
@@ -48,7 +51,7 @@ generators, `WHOLE_EPOCHS` and disposal. The loom models and the edge tests cove
 
 | Model | Graph and load |
 | --- | --- |
-| `MCDiamond` | A diamond under two outside writes: glitch freedom, supersession and handover. One side never changes its value, the other at most once (`MaxClock = 3`). |
+| `MCDiamond` | A diamond under two outside writes: glitch freedom, supersession and handover. One side never changes its value. |
 | `MCSupersede` | A chain of synchronous nodes under two outside writes. |
 | `MCAsyncChain` | The same with an async middle node that polls twice: child epochs and protected runs. |
 | `MCSharedTarget` | Two runs serving one epoch write the same source, whose region is a chain. |

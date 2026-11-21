@@ -12,7 +12,7 @@ and [`known_bugs.md`](known_bugs.md) what they have not ruled out.
 | Validation cases A–BW (spec §13) | `crates/validation/tests` | `ci.yml`, on every platform |
 | Edge-case tests, one module per area, and the random differential test | `crates/test/tests/edge` | `ci.yml` |
 | Loom models of the real engine | `crates/test/tests/loom.rs` | `ci.yml` at bound 3, `extended.yml` at bound 4 |
-| TLA+ models of scheduling and lifetimes | `docs/tla` | `ci.yml`; the two largest in `extended.yml` |
+| TLA+ models of scheduling and lifetimes | `docs/tla` | `ci.yml`; the two largest in `extended.yml`, `MCDiamond` for 270 minutes |
 | Kept mutations, cargo-mutants | `.github/scripts/mutations.py` | `extended.yml`; cargo-mutants weekly |
 | Stress runs of every test binary | `.github/scripts/stress.sh` | `extended.yml`, on Linux x86-64 and ARM and macOS |
 | Miri | `extended.yml` | unit tests, validation cases and edge-case tests |
@@ -132,4 +132,6 @@ failed run. A failure in a test listed in `.github/scripts/known-flaky.txt`, eac
 `extended.yml` runs the unit tests and validation cases, and the edge-case tests in three shards by
 module, under Miri, with isolation and leak checks off for tokio's threads. Several tests stage
 races with sleeps, which Miri's slowness can reorder, so the job fails only on undefined behaviour
-or an operation Miri cannot run.
+or an operation Miri cannot run. On 27ba2d1 every test ran to the end in under two hours a shard,
+without undefined behaviour; only the rerun-rate warning's test failed, since Miri cannot run a
+node 50 000 times a second.

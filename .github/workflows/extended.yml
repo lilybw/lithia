@@ -148,13 +148,18 @@ jobs:
           path: target/stress
           if-no-files-found: ignore
 
-  # The two models too large for ci.yml; the others run there.
+  # The two models too large for ci.yml; the others run there. MCDiamond does not finish within a
+  # runner's six hours, so it is explored breadth-first for 270 minutes: every state up to the depth
+  # reached is checked, and only a violation fails the job.
   tla:
     name: tlc (${{ matrix.model }})
     strategy:
       fail-fast: false
       matrix:
-        model: [MCSharedTarget, MCDiamond]
+        include:
+          - model: MCSharedTarget
+          - model: MCDiamond
+            limit: 270m
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -167,7 +172,17 @@ jobs:
 
       - name: TLC
         working-directory: docs/tla/models
-        run: ../tlc.sh ${{ matrix.model }}
+        run: |
+          if [[ -z "${{ matrix.limit }}" ]]; then
+            exec ../tlc.sh ${{ matrix.model }}
+          fi
+          status=0
+          timeout ${{ matrix.limit }} ../tlc.sh ${{ matrix.model }} || status=$?
+          if [[ $status -eq 124 ]]; then
+            echo "No error found within ${{ matrix.limit }}."
+            exit 0
+          fi
+          exit $status
 
   mutations:
     name: mutations

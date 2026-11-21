@@ -11,7 +11,7 @@ seen, or what follows from the design where nothing has been seen. Fixed bugs ar
 
 ### `flush` returning before a deferred function runs
 
-*About 1 in 550 runs of one test on macOS ARM CI runners (5 in about 2 800); never in 3 000 runs on
+*About 1 in 450 runs of one test on macOS ARM CI runners (7 in about 3 100); never in 3 000 runs on
 Linux x86-64 or ARM.*
 
 `defer_outside_lithia_tasks_follows_the_latest_write` (`crates/test/tests/edge/propagation.rs`) defers a
@@ -65,9 +65,9 @@ warning catch the leaks.
 - Two kept mutations survive the tests (`.github/scripts/mutations.py`): W3, a written node's release
   reaching its subscribers at release time rather than those it framed, needs a node created between a
   write's framing and its release; F5 is equivalent to the original.
-- The TLA+ models (`docs/tla`) leave out creator order, fragility, reflow, generators, `WHOLE_EPOCHS`,
-  keyed nodes, disposal and ghosts, and check small graphs only. The loom models
-  (`crates/test/tests/loom.rs`) run with at most three preemptions on each push and four on nightly.
-- Miri has not yet finished the edge-case tests in CI: unsharded, the runner stopped responding after
-  four and a half hours. They now run in three shards.
-- cargo-mutants has not run over the engine yet; it runs weekly from v0.5.0.
+- The TLA+ models (`docs/tla`) leave out creator order, fragility, reflow, generators,
+  `WHOLE_EPOCHS`, keyed nodes, disposal and ghosts, and check small graphs only; `MCDiamond` only up
+  to the depth TLC reaches in 270 minutes. The loom models (`crates/test/tests/loom.rs`) run with at
+  most three preemptions on each push and four on nightly.
+- cargo-mutants has run over the engine only as a local sample (29 mutants of `support.rs`); it
+  runs over all of it weekly from v0.5.0.

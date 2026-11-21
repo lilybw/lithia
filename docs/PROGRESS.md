@@ -294,8 +294,14 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   alive (`LET_GO`). Undoing each fix in the model fails it again (`docs/tla/README.md`). In the engine,
   a new loom model and two edge tests fail on v0.4.0.2 and pass now; kept mutations S1–S3 cover the
   walks.
-- The scheduling model gains `Changing` (nodes outside it never change), so `MCDiamond`, with one
-  changing side that changes at most once, can finish.
+- The scheduling model gains `Changing` (nodes outside it never change), which makes `MCDiamond`
+  about a third the size at equal depth. It still does not finish (11 million states and depth 65
+  after two hours here, no error), so `extended.yml` explores it for 270 minutes.
+- CI on 27ba2d1, all passing: the tests on Linux (x86-64 and ARM), macOS, Windows and rustc 1.95;
+  loom at bounds 3 and 4, with and without the fast path; the kept mutations; TLC on the eight
+  `ci.yml` models and `MCSharedTarget` (8 022 673 states, depth 85, 94 minutes); Miri on every test,
+  in four shards of at most 97 minutes, without undefined behaviour (the rerun-rate test fails there,
+  being too slow); stress runs on all three runners, where the known flaky test failed twice on macOS.
   `docs/tla/tlc.sh` fetches the TLA+ tools' current release, since v1.7.4 takes hours over the
   lifetimes. `ci.yml` runs TLC on eight models on each push and pull request; `extended.yml` runs
   `MCSharedTarget` and `MCDiamond`.
@@ -394,7 +400,8 @@ Five passes from `TODO.md`, run in series:
 
 ## Next steps
 
-1. Review what the weekly cargo-mutants run leaves alive, and the sharded Miri run.
+1. Review what the weekly cargo-mutants run leaves alive. Run `MCDiamond` to the end on a machine with
+   many cores (`cd docs/tla/models && ../tlc.sh MCDiamond`).
 2. v0.4.1's allocation work: per-thread scratch buffers for a step's work lists and reuse of a run's
    `RunShared` (review 2.5, 2.6). Measure on an 8–64 core machine, including the one sweep lock.
 3. Make `blocked()` in `support.rs` cheap while scoped nodes exist (`docs/known_bugs.md`, Performance).
