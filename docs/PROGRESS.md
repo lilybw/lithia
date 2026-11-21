@@ -295,8 +295,9 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   a new loom model and two edge tests fail on v0.4.0.2 and pass now; kept mutations S1–S3 cover the
   walks.
 - The scheduling model gains `Equal` (nodes outside it always change), so `MCDiamond` can finish.
-  `docs/tla/tlc.sh` pins the TLA+ tools at v1.7.4 by hash. `ci.yml` runs TLC on eight models on each
-  push and pull request; `extended.yml` runs `MCSharedTarget` and `MCDiamond`.
+  `docs/tla/tlc.sh` fetches the TLA+ tools' current release, since v1.7.4 takes hours over the
+  lifetimes. `ci.yml` runs TLC on eight models on each push and pull request; `extended.yml` runs
+  `MCSharedTarget` and `MCDiamond`.
 - A random differential test (`crates/test/tests/edge/random.rs`): random graphs of sync, async,
   `WHOLE_EPOCHS`, creator, keyed-creator and writer nodes under writes from three lithia tasks, checked against
   their definition once settled, with handles dropped from leaves and bodies counted to zero at the end.

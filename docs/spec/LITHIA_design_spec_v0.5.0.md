@@ -2,10 +2,10 @@
 
 2026-11-21 · Lily
 
-What changed in each version is in [`CHANGELOG.md`](../../CHANGELOG.md). This spec states the design as it
+What changed in each version is in [`CHANGELOG.md`](https://github.com/lilybw/lithia/blob/nightly/CHANGELOG.md). This spec states the design as it
 stands; the validation cases it names live in `crates/validation`, the details of how lithia is verified in
-[`docs/VERIFICATION.md`](../VERIFICATION.md), the benchmark history in [`docs/BENCHMARKS.md`](../BENCHMARKS.md),
-and what is known to be wrong or missing in [`docs/known_bugs.md`](../known_bugs.md).
+[`docs/VERIFICATION.md`](https://github.com/lilybw/lithia/blob/nightly/docs/VERIFICATION.md), the benchmark history in [`docs/BENCHMARKS.md`](https://github.com/lilybw/lithia/blob/nightly/docs/BENCHMARKS.md),
+and what is known to be wrong or missing in [`docs/known_bugs.md`](https://github.com/lilybw/lithia/blob/nightly/docs/known_bugs.md).
 
 ## 1. Overview and scope
 

@@ -147,8 +147,9 @@ no walk at a rise breaks `SupportHolds` on `MCReturn`, and trusting held nodes i
 
 ## Running
 
-[`tlc.sh`](tlc.sh) fetches the TLA+ tools v1.7.4, checks their hash and runs TLC on one model; it needs
-Java 11 or newer.
+[`tlc.sh`](tlc.sh) fetches the TLA+ tools' current release (v1.8.0; v1.7.4 takes hours over
+`Lifetimes.tla`), prints its version and runs TLC on one model; it needs Java 11 or newer. Running several
+models at once needs `-Xmx` per process, since each otherwise sizes its heap for the whole machine.
 
 ```sh
 cd docs/tla/models
