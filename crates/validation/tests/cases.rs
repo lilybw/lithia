@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 //! Validation cases A–AG from spec §13, verbatim, with Case J as rewritten for v0.3.0; Case AH
 //! lives in `compile.rs`, and the cases v0.3.0 adds in `support.rs`.

@@ -68,10 +68,10 @@ The compile-fail cases' expected errors depend on the compiler: CI uses rustc 1.
 
   ```rust
   // SPDX-FileCopyrightText: 2026 lithia Authors
-  // SPDX-License-Identifier: GPL-2.0-or-later
+  // SPDX-License-Identifier: MPL-2.0
   ```
 
 ## License
 
-Contributions are made under the project's license, GPL-2.0-or-later. Add yourself to
+Contributions are made under the project's license, MPL-2.0. Add yourself to
 [AUTHORS](AUTHORS) in your first pull request.

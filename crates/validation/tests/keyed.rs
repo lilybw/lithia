@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 //! Validation cases BD–BK, added by v0.3.1: keyed nodes reclaimed across a creator's runs (spec §10.1, §13).
 //! Every case runs under the workspace's test timeout (`.cargo/config.toml`).

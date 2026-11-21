@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 lithia Authors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MPL-2.0
 
 """Builds lithia's docs site: one version's snapshot (API and spec), or the whole site from releases.
 
@@ -270,7 +270,7 @@ def bar(home: str, version: str, api: str, spec: str, here: str) -> str:
 
 def footer() -> str:
     """The license line and source link under a front page."""
-    return f'<footer class="site"><span>GPL-2.0-or-later</span><a href="{REPOSITORY}">Source on GitHub</a></footer>'
+    return f'<footer class="site"><span>MPL-2.0</span><a href="{REPOSITORY}">Source on GitHub</a></footer>'
 
 
 def readable(date: str) -> str:

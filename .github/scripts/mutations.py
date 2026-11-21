@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 lithia Authors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MPL-2.0
 
 """Applies each hand-picked mutation to a copy of the workspace and checks that the test named for it
 fails (spec section 11.4, "Teeth"). The working tree is never changed.

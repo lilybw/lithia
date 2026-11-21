@@ -1,5 +1,5 @@
 \* SPDX-FileCopyrightText: 2026 lithia Authors
-\* SPDX-License-Identifier: GPL-2.0-or-later
+\* SPDX-License-Identifier: MPL-2.0
 ---------------------------- MODULE Scheduling ----------------------------
 (***************************************************************************)
 (* lithia's scheduling protocol (design spec 7.2-7.4, 11.4) at the grain   *)

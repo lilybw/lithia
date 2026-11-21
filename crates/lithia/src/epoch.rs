@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 //! Scopes and the epoch tree with its progress accounting (spec §7.1, §11.3, §11.4 step 6).
 

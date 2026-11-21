@@ -1,5 +1,5 @@
 \* SPDX-FileCopyrightText: 2026 lithia Authors
-\* SPDX-License-Identifier: GPL-2.0-or-later
+\* SPDX-License-Identifier: MPL-2.0
 ---- MODULE MCDiamond ----
 \* Two outside writes into a diamond: glitch freedom, supersession and handover of sync runs.
 EXTENDS Scheduling

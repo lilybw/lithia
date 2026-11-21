@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 lithia Authors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MPL-2.0
 
 # Runs every test binary of the workspace many times: in release, in debug, and in release pinned to
 # one core (Linux only). Usage: stress.sh <release runs> <debug runs> <one-core runs> [out dir].

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 //! Support, captures and sweeps at their edges (spec §4.2, §10.1, §12).
 

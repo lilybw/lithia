@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 //! Keyed nodes: holdover, reclaiming and refreshing across a creator's runs (spec §10.1, Keyed nodes).
 

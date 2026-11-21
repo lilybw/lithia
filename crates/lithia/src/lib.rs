@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 //! LITHIA: a thread-safe, fine-grained reactive engine for Rust on tokio, after Solid 2.0's signals.
 //! `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);` creates a memo over `count`.

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 //! The fast path (spec §11.4, step 4): a run task runs the next ready synchronous run of its own
 //! runtime itself, in a loop; a step that readies several packs them into runner tasks.

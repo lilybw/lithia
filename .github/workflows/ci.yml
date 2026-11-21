@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 lithia Authors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MPL-2.0
 
 # Lints, tests, validation cases and compile-fail cases on Linux (x86-64 and ARM), Windows and macOS;
 # the loom models on Linux and Windows, as separate jobs; and the tests on the oldest supported rustc.

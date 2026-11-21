@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 lithia Authors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MPL-2.0
 
 # Names the next nightly release and builds its assets into target/dist.
 # Writes `tag` (empty when HEAD is already released) and `previous` to $GITHUB_OUTPUT, and the notes to target/release-notes.md.

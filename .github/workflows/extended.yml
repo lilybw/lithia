@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 lithia Authors
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: MPL-2.0
 
 # Slower checks that do not gate a release: Miri, the loom models at bound 4 with and without the
 # fast path, TLC on the TLA+ model of the scheduling protocol, the kept mutations, and stress runs of

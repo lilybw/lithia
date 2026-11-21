@@ -1,5 +1,5 @@
 \* SPDX-FileCopyrightText: 2026 lithia Authors
-\* SPDX-License-Identifier: GPL-2.0-or-later
+\* SPDX-License-Identifier: MPL-2.0
 ---- MODULE MCSharedTarget ----
 \* Two runs serving one epoch both write the same source, whose region is a chain.
 EXTENDS Scheduling

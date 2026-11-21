@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 // Forwards a docs page. On a latest page, `?v=<version>` opens that version's copy under
 // `versions/<version>/`; a stub page's `data-forward` opens its target. Both keep query and fragment.

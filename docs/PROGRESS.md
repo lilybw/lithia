@@ -342,7 +342,7 @@ Five passes from `TODO.md`, run in series:
 ## Public release preparation (2026-11-18)
 
 - License: GPL-2.0-or-later, Blender's style: `LICENSE` holds the GPL v2 text, every source file starts with
-  `SPDX-FileCopyrightText: 2026 lithia Authors` and `SPDX-License-Identifier: GPL-2.0-or-later`, and
+  `SPDX-FileCopyrightText: 2026 lithia Authors` and `SPDX-License-Identifier: MPL-2.0`, and
   `AUTHORS` lists the lithia Authors. The Lora fonts in `docs/site/fonts` stay under the OFL 1.1. Cargo
   metadata names the license, the docs site and the API reference.
 - README summarizes lithia for users; `CONTRIBUTING.md` holds the layout, commands, conventions and the

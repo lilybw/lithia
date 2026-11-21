@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 //! A 20 000-node chain, in a binary of its own: while any scoped node is alive in the process, each
 //! sweep walks the chain's handleless nodes to its top, so building it beside other tests is quadratic.

@@ -67,6 +67,10 @@ conventions.
 
 ## License
 
-lithia is free software under the GNU General Public License, version 2 or (at your option) any later
-version: see [LICENSE](LICENSE). "lithia Authors" in the files' SPDX headers means the people in
-[AUTHORS](AUTHORS). The Lora font files in `docs/site/fonts` are under the SIL Open Font License 1.1.
+lithia is under the [Mozilla Public License 2.0](LICENSE). You can build on it in any project, open or
+proprietary; a modified lithia you distribute keeps its own files under the same license. "lithia
+Authors" in the files' SPDX headers means the people in [AUTHORS](AUTHORS). Releases up to v0.4.0 were
+under GPL-2.0-or-later. The Lora font files in `docs/site/fonts` are under the SIL Open Font License 1.1.
+
+This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL
+was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.

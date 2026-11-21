@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 //! Runs of node bodies, generator yields, and lithia tasks (spec §3.6, §6.2, §7.3, §9.1).
 
