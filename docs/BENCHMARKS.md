@@ -143,3 +143,103 @@ Five runs alternated with five of 60b5ba8 (the performance pass), medians:
   entry's token first and settle the epoch early.
 - Loom: 45 models; bound 3 explores ~390 000 interleavings with the fast path and ~654 000 without
   (`LITHIA_LOOM_FAST_PATH=off`), bound 4 ~5.6 million and ~10.2 million; all pass. CI runs both at bound 3.
+
+## Spec v0.4.0, section 15
+
+The benchmark section of spec v0.4.0, kept here when v0.5.0 moved it out of the spec.
+
+First results show that spawning a task per run dominates every cost, so the inline fast path (11.4, step 4) is the largest available win; v0.4.0 adds it (below). The benchmarks live in the `lithia-bench` crate (`cargo bench -p lithia-bench`). The figures below come from a 2-core shared cloud container in release mode, from three runs of v0.3.0 on 2026-11-09 and 2026-11-11, given as a range where the runs differ; they show orders of magnitude and relative costs only. Two runs of v0.2.5, alternated with the last two, fell in the same ranges except where noted.
+
+| Benchmark | Measures | Result | Informs |
+| --- | --- | --- | --- |
+| Spawn overhead | One task per run, against running a cheap body inline | 4.2–4.5 µs per run spawned, 1–2 ns per body inline | Whether the fast path (11.4, step 4) belongs in v0 |
+| Framing | The single-threaded cost of framing a region, including once per write in tasks lithia did not start | fan-out of 1 000: 3.1–4.1 ms per write; 100 writes: 77–189 µs batched in a lithia task, 179–187 µs one batch per write | Whether framing needs caching, and batching advice (6.2) |
+| Fan-in contention | Contention on one node's scheduling lock when many parents release it at once | 12 800 writes into a 64-parent join: 7.5–15 µs per write, the join ran 2 300–2 500 times | The lock design (11.4, step 1) |
+| Clock contention | Contention on the process-wide version clock under parallel writes | 1.5–1.7 µs per write with 1 writer, 1.6–2.0 µs with 2, 1.6–1.9 µs with 4 | Falling back to one seen version per parent (5, 7.2) |
+| Protocol overhead | Single-threaded overhead against a global-lock baseline, set beside MV-RP's 20–25% | 2.0–2.8 µs per node run, about 1 ns per node recomputed under one global lock | Whether lithia's subset of MV-RP is as cheap as expected (11.4) |
+| Writer sets in meshes | Runs for n-way bindings, against the n² bound | n = 2: 2 runs; 3: 3; 4: 4; 6: 6–8; 8: 13–15 | Whether accumulation needs tuning (7.4) |
+| Drop churn | `spawn_blocking` drops when per-item effects are recreated on every run | 100 per-item effects recreated: 2.1–2.5 ms per rerun | Batching drops (10.2, 10.3) |
+| Rerun rates | Typical rerun rates in healthy graphs | one node driven as fast as `flush` allows: 41 000–50 000 runs/s | The default threshold for the rerun-rate warning (12, 17) |
+
+- The protocol-overhead comparison is lopsided by design: the baseline recomputes the graph in a loop with no scheduling at all, so the gap is mostly spawn overhead, not framing or writer sets.
+- Batching halves the cost of 100 writes, which supports the advice to write from lithia tasks (6.2).
+- Clock contention is mild at this scale: 4 parallel writers cost at most about 25% more per write than one.
+- The eight-way mesh took 13–15 runs where v0.2.5, run alternately, took 8. Run counts in meshes depend on scheduling, both stay far below n² = 64, and nothing in v0.3.0 changes how writes propagate, but the difference was consistent and is worth a look (17).
+- Meshes stay far below the n² bound, so writer-set accumulation needs no tuning yet.
+- A healthy node reruns about 45 times faster than the provisional 1 000/s warning threshold (17).
+
+Lifetime costs, added by v0.3.0, from the same runs:
+
+| Benchmark | Measures | Result | Informs |
+| --- | --- | --- | --- |
+| Handles | Clone and drop of an outside handle, with its anchoring count, against a bare `Arc`; a read through the handle | 19 ns against 11 ns; a read 20–21 ns | Whether the per-node token design is needed (10.1): the count costs about 8 ns per clone and drop, so it is not |
+| Creation | A bound effect, against one held by support, whose temporary handle's drop runs the start check | 0.8–1.0 µs against 0.9–1.7 µs | The cost of support at creation (10.1) |
+| Sweep over a hub | Dropping the last handle of a source with 10 000 handle-less watchers: one sweep lets go of all of them, and they are freed | 219–294 ms, against 216–284 ms to free 10 000 scoped watchers by their handles | The sweep's own share is within the noise; freeing dominates, as each child leaves the hub's subscriber list (10.1) |
+| Rebuilding children | A rerun that creates 100 children and releases the previous run's 100 | 2.8–3.5 ms per rerun, against 2.1–2.5 ms for value-held per-item effects (drop churn) | Generations cost about as much as children held in a value (10.1) |
+| Last-handle drops | A body's `helper(&x.accessor())` idiom on a supported node: a temporary anchor whose drop runs a sweep that ends at its start check | 250–570 ns per drop on one thread; 1.0–3.7 µs on each of two threads at once | The budget of 1 µs per drop on one thread is met; the one sweep lock serializes concurrent drops (16) |
+
+- A last-handle drop can run a sweep on the dropping thread, under one process-wide sweep lock, and every clone and drop of a handle updates an atomic count: that is the price of lifetimes without owners (10.1). The budgets above hold it to a fraction of a run. Two threads dropping temporary anchors at once each pay several times as much as one, through the one lock and the shared atomics; finer-grained locking stays on the roadmap until a real workload shows it (16).
+- Freeing many children of one node cost time quadratic in their number, since each left the parent's subscriber list by a scan of it. Since v0.4.0 the list is keyed by id and freeing is linear (the wide-creation row below).
+
+Keyed rows, added by v0.3.1, from ten runs on 2026-11-17 alternated with ten runs of v0.3.0, as the median with the range in brackets:
+
+| Benchmark | Measures | Result | Informs |
+| --- | --- | --- | --- |
+| Keyed rows | A list node that maps 100 rows to a derived node each, rerun 50 times with one kind of edit, with every row rebuilt as in v0.3.0 against `key = row.id`; the time per list rerun, children included | no row changed: 2.73 ms [2.01–3.40] rebuilt, 78 µs [64–95] keyed; one row changed: 2.76 ms [2.47–3.48] against 90 µs [83–96]; rows reversed: 2.86 ms [2.25–3.06] against 81 µs [76–107]; every row changed: 2.77 ms [2.34–3.27] against 2.34 ms [1.74–2.57] | What reclaiming by key saves over rebuilding (10.1, Keyed nodes) |
+
+- Reclaiming a row whose captures are equal costs under 1 µs, a lookup and a probe of each capture, against about 27 µs to create a row, run it and release the old one. A list rerun that changes few rows is therefore 30 to 35 times cheaper keyed.
+- A reordered list costs no more than an unchanged one, since a key follows its row wherever it moves.
+- When every row changed, each keyed row is refreshed and reruns in place, which still costs a little less than a new node: about 23 µs against 28 µs per row.
+- Nodes created without a key pay nothing measurable: in the same session, every median of v0.3.1's common benchmarks falls within the range of v0.3.0's ten runs. Both ran faster than the figures above, on a different container, so only the comparison between them carries over.
+
+v0.4.0 against v0.3.1, from runs alternated on 2026-11-20 in the same kind of container (two of each, and three of v0.4.0 after the fixes below):
+
+- Every benchmark falls within the range of v0.3.1's runs, keyed rows included (70–90 µs per unchanged list rerun, against 72–90 µs), except two.
+- A last-handle drop on a supported node costs 605–641 ns, against 499–528 ns: the temporary anchor's arrival now walks downstream to hold again what support let go of (10.1), which ends at once on a node support holds. It stays within the 1 µs budget.
+- Meshes run more, since every cut writer reruns once its epoch settles (7.4): n = 2: 3 runs; 3: 5; 4: 7; 6: 11; 8: 15–22, all still far below n².
+- The first v0.4.0 runs found three costs the implementation then removed: a lock-free swap cell in every handle, whose drop scans every thread's slots (a handle's clone and drop took 1.2 µs, now 20 ns, as in v0.3.1); a full delivery for each reclaimed keyed node (keyed rows took 350–440 µs); and an `Arc` clone on every anchoring handle.
+
+A performance pass after a code review, from five runs alternated on 2026-11-20 with five of v0.4.0 as first committed, as medians. Two benchmarks are new: values `equals` discards and replaced strings, and one run creating 10 000 children. Allocations are counted by a counting allocator on a one-thread runtime (`cargo bench -p lithia-bench --bench allocs`).
+
+| Benchmark | Before | After |
+| --- | --- | --- |
+| Spawn overhead | 4.8 µs per run | 3.9 µs |
+| Protocol overhead | 1.8 µs per node run | 1.25 µs |
+| Framing | 100 writes: 57 µs batched, 172 µs one batch per write | 35 µs, 123 µs; fan-out unchanged within the noise |
+| Fan-in contention | 5.9 µs per write | 3.8 µs |
+| Clock contention | 0.90, 1.10 and 1.05 µs per write with 1, 2 and 4 writers | 0.60, 0.64 and 0.59 µs |
+| Drop churn | 1.86 ms per rerun | 0.60 ms |
+| Rerun rates | 77 000 runs/s | 126 000 runs/s |
+| Creation and sweeps | a bound effect 1.0 µs; 10 000 watchers freed by a sweep in 177 ms | 0.86 µs; 147 ms |
+| Rebuilding children | 3.3 ms per rerun | 0.65 ms |
+| Keyed rows | rebuilt 2.7–2.9 ms per list rerun; keyed, every row changed, 2.2 ms | 0.69–0.75 ms; 0.60 ms; keyed with few changes unchanged at 73–82 µs |
+| Discarded values | a run whose value `equals` keeps 18 µs per write and flush; an equal write 9.2 µs; a `String` write 12.5 µs | 8.4 µs; 57 ns; 260 ns |
+| Wide creation | one run creating 10 000 children: 315 ms per rerun | 77 ms |
+| Allocations | 17 per run on a chain, 14.6 per child run on a fan-out, 24 per derived node created | 10, 7.5, 17 |
+
+- Values `equals` or a superseded run discarded went to the blocking pool whatever their type, against 10.3; they now follow its rule, and strings and byte buffers drop inline too. That is the discarded-values row.
+- Gathering a step's drops into one blocking task per runtime (10.3) accounts for the drop-churn, rebuilding and keyed rows: one `spawn_blocking` per freed body or replaced value had been most of their cost.
+- A freed child scanned its parent's whole subscriber list to leave it, so freeing many children of one node was quadratic; the list is now keyed by id. With a creator's list of creations pruned only when it doubles, the wide-creation row is linear.
+- The other rows gain from fewer allocations and locks per run: an inline mask for the first 64 parents, a small sorted vector for a node's entries instead of a tree whose first insert allocates about 1 KB that the node keeps, no copy of the served epochs and no delivery for a poll that wrote nothing, a waker only for runs that can suspend, a failure record cleared only when there is one, no supersede check on writes to plain source nodes, a `changes()` channel made by the first stream, and a per-thread cache of the scope of a task lithia did not start.
+- Handles and last-handle drops are unchanged. Mesh run counts vary with scheduling in both: over fifteen runs each, the eight-way mesh took 15–42 runs before and 18–58 after, medians 21–23 and 25–26, all below n² = 64.
+- Spawning a task per run is still the largest cost: 3.9 µs against 1 ns for a cheap body inline. The fast path below takes most of it.
+
+The fast path (11.4, step 4) and padded statics, from five runs alternated on 2026-11-20 with five of the performance pass, as medians:
+
+| Benchmark | Before | After |
+| --- | --- | --- |
+| Spawn overhead | 3.9 µs per run along a chain | 1.25 µs |
+| Framing | a 1 000-wide fan-out: 4.0 ms per write | 1.2 ms; batched and one batch per write unchanged |
+| Fan-in contention | 4.4 µs per write | 3.7 µs |
+| Clock contention | 0.64, 0.79 and 0.74 µs per write with 1, 2 and 4 writers | 0.60, 0.60 and 0.57 µs |
+| Drop churn | 632 µs per rerun | 536 µs |
+| Rebuilding children | 614 µs per rerun | 471 µs |
+| Keyed rows | rebuilt 682–739 µs per list rerun; keyed, every row changed, 521 µs | 572–604 µs; 346 µs |
+| Wide creation | 67 ms per rerun | 42 ms |
+| Creation and sweeps | 10 000 watchers freed by a sweep in 128 ms | 107 ms |
+
+- A chain of synchronous nodes now runs in one task, up to 32 runs or 50 µs, so a run costs 1.25 µs instead of 3.9 µs; that is close to the protocol's own cost (protocol overhead, 1.2–1.3 µs per node run on one thread, unchanged).
+- A 1 000-wide fan-out on two workers is packed into about 63 runner tasks instead of 1 000 tasks. On more workers it makes about one runner task per worker while each holds at most 16 runs: 1 000 children on 64 workers still make 63 tasks, 100 make 50.
+- Allocations stay at about 10 per run: a run on the fast path saves its task but boxes its future.
+- Handles, last-handle drops, discarded values and protocol overhead are unchanged within the noise. Mesh run counts still vary with scheduling: the eight-way mesh took 26–38 runs before and 15–24 after in five runs each.
+- The statics every step reads or writes (the clock, the node and epoch counters, the settle signal, the drop count and the sweep lock) sat two to four to a cache line; each now has 128 bytes of its own. The two cores of this container cannot show that; it is for the 8 to 64 cores lithia targets.

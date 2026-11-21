@@ -1,7 +1,8 @@
 # lithia implementation progress
 
-Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.4.0.md` (PDF alongside), which empties
-v0.3.1's section 14; v0.3.1, v0.3.0, v0.2.5 and v0.2.4 are kept for reference.
+Source of truth for resuming work. Spec: `docs/spec/LITHIA_design_spec_v0.5.0.md` (PDF alongside); earlier
+specs are kept for reference, and `CHANGELOG.md` holds every version's changes. `docs/VERIFICATION.md` says
+what checks lithia, `docs/known_bugs.md` what is known to be wrong.
 
 ## Layout
 
@@ -77,9 +78,9 @@ creation is cut); Cases T and BG are extended.
 | §9 Failure, fragility | done | |
 | §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/support.rs`, `capture.rs`); v0.3.1: keyed nodes, holdover (`keyed.rs`, `create.rs`) |
 | §11 Concurrency, scopes | done | fast path and runner tasks (§11.4 step 4, `crates/lithia/src/inline.rs`) since v0.4.0 |
-| §11.4 step 8 loom | done | 47 models, bound 3 by default, bound 4 on nightly; see "Model checking" below |
-| §11.4 step 8 TLA+ | scheduling done | `docs/tla`: framing, releases, runs, supersession, cuts, epoch tree; creation and lifetimes still to model (§16); gating is an open question (§17) |
-| §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 1000/s); first-run, growth and unread-memo warnings |
+| §11.4 step 8 loom | done | 48 models, bound 3 by default, bound 4 on nightly; see "Model checking" below |
+| §11.4 step 8 TLA+ | done | `docs/tla`: scheduling and lifetimes, ten TLC models; TLC gates a release |
+| §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 50 000/s since v0.5.0); first-run, growth and unread-memo warnings |
 | §15 Benchmarks | done | results and observations in `docs/BENCHMARKS.md` |
 
 ## Decisions and interpretations
@@ -278,6 +279,38 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   `nightly`'s tip.
 - Not done here: benchmarks and stress on 8–64 cores, which this 2-core container cannot give.
 
+## Hardening towards v1.0 (2026-11-21, branch `verify/v0.4.0.2`, version 0.5.0)
+
+- Decisions: MPL-2.0 replaces GPL-2.0-or-later; the rerun-rate warning defaults to 50 000/s; a
+  `WHOLE_EPOCHS` node waits for at most 64 epochs, then runs and warns; lineages stay 63-bit hashes,
+  their collision risk documented; TLC gates releases. The crates move to 0.5.0.
+- TLA+ of node lifetimes: `docs/tla/Lifetimes.tla` and four TLC models (`MCReturn`, `MCWriter`,
+  `MCGeneration`, `MCScoped`) check exact anchor counts, sound let-go, no leaks and no early let-go at
+  quiescence, and termination. It found five faults in v0.4.0.2, all fixed: a lease ended before its
+  handles counted; a rise from zero walked only at the end of its operation, so a drop on another
+  thread in between leaked what the walk held again; a sweep could miss a rise during it; a walk from a
+  scoped anchor stopped at it; a new writer held nothing again. Rises from zero and writer registration
+  now take the sweep lock, with their walks, which run only while support has let go of something
+  alive (`LET_GO`). Undoing each fix in the model fails it again (`docs/tla/README.md`). In the engine,
+  a new loom model and two edge tests fail on v0.4.0.2 and pass now; kept mutations S1–S3 cover the
+  walks.
+- The scheduling model gains `Equal` (nodes outside it always change), so `MCDiamond` can finish.
+  `docs/tla/tlc.sh` pins the TLA+ tools at v1.7.4 by hash. `ci.yml` runs TLC on eight models on each
+  push and pull request; `extended.yml` runs `MCSharedTarget` and `MCDiamond`.
+- A random differential test (`crates/test/tests/edge/random.rs`): random graphs of sync, async,
+  `WHOLE_EPOCHS`, creator and keyed-creator nodes under writes from three lithia tasks, checked against
+  their definition once settled, with handles dropped from leaves and bodies counted to zero at the end.
+  3 000 graphs in release, 1 000 in debug and 2 000 on one core pass.
+- Benchmarks, A/B of the lifetime rows against v0.4.0.2 over three alternating runs: within noise.
+- `docs/known_bugs.md` lists what is known to be wrong or missing, most frequent first.
+- Spec v0.5.0, about 25 000 words instead of 41 000: the validation cases' code stays in
+  `crates/validation` with a table of cases in §13; the loom list, bounds and the hand-applied mutation
+  table move to `docs/VERIFICATION.md`; the benchmark history to `docs/BENCHMARKS.md`; every version's
+  changes to `CHANGELOG.md`; the internal structs of §5 and the expansion sketches of §4.5 and §4.7 give
+  way to prose, and the code stays the reference. The PDF is printed from pandoc's HTML with Chromium.
+- Code: comments and doc comments lose version history; doc comments stay within two lines. Crates.io
+  metadata (readme, keywords, categories). Miri runs in four shards; cargo-mutants runs weekly in 16.
+
 ## Design migration to v0.3.0 (ownership)
 
 - `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc), revision 12 plus its implementation notes. A node created in a run is
@@ -341,9 +374,9 @@ Five passes from `TODO.md`, run in series:
 
 ## Public release preparation (2026-11-18)
 
-- License: GPL-2.0-or-later, Blender's style: `LICENSE` holds the GPL v2 text, every source file starts with
-  `SPDX-FileCopyrightText: 2026 lithia Authors` and `SPDX-License-Identifier: MPL-2.0`, and
-  `AUTHORS` lists the lithia Authors. The Lora fonts in `docs/site/fonts` stay under the OFL 1.1. Cargo
+- License: GPL-2.0-or-later at the time (MPL-2.0 since v0.5.0), Blender's style: `LICENSE` holds the
+  license text, every source file starts with `SPDX-FileCopyrightText: 2026 lithia Authors` and an
+  `SPDX-License-Identifier` line, and `AUTHORS` lists the lithia Authors. The Lora fonts in `docs/site/fonts` stay under the OFL 1.1. Cargo
   metadata names the license, the docs site and the API reference.
 - README summarizes lithia for users; `CONTRIBUTING.md` holds the layout, commands, conventions and the
   pull-request flow into `nightly`; `.github/CODEOWNERS` and a PR template support it.
@@ -356,18 +389,7 @@ Five passes from `TODO.md`, run in series:
 
 ## Next steps
 
-1. Choose the license: the licensing review recommends MPL-2.0 over GPL-2.0-or-later.
-2. Trim the spec: a proposal cuts it from about 41 000 words to about 24 000 by moving the validation
-   cases' code, the benchmark history, the loom list and the mutation table out, and dropping the
-   mechanics behind the rarest rules.
-3. Extend the TLA+ model to node creation, creator order and lifetimes (§16); decide whether TLC gates a
-   release (§17).
-4. v0.4.1: per-thread scratch buffers for a step's work lists and reuse of a run's `RunShared` (review
-   2.5, 2.6), about 7 of the 10 allocations a run still makes. Measure the fast path and padding, and
-   stress every test binary, on an 8–64 core machine; finer-grained sweep locking if the one sweep lock
-   shows contention there (§16).
-5. Decide the rerun-rate default and its configuration API (§17); the benchmark shows 1 000/s is too low.
-6. Decide the v0.4.0 open questions (§17): a bound for `WHOLE_EPOCHS`, and whether lineages should be interned.
-7. Make `blocked()` in `support.rs` cheap while scoped nodes exist: today `ANY_SCOPED` stays set once any
-   node is scoped, and every sweep then walks handleless parents to an anchor, so a deep handleless chain
-   costs quadratic time to build. A count of live scoped nodes, or a forward walk from them, would fix it.
+1. Review what the weekly cargo-mutants run leaves alive, and the sharded Miri run.
+2. v0.4.1's allocation work: per-thread scratch buffers for a step's work lists and reuse of a run's
+   `RunShared` (review 2.5, 2.6). Measure on an 8–64 core machine, including the one sweep lock.
+3. Make `blocked()` in `support.rs` cheap while scoped nodes exist (`docs/known_bugs.md`, Performance).
