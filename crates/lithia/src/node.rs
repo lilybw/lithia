@@ -182,6 +182,8 @@ pub(crate) struct Sched {
     /// Epochs whose writes by this node's lineage its next run leaves alone, as a cut writer's
     /// rerun does (spec §7.4); read when that run starts, so writes recorded after the cut count.
     pub(crate) suppress_in: Vec<Arc<Epoch>>,
+    /// Epochs that became ready while a `WHOLE_EPOCHS` node waited, since its last run started.
+    pub(crate) whole_deferred: u32,
 }
 
 impl Sched {
@@ -205,6 +207,7 @@ impl Sched {
             failed_by_fragility: false,
             gated: Vec::new(),
             suppress_in: Vec::new(),
+            whole_deferred: 0,
         }
     }
 

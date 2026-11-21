@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.95"
 publish = false
@@ -19,8 +19,8 @@ homepage = "https://lilybw.com/lithia/"
 documentation = "https://lilybw.com/lithia/api/lithia/"
 
 [workspace.dependencies]
-lithia = { path = "crates/lithia", version = "0.4.0" }
-lithia-macro = { path = "crates/macro", version = "0.4.0" }
+lithia = { path = "crates/lithia", version = "0.5.0" }
+lithia-macro = { path = "crates/macro", version = "0.5.0" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-core = "0.3"

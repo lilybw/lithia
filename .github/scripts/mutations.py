@@ -59,6 +59,12 @@ MUTATIONS: list[Mutation] = [
         "edge", "", caught=False,
     ),
     Mutation(
+        "W4", "A WHOLE_EPOCHS node never running past its bound", "crates/lithia/src/protocol.rs",
+        "        if sched.whole_deferred >= WHOLE_EPOCHS_BOUND {\n",
+        "        if sched.whole_deferred >= u32::MAX {\n",
+        "edge", "a_whole_epochs_join_runs_once_input_has_kept_it_waiting_too_long",
+    ),
+    Mutation(
         "F1", "The fast path keeping runs of another runtime", "crates/lithia/src/inline.rs",
         "    open.is_some() && open == node\n",
         "    open.is_some() || open == node\n",

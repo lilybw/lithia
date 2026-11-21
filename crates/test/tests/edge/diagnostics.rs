@@ -127,6 +127,56 @@ async fn an_unattributed_loop_triggers_the_rerun_rate_warning() {
     assert!(event.is_some(), "loop count {}", *n.get());
 }
 
+/// A `WHOLE_EPOCHS` join whose input never pauses runs on the ready epochs once 64 of them have
+/// become ready while it waited, and warns once.
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_whole_epochs_join_runs_once_input_has_kept_it_waiting_too_long() {
+    let _ = events();
+    let a: SourceNode<u32> = effect!(0);
+    let b: SourceNode<u32> = effect!(0);
+    // `slow` holds `b`'s epoch at the gate, so the join keeps waiting for it.
+    let (open, gate): (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) = std::sync::mpsc::channel();
+    let gate: Arc<Mutex<std::sync::mpsc::Receiver<()>>> = Arc::new(Mutex::new(gate));
+    let slow: DerivedNode<u32> = effect!(|b| {
+        let value: u32 = *b.get();
+        if value > 0 {
+            let _ = gate.lock().unwrap().recv();
+        }
+        value * 10
+    });
+    let runs: Arc<std::sync::atomic::AtomicU32> = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let join: DerivedNode<u32> = effect!(
+        |a, slow| {
+            runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *a.get() + *slow.get()
+        },
+        flags = lithia::WHOLE_EPOCHS
+    );
+    lithia::flush().await;
+    let before: u32 = runs.load(std::sync::atomic::Ordering::SeqCst);
+    b.set(1);
+    tokio::task::yield_now().await;
+    // Each write is an epoch of its own that becomes ready at the join while `b`'s waits.
+    for value in 1..64u32 {
+        a.set(value);
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), before, "ran before the bound");
+    a.set(64);
+    tokio::task::yield_now().await;
+    let deadline: tokio::time::Instant = tokio::time::Instant::now() + Duration::from_secs(5);
+    while runs.load(std::sync::atomic::Ordering::SeqCst) == before && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(*join.get(), 64, "ran on the ready epochs, without `b`'s");
+    let event: Option<Captured> = find(Level::WARN, &["WHOLE_EPOCHS", &line], Duration::from_secs(2)).await;
+    assert!(event.is_some());
+    open.send(()).unwrap();
+    lithia::flush().await;
+    assert_eq!(*join.get(), 74);
+}
+
 const UNREAD: &str = "nothing reads it";
 
 #[lithia::test]

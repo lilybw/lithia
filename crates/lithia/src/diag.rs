@@ -12,7 +12,7 @@ use crate::node::{Header, RateWindow};
 use crate::sync::MutexGuard;
 
 /// Default rerun-rate threshold in runs per second; override with `LITHIA_RERUN_RATE`.
-pub(crate) const DEFAULT_RERUN_RATE: u64 = 1000;
+pub(crate) const DEFAULT_RERUN_RATE: u64 = 50_000;
 
 /// Rerun-rate threshold, read from the environment once per process.
 static RERUN_THRESHOLD: LazyLock<u64> = LazyLock::new(|| {
@@ -122,6 +122,7 @@ pub(crate) enum Diag {
     Cut { writer: &'static Site, is_unit: bool, written: Option<&'static Site> },
     FragilityFailed { site: &'static Site, parent: String },
     Superseded { site: &'static Site, run: u64 },
+    WholeEpochsBound { site: &'static Site },
 }
 
 impl Diag {
@@ -130,6 +131,7 @@ impl Diag {
             Diag::Cut { writer, is_unit, written } => cut(writer, is_unit, written),
             Diag::FragilityFailed { site, parent } => fragility_failed(site, &parent),
             Diag::Superseded { site, run } => superseded(site, run),
+            Diag::WholeEpochsBound { site } => whole_epochs_bound(site),
         }
     }
 }
@@ -140,6 +142,19 @@ fn cut(writer: &Site, is_unit: bool, written: Option<&'static Site>) {
         tracing::debug!(writer = %writer, written = %written, "lithia: a cycle cut an effect");
     } else {
         tracing::warn!(writer = %writer, written = %written, "lithia: a cycle cut a writer that holds a value");
+    }
+}
+
+/// Sites already warned that a `WHOLE_EPOCHS` node ran before its epochs were whole.
+static WHOLE_WARNED: parking_lot::Mutex<BTreeSet<usize>> = parking_lot::Mutex::new(BTreeSet::new());
+
+fn whole_epochs_bound(site: &'static Site) {
+    if WHOLE_WARNED.lock().insert(site_key(site)) {
+        tracing::warn!(
+            site = %site,
+            bound = crate::protocol::WHOLE_EPOCHS_BOUND,
+            "lithia: a WHOLE_EPOCHS node ran before every epoch reached it whole; input never paused"
+        );
     }
 }
 

@@ -396,7 +396,9 @@ fn rerun_rates() -> Row {
     }));
     Row {
         name: "Rerun rates",
-        result: format!("one node driven as fast as flush allows: {rate:.0} runs/s (warning threshold default 1000/s)"),
+        result: format!(
+            "one node driven as fast as flush allows: {rate:.0} runs/s (warning threshold default 50 000/s)"
+        ),
         informs: "The default threshold for the rerun-rate warning (12, 17)",
     }
 }

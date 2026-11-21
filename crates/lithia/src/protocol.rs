@@ -303,9 +303,13 @@ fn parents_changed_since(node: &NodeRef, ran_at: u64) -> bool {
     })
 }
 
+/// Epochs a `WHOLE_EPOCHS` node lets become ready while it waits before it runs on them anyway.
+pub(crate) const WHOLE_EPOCHS_BOUND: u32 = 64;
+
 /// Whether a `WHOLE_EPOCHS` node still waits for an epoch that has reached it to become ready.
 fn whole_epochs_wait(header: &Header, sched: &Sched) -> bool {
     header.flags.contains(crate::Flags::WHOLE_EPOCHS)
+        && sched.whole_deferred < WHOLE_EPOCHS_BOUND
         && sched.entries.values().any(|entry: &Entry| !entry.waiting.is_empty())
 }
 
@@ -384,7 +388,15 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     }
     entry.runnable = true;
     let waits_for_run: bool = entry.reflow && !entry.first && !entry.force && !changed;
-    let whole_wait: bool = whole_epochs_wait(header, sched);
+    let mut whole_wait: bool = whole_epochs_wait(header, sched);
+    if whole_wait && sched.run.is_none() {
+        // Input that never pauses would keep it waiting: past the bound it runs on what is ready.
+        sched.whole_deferred += 1;
+        if sched.whole_deferred >= WHOLE_EPOCHS_BOUND {
+            work.diags.push(Diag::WholeEpochsBound { site: header.site });
+            whole_wait = false;
+        }
+    }
     match sched.run.as_mut() {
         // Under `WHOLE_EPOCHS`, the last epoch to become ready starts the run (or `settle` does).
         None if whole_wait => {}
@@ -413,6 +425,9 @@ fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     let Some(entry) = sched.entries.remove(&epoch) else {
         return;
     };
+    if sched.entries.is_empty() {
+        sched.whole_deferred = 0;
+    }
     wake_gated(sched, work);
     // The last epoch a `WHOLE_EPOCHS` node waited for settled: the run the others made due starts.
     if node.header().flags.contains(crate::Flags::WHOLE_EPOCHS)
@@ -915,6 +930,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
                 false
             } else {
                 sched.ran_at = ids::now();
+                sched.whole_deferred = 0;
                 let id: u64 = if header.kind == Kind::AsyncSource {
                     shared.expected()
                 } else {

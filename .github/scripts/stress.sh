@@ -12,6 +12,8 @@ debug_runs="${2:?debug runs}"
 single_runs="${3:?one-core runs}"
 out="${4:-target/stress}"
 mkdir -p "$out"
+# The test binaries run without cargo, so they get the environment .cargo/config.toml gives cargo test.
+export LITHIA_TEST_TIMEOUT_MS="${LITHIA_TEST_TIMEOUT_MS:-20000}" LITHIA_RERUN_RATE="${LITHIA_RERUN_RATE:-1000}"
 command -v jq > /dev/null || { echo "stress.sh needs jq" >&2; exit 2; }
 
 # The test executables cargo builds, except the compile-fail cases (they need cargo), loom, and the

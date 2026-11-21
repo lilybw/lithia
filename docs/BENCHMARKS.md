@@ -28,9 +28,9 @@ show orders of magnitude and relative costs only; re-run on your own machine bef
   costs ~4 µs to schedule against ~1 ns to call, so the inline fast path is the biggest available win.
 - **The protocol-overhead comparison is lopsided by design.** The global-lock baseline recomputes the
   graph in a loop with no scheduling at all; the gap is mostly spawn overhead, not framing or writer sets.
-- **The rerun-rate default is too low.** A healthy node driven as fast as possible reruns 41 000–50 000
-  times a second, far above the provisional 1 000/s default, so the warning would fire on legitimate
-  fast input. The threshold is configurable through `LITHIA_RERUN_RATE`; the default needs deciding (§17).
+- **The rerun-rate default.** A healthy node driven as fast as possible reruns 41 000–50 000 times a
+  second, and 120 000–140 000 on the fast path, far above the first default of 1 000/s. Since v0.5.0 the
+  default is 50 000/s; `LITHIA_RERUN_RATE` overrides it.
 - **Batching pays off.** 100 writes cost about half as much as one batch as they do as 100 batches.
 - **Clock contention is mild** at this scale: 4 parallel writers cost at most ~25% more per write than one.
 - **Lifetimes are cheap where it matters.** An anchoring count adds ~8 ns to a handle clone and drop, a

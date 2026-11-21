@@ -1,4 +1,6 @@
 # Every #[lithia::test] in this workspace runs under a timeout, so a flush or
 # settled that never returns fails the case instead of stalling it (spec §13).
+# The rerun-rate warning's test loop runs well below the 50 000/s default.
 [env]
 LITHIA_TEST_TIMEOUT_MS = "20000"
+LITHIA_RERUN_RATE = "1000"

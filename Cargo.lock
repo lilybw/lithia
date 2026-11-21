@@ -128,7 +128,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "lithia"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arc-swap",
  "bitflags",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "lithia-bench"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "lithia",
  "tokio",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "lithia-macro"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "lithia-test"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "lithia",
  "loom",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "lithia-validation"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "lithia",
  "tokio",
