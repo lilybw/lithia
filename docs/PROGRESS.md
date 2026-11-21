@@ -310,6 +310,9 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   way to prose, and the code stays the reference. The PDF is printed from pandoc's HTML with Chromium.
 - Code: comments and doc comments lose version history; doc comments stay within two lines. Crates.io
   metadata (readme, keywords, categories). Miri runs in four shards; cargo-mutants runs weekly in 16.
+  A local cargo-mutants sample over `support.rs` (shard 1 of 5, 29 mutants, 20 minutes): 24 caught, 1
+  unviable, 4 missed, all equivalent: they only skip or add work of the walk gate and of the check for
+  the outermost operation.
 
 ## Design migration to v0.3.0 (ownership)
 
