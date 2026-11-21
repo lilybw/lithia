@@ -427,7 +427,7 @@ fn handle_clone() -> Row {
         (handle, bare, start.elapsed())
     });
     Row {
-        name: "Handles (v0.3.0)",
+        name: "Handles",
         result: format!(
             "clone and drop {} with the anchoring count vs {} for a bare `Arc`; a read {}",
             per(handle, COUNT),
@@ -483,7 +483,7 @@ fn creation_and_sweep() -> Row {
         (bound, held, sweep, freed)
     }));
     Row {
-        name: "Creation and sweeps (v0.3.0)",
+        name: "Creation and sweeps",
         result: format!(
             "creating a bound effect {}, one held by support {}; dropping the hub's handle lets go of {} watchers and frees them in {}, against {} to free as many scoped watchers by their handles",
             per(bound, COUNT),
@@ -521,7 +521,7 @@ fn rebuild_children() -> Row {
         start.elapsed()
     }));
     Row {
-        name: "Rebuilding children (v0.3.0)",
+        name: "Rebuilding children",
         result: format!("{CHILDREN} children rebuilt: {} per rerun", per(elapsed, ROUNDS)),
         informs: "Generations against value-held children (drop churn above; 6.2)",
     }
@@ -588,7 +588,7 @@ fn keyed_rows() -> Row {
         })
         .collect();
     Row {
-        name: "Keyed rows (v0.3.1)",
+        name: "Keyed rows",
         result: format!("100 rows, per list rerun: {}", parts.join("; ")),
         informs: "What reclaiming children by key saves over rebuilding them (10.1, Keyed nodes)",
     }
@@ -633,13 +633,13 @@ fn last_handle_drops() -> Row {
     let one: Duration = measure(1);
     let two: Duration = measure(2);
     Row {
-        name: "Last-handle drops (v0.3.0)",
+        name: "Last-handle drops",
         result: format!("{} per drop on one thread, {} on each of two", per(one, DROPS), per(two, DROPS)),
         informs: "The drop-latency budget and the one sweep lock (5.5)",
     }
 }
 
-/// Values `equals` discards and replaced strings: each was a blocking-pool drop before v0.4.0's fixes.
+/// Values `equals` discards and replaced strings, which drop inline rather than on the blocking pool.
 fn discarded_values() -> Row {
     const ROUNDS: u64 = 2_000;
     const WRITES: u64 = 20_000;
@@ -672,7 +672,7 @@ fn discarded_values() -> Row {
         (runs, equal, strings)
     }));
     Row {
-        name: "Discarded values (v0.4.0)",
+        name: "Discarded values",
         result: format!(
             "a run whose value `equals` keeps: {} per write and flush; an equal write: {}; a `String` write: {}",
             per(runs, ROUNDS),
@@ -708,7 +708,7 @@ fn wide_creation() -> Row {
         start.elapsed()
     }));
     Row {
-        name: "Wide creation (v0.4.0)",
+        name: "Wide creation",
         result: format!(
             "one run creating {CHILDREN} children: {} per rerun, {} per child",
             per(elapsed, ROUNDS),

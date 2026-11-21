@@ -111,6 +111,8 @@ pub(crate) struct Header {
     pub(crate) captured: AtomicUsize,
     /// Self-reference while support holds the node.
     pub(crate) support: Mutex<Option<NodeRef>>,
+    /// Support let go of the node, which an anchor's return or a new writer may hold again.
+    pub(crate) let_go: AtomicBool,
     /// Set by `.scoped()`: only the node's own handles support it.
     pub(crate) scoped: AtomicBool,
     /// The node whose run's generation holds this node.
@@ -708,6 +710,7 @@ impl<K: NodeValue> Drop for Node<K> {
             crate::support::start(target);
         }
         crate::support::release_generation(generation);
+        crate::support::freed(&self.header);
         if let Some(list) = parents {
             crate::drops::release_parents(list);
         }

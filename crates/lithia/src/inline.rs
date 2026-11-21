@@ -140,9 +140,8 @@ pub(crate) fn close_later(closes: Vec<Arc<Epoch>>) {
     }
 }
 
-/// Hands a step's ready runs on: synchronous runs of this thread's runtime run next here, up to
-/// a runner's share; the other synchronous runs of a runtime go to runner tasks; any other run
-/// gets a task of its own.
+/// Hands a step's ready runs on: synchronous ones run here or in runner tasks of their runtime,
+/// any other run in a task of its own (spec §11.4, step 4).
 pub(crate) fn dispatch(mut spawns: Vec<NodeRef>) {
     if spawns.len() == 1 {
         let node: NodeRef = spawns.remove(0);

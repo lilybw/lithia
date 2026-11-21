@@ -161,9 +161,8 @@ fn wake_gated(sched: &mut Sched, work: &mut Work) {
     work.resumes.extend(sched.gated.drain(..).map(|(_, weak): (NodeId, crate::node::WeakNodeRef)| weak));
 }
 
-/// Opens an entry on every node downstream of `root` in `epoch`, waiting on its parent. `children`
-/// are `root`'s subscribers as its obligation captured them; a node framed anew is walked through the
-/// subscribers it had then, so each wait counted here is one its parent's release will meet.
+/// Opens an entry on every node downstream of `root` in `epoch`, through `children`, the subscribers
+/// its obligation captured, so each wait counted here is one its parent's release will meet.
 pub(crate) fn frame(root: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, work: &mut Work) {
     let mut stack: Vec<(NodeRef, Vec<NodeRef>)> = Vec::new();
     frame_level(root, children, epoch, &mut stack);

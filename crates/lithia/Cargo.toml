@@ -9,6 +9,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "../../README.md"
+keywords = ["reactive", "signals", "tokio", "async", "frp"]
+categories = ["asynchronous", "concurrency"]
 
 [dependencies]
 lithia-macro = { workspace = true }

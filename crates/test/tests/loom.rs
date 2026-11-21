@@ -361,7 +361,7 @@ fn case_w_reflow_from_its_own_body() {
 }
 
 /// An effect lives while its parent can change: one on `count` keeps running, one on a dropped
-/// source is freed with it, and a scoped one stops with its handle (Case J as rewritten for v0.3.0).
+/// source is freed with it, and a scoped one stops with its handle (Case J).
 #[test]
 fn case_j_an_effect_lives_while_its_parent_can_change() {
     check(|| {
@@ -386,7 +386,7 @@ fn case_j_an_effect_lives_while_its_parent_can_change() {
             scope.flush();
             assert_eq!(scope.live(), 7);
             drop(local);
-            drop(scoped); // a scoped effect stops when its last handle drops, as in v0.2.5
+            drop(scoped); // a scoped effect stops when its last handle drops
             scope.flush();
             assert_eq!(scope.live(), 4);
             scope.batch(|| count.set(1));
@@ -500,9 +500,8 @@ fn an_inline_chain_races_a_second_write() {
     });
 }
 
-/// Two runs serving one epoch write the same source, on two threads: one's release may reach the
-/// source's child while the other still frames the child's region, so the region waits on one
-/// release per write, and every node below settles (found by the TLA+ model, `docs/tla`).
+/// Two runs serving one epoch write one source on two threads: the source's region waits on one
+/// release per write, so every node below settles (found by TLC, `docs/tla`).
 #[test]
 fn two_runs_write_one_source_in_one_epoch() {
     check(|| {
@@ -526,9 +525,8 @@ fn two_runs_write_one_source_in_one_epoch() {
     });
 }
 
-/// A run publishes its value and is superseded before its poll's batch is delivered; the run that
-/// replaces it computes an equal value. The published change still reaches the children
-/// (found by the TLA+ model, `docs/tla`).
+/// A run published its value before it was superseded, and its successor computes an equal one:
+/// the published change still reaches the children (found by TLC, `docs/tla`).
 #[test]
 fn a_change_published_before_a_supersede_reaches_the_children() {
     check(|| {
@@ -808,6 +806,55 @@ fn a_moved_out_handle_drops_while_its_lease_ends() {
     });
 }
 
+/// A moved-out handle drops on the main thread while its block's lease ends on the worker, after
+/// support let go of `e`: nothing stays held either way (found by TLC, `docs/tla`).
+#[test]
+fn a_moved_out_handle_drops_while_its_lease_ends_and_support_has_let_go() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let slot: Arc<(loom::sync::Mutex<Option<SourceNode<u32>>>, loom::sync::Condvar)> =
+                Arc::new((loom::sync::Mutex::new(None), loom::sync::Condvar::new()));
+            let out: Arc<(loom::sync::Mutex<Option<SourceNode<u32>>>, loom::sync::Condvar)> = slot.clone();
+            let (y, z): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
+                let t: SourceNode<u32> = effect!(1);
+                let y: SourceNode<u32> = effect!(1);
+                let z: SourceNode<u32> = effect!(1);
+                let e: DerivedNode<u32> = effect!(|t| *t.get());
+                effect!(|e, y| {
+                    let _ = (e.get(), y.get());
+                });
+                let block: SourceNode<()> = effect!(async move {
+                    *out.0.lock().unwrap() = Some(t);
+                    out.1.notify_one();
+                });
+                // Keeps the block alive without anchoring it, so support lets go of `e`.
+                effect!(|z| {
+                    let _ = (z.get(), block.get());
+                });
+                (y, z)
+            });
+            let moved: SourceNode<u32> = {
+                let mut guard: loom::sync::MutexGuard<'_, Option<SourceNode<u32>>> = slot.0.lock().unwrap();
+                loop {
+                    if let Some(handle) = guard.take() {
+                        break handle;
+                    }
+                    guard = slot.1.wait(guard).unwrap();
+                }
+            };
+            drop(moved);
+            scope.flush();
+            drop(y); // `e` and its child go; `z`, the block and its keeper stay
+            scope.flush();
+            assert_eq!(scope.live(), 3);
+            drop(z);
+            scope.flush();
+            assert_eq!(scope.live(), 0);
+        });
+    });
+}
+
 /// A write reaches a creator and the child it made, run on the main thread and the worker: the old
 /// child waits for its creator, which replaces it, so it never sees the new value.
 #[test]
@@ -869,8 +916,7 @@ fn a_creator_reclaims_its_keyed_child_before_it_runs() {
 }
 
 /// A write supersedes an async creator's run that created a child: the child waits for the
-/// restart, which lets go of it. Its first run may already be under way, reading what is current,
-/// but it never runs again on the input that superseded its creator.
+/// restart, which lets go of it, and never runs on the input that superseded its creator.
 #[test]
 fn a_superseded_runs_creation_waits_for_the_restart() {
     check(|| {
@@ -955,9 +1001,8 @@ fn a_cut_writer_reruns_after_its_epoch() {
     });
 }
 
-/// Two threads write one source at once; a `WHOLE_EPOCHS` join of its two paths holds its runs
-/// while an epoch that reached it is on its way, and still ends quiet on the final value. A write
-/// is readable before its epoch is delivered, so a run may read it early; its epoch reruns the join.
+/// Two threads write one source at once: a `WHOLE_EPOCHS` join of its two paths holds its runs
+/// while an epoch is on its way to it, and ends on the final value.
 #[test]
 fn a_whole_epochs_join_converges_under_concurrent_writes() {
     check(|| {

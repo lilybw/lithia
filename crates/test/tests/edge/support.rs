@@ -40,9 +40,8 @@ fn bump(n: &u32) -> u32 {
     n + 1
 }
 
-/// Creates a handle-less watcher on `t`, lets `make` start a node on the long-lived `k` that
-/// captures `t`, drops `t`'s handle, and reports whether the watcher is still alive: it is
-/// exactly when the node may write `t`.
+/// Whether a handle-less watcher on `t` outlives `t`'s handle beside the node `make` starts on `k`
+/// capturing `t`: exactly when that node may write `t`.
 async fn keeps_watcher(make: impl FnOnce(&SourceNode<u32>, &SourceNode<u32>)) -> bool {
     let k: SourceNode<u32> = effect!(0);
     let seen: SourceNode<u32> = effect!(0);
@@ -381,6 +380,75 @@ async fn an_anchor_that_returns_holds_again_what_support_let_go_of() {
     assert_eq!((*reader.get(), runs.load(Ordering::SeqCst)), (1, 1));
     drop(reader);
     assert_eq!(lithia::test::live_nodes().await, base);
+}
+
+#[lithia::test]
+async fn a_new_writer_holds_again_what_support_let_go_of() {
+    let base: usize = lithia::test::live_nodes().await;
+    let go: SourceNode<u32> = effect!(2);
+    let x: SourceNode<u32> = effect!(0);
+    let seen: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let e: DerivedNode<()> = effect!(|x| seen.store(*x.get(), Ordering::SeqCst));
+    let (tx, rx): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
+    let parent: SourceNode<u32> = go.clone();
+    // Holds `x` only inside its body; once told to, its run creates a writer of `x` on `go`.
+    let block: SourceNode<()> = effect!(async move {
+        let _ = rx.await;
+        effect!(|parent| x.set(*parent.get() * 10));
+        std::future::pending::<()>().await;
+    });
+    // Scoped, so each lives by its handle; their bodies keep `block` and `e` alive.
+    let keep_block: DerivedNode<()> = effect!(|go| {
+        let _ = (go.get(), block.get());
+    })
+    .scoped();
+    let keep_e: DerivedNode<()> = effect!(|go| {
+        let _ = (go.get(), e.get());
+    })
+    .scoped();
+    lithia::flush().await;
+    drop((e, block)); // nothing anchors `x` or its writer: support lets go of `e`
+    assert_eq!(lithia::test::live_nodes().await, base + 6);
+    tx.send(()).unwrap();
+    until(|| seen.load(Ordering::SeqCst) == 20).await; // the block's run goes on outside any flush
+    assert_eq!(lithia::test::live_nodes().await, base + 7);
+    drop(keep_e); // the new writer, on the anchored `go`, keeps `e`
+    assert_eq!(lithia::test::live_nodes().await, base + 6);
+    go.set(3);
+    lithia::flush().await;
+    assert_eq!(seen.load(Ordering::SeqCst), 30);
+    drop(keep_block);
+    assert_eq!(lithia::test::live_nodes().await, base + 1);
+}
+
+#[lithia::test]
+async fn a_scoped_node_that_is_an_anchor_again_holds_what_depends_on_it() {
+    let base: usize = lithia::test::live_nodes().await;
+    let a: SourceNode<u32> = effect!(1);
+    let s: DerivedNode<u32> = effect!(|a| *a.get()).scoped();
+    let seen: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let d: DerivedNode<()> = effect!(|s| seen.store(*s.get(), Ordering::SeqCst));
+    let slot: Arc<Mutex<Option<DerivedNode<u32>>>> = Arc::new(Mutex::new(None));
+    // Its body keeps `d` alive, and hands out `s` once `a` passes 1; scoped, it goes with its handle.
+    let w: DerivedNode<()> = effect!(|a| {
+        if *a.get() > 1 {
+            *slot.lock().unwrap() = Some(s.clone());
+        }
+        let _ = d.get();
+    })
+    .scoped();
+    lithia::flush().await;
+    drop((d, s)); // `s` has no handle now, so support lets go of `d`
+    assert_eq!(lithia::test::live_nodes().await, base + 4);
+    a.set(2); // `s` is an anchor again
+    lithia::flush().await;
+    drop(w); // what kept `d` alive goes; support holds it again
+    assert_eq!(lithia::test::live_nodes().await, base + 3);
+    a.set(3);
+    lithia::flush().await;
+    assert_eq!(seen.load(Ordering::SeqCst), 3);
+    slot.lock().unwrap().take();
+    assert_eq!(lithia::test::live_nodes().await, base + 1);
 }
 
 #[lithia::test]

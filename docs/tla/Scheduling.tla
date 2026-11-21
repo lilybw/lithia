@@ -25,6 +25,7 @@ CONSTANTS
     Parents,    \* [1..N -> SUBSET 1..N]: every parent is older than its child
     Sources,    \* nodes without a body, written from outside or by bodies
     Async,      \* derived nodes whose runs may suspend and poll again
+    Equal,      \* derived nodes whose runs may compute a value equal to the last; the others never do
     Targets,    \* [1..N -> SUBSET Sources]: the sources a node's body may write
     Batches,    \* <<B1, B2, ...>>: one outside writer per batch, a set of sources
     MaxClock,   \* bodies change values only while the clock stays within this
@@ -348,7 +349,8 @@ T_Start(p) ==
 
 \* One poll of the body: it may write its targets and, when it ends, publish a changed value,
 \* which is discarded if the run was superseded by then (run.rs Node::publish). A node without
-\* children never changes: nothing could observe it, so the model saves those states.
+\* children never changes: nothing could observe it, so the model saves those states. A node
+\* outside Equal changes whenever its run ends and the clock allows.
 T_Poll(p) ==
     /\ pc[p] = "t_poll"
     /\ LET n == loc[p].n  r == run[n] IN
@@ -359,6 +361,7 @@ T_Poll(p) ==
              St(t) == clock + Cardinality({u \in wr : u <= t})
              mine == IF pub THEN clock + k ELSE 0
          IN /\ chg => out = "end" /\ Children(n) # {}
+            /\ n \notin Equal /\ out = "end" /\ Children(n) # {} /\ clock + Cardinality(wr) < MaxClock => chg
             /\ k = 0 \/ clock + k <= MaxClock
             /\ clock' = clock + k
             /\ version' = [x \in Node |-> IF x \in wr THEN St(x) ELSE IF x = n /\ pub THEN mine ELSE version[x]]

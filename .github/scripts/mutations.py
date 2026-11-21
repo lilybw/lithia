@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 """Applies each hand-picked mutation to a copy of the workspace and checks that the test named for it
-fails (spec section 11.4, "Teeth"). The working tree is never changed.
+fails (docs/VERIFICATION.md, Mutations). The working tree is never changed.
 
 Usage: mutations.py [--list] [ID ...]. Exits 1 if a mutation that should be caught is not.
 """
@@ -95,6 +95,24 @@ MUTATIONS: list[Mutation] = [
         "    if keep(&nodes[..share]) {\n        nodes.drain(..share);\n    }\n",
         "    let _ = keep(&nodes[..share]);\n",
         "edge", "", caught=False,
+    ),
+    Mutation(
+        "S1", "A walk from a scoped or held anchor stopping at it", "crates/lithia/src/support.rs",
+        "        if !stop || header.id == start {\n",
+        "        if !stop {\n",
+        "edge", "a_scoped_node_that_is_an_anchor_again_holds_what_depends_on_it",
+    ),
+    Mutation(
+        "S2", "A new writer holding nothing again", "crates/lithia/src/support.rs",
+        "            rehold(node.clone(), &mut keep, &mut held);\n",
+        "            let _ = &mut held;\n",
+        "edge", "a_new_writer_holds_again_what_support_let_go_of",
+    ),
+    Mutation(
+        "S3", "A rise from zero never walking", "crates/lithia/src/support.rs",
+        "    cfg!(lithia_loom) || LET_GO.load(Ordering::SeqCst) != 0\n",
+        "    cfg!(lithia_loom)\n",
+        "edge", "an_anchor_that_returns_holds_again_what_support_let_go_of",
     ),
 ]
 

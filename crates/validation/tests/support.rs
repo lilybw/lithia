@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! Validation cases AI–BC, added by v0.3.0: how long nodes live without handles (spec §10, §13).
+//! Validation cases AI–BC: how long nodes live without handles (spec §10, §13).
 //! Every case runs under the workspace's test timeout (`.cargo/config.toml`).
 
 use std::fmt::Write as _;

@@ -62,18 +62,21 @@ impl Lease {
 
     /// Ends the lease: each handle still alive starts counting as an outside handle.
     pub(crate) fn end(&self) {
+        let _op: crate::support::OpGuard = crate::support::enter();
         let held: Vec<(NodeRef, bool, usize)> = {
             let mut guard: MutexGuard<'_, Leased> = self.0.lock();
+            // Counted before the lease ends, so a leased handle another thread drops as an outside
+            // handle afterwards takes off an anchor that is there.
+            for (node, anchoring, count) in &guard.held {
+                if *anchoring {
+                    crate::support::add_anchors(node.header(), *count, || node.clone());
+                }
+            }
             guard.ended = true;
             std::mem::take(&mut guard.held)
         };
-        let _op: crate::support::OpGuard = crate::support::enter();
-        for (node, anchoring, count) in held {
+        for (node, _, count) in held {
             let header: &crate::node::Header = node.header();
-            // Anchors first, so the node never looks unanchored in between.
-            if anchoring {
-                crate::support::add_anchors(header, count, || node.clone());
-            }
             if header.captured.fetch_sub(count, Ordering::SeqCst) == count {
                 crate::support::check_unread(header);
             }

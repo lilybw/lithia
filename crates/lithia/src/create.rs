@@ -235,6 +235,7 @@ fn new_node<K: NodeValue>(
             anchors: AtomicUsize::new(1),
             captured: AtomicUsize::new(0),
             support: Mutex::new(None),
+            let_go: AtomicBool::new(false),
             scoped: AtomicBool::new(false),
             held_by: Mutex::new(None),
             targets: targets.iter().map(Arc::downgrade).collect(),
@@ -258,10 +259,6 @@ fn new_node<K: NodeValue>(
     // parents, it is disposed as disposal would have (spec §10.5).
     let orphan: bool = !parents.is_empty() && protocol::link(&erased, &parents);
     drop(parents);
-    for target in &targets {
-        target.header().writers.lock().push(Arc::downgrade(&erased));
-    }
-    drop(targets);
     let keyed: bool = erased.header().key.is_some();
     if keyed && top_level {
         crate::diag::key_outside_run(site);
@@ -294,6 +291,11 @@ fn new_node<K: NodeValue>(
         *erased.header().support.lock() = Some(erased.clone());
         crate::diag::support_held(site);
     }
+    // Once the node is held, so that its writer edges find it supported.
+    if !targets.is_empty() {
+        crate::support::add_writer(&erased, &targets);
+    }
+    drop(targets);
     if kind != Kind::Source {
         context::record_creation(&erased);
     }

@@ -32,9 +32,9 @@ async fn main() {
 - **Lifetimes without owners.** A node lives as long as something outside lithia can still make it run.
   Nodes created inside a body are rebuilt on each of its runs, or kept with `key = …`, which reruns only
   those whose inputs changed.
-- **Checked.** The spec's validation cases, compile-fail cases and loom models of the scheduling protocol
-  run on Linux (x86-64 and ARM), macOS and Windows before every release. Miri, deeper loom runs, stress runs
-  and TLC on a [TLA+ model](docs/tla) of the protocol follow on nightly.
+- **Checked.** The spec's validation cases, compile-fail cases, loom models and TLC on [TLA+ models](docs/tla)
+  of the scheduling protocol and of node lifetimes run before every release, the tests on Linux (x86-64 and
+  ARM), macOS and Windows. Miri, deeper loom runs, stress runs and the largest TLC models follow on nightly.
 
 ## Using it
 

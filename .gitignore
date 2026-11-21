@@ -3,3 +3,5 @@
 *.pdb
 .idea/
 .vscode/
+# Traces TLC writes next to a model that fails.
+*_TTrace_*.tla

@@ -573,7 +573,7 @@ impl<K: NodeValue> SourceNode<K> {
         Setter { node: self.node.clone(), internal: Count::new(false) }
     }
 
-    /// Lets this node live by its handles alone, as in v0.2.5; nodes hanging off it stop with it.
+    /// Lets this node live by its handles alone; nodes hanging off it stop with it.
     /// Marks the node for every holder, for good. `let input: SourceNode<Req> = effect!(req).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self {
@@ -589,7 +589,7 @@ impl<K: NodeValue> DerivedNode<K> {
         Accessor::outside(&self.node)
     }
 
-    /// Lets this node live by its handles alone, as in v0.2.5; nodes hanging off it stop with it.
+    /// Lets this node live by its handles alone; nodes hanging off it stop with it.
     /// Marks the node for every holder, for good. `let price: DerivedNode<f64> = effect!(|input| calc(&input.get())).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self {

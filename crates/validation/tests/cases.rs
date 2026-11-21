@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! Validation cases A–AG from spec §13, verbatim, with Case J as rewritten for v0.3.0; Case AH
-//! lives in `compile.rs`, and the cases v0.3.0 adds in `support.rs`.
+//! Validation cases A–AG (spec §13); Case AH lives in `compile.rs`.
 //! Every case runs under the workspace's test timeout (`.cargo/config.toml`).
 
 use std::sync::mpsc;
@@ -300,7 +299,7 @@ async fn case_n_created_mid_propagation() {
     let m: DerivedNode<i32> = (*holder.get()).clone().expect("set by _maker");
     assert_eq!(*m.get(), 2); // `m`'s entry waited on `slow`'s in-flight run, so `m` ran once, after it
     drop((a, slow, holder, _maker, m));
-    assert_eq!(lithia::test::live_nodes().await, base); // v0.3.0: nothing holds itself
+    assert_eq!(lithia::test::live_nodes().await, base); // nothing holds itself
 }
 
 // Case O: a run that yields nothing.
@@ -423,7 +422,7 @@ async fn case_u_loader_feeds_its_creator() {
     lithia::test::settled(&view).await;
     assert_eq!(view.get().0, "user-1"); // the loader's write reruns `view`: a creator is not in its child's writer set
     drop((id, cache, view));
-    assert_eq!(lithia::test::live_nodes().await, base); // v0.3.0: nothing holds itself
+    assert_eq!(lithia::test::live_nodes().await, base); // nothing holds itself
 }
 
 // Case V: reflow reruns children on an equal value.
@@ -468,7 +467,7 @@ async fn case_w_reflow_from_its_own_body() {
     me.set(None);
     lithia::flush().await;
     drop((me, tick, body_runs, child_runs, node, _child));
-    assert_eq!(lithia::test::live_nodes().await, base); // v0.3.0: nothing holds itself
+    assert_eq!(lithia::test::live_nodes().await, base); // nothing holds itself
 }
 
 // Case X: defer feeds a value back on purpose.
