@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 lithia Authors
 # SPDX-License-Identifier: MPL-2.0
 
-# Slower checks: Miri, the loom models at bound 4 with and without the fast path, TLC on every TLA+
-# model, the kept mutations, and stress runs of every test binary on Linux (x86-64 and ARM) and macOS
-# (ARM). They run on every push to `nightly`, weekly, and on pull requests; a nightly tag is promoted to
-# `release` only once they pass on it.
+# Slower checks: Miri, the loom models at bound 4 with and without the fast path, TLC on the two
+# largest TLA+ models, the kept mutations, and stress runs of every test binary on Linux (x86-64 and
+# ARM) and macOS (ARM). They run on every push to `nightly`, weekly, and on pull requests; a nightly
+# tag is promoted to `release` only once they pass on it.
 name: extended
 
 on:

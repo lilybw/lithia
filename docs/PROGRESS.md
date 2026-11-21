@@ -294,7 +294,8 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   alive (`LET_GO`). Undoing each fix in the model fails it again (`docs/tla/README.md`). In the engine,
   a new loom model and two edge tests fail on v0.4.0.2 and pass now; kept mutations S1–S3 cover the
   walks.
-- The scheduling model gains `Equal` (nodes outside it always change), so `MCDiamond` can finish.
+- The scheduling model gains `Changing` (nodes outside it never change), so `MCDiamond`, with one
+  changing side that changes at most once, can finish.
   `docs/tla/tlc.sh` fetches the TLA+ tools' current release, since v1.7.4 takes hours over the
   lifetimes. `ci.yml` runs TLC on eight models on each push and pull request; `extended.yml` runs
   `MCSharedTarget` and `MCDiamond`.

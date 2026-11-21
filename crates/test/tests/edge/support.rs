@@ -497,7 +497,8 @@ async fn a_supported_starting_point_ends_its_sweep_at_once() {
     let s: SourceNode<u32> = effect!(0);
     let trigger: SourceNode<u32> = effect!(0);
     let hub: DerivedNode<u32> = effect!(|s| *s.get());
-    for _ in 0..20_000 {
+    let children: usize = if cfg!(miri) { 2_000 } else { 20_000 }; // 20 000 take Miri hours
+    for _ in 0..children {
         effect!(|hub| {
             let _ = hub.get();
         });
@@ -524,8 +525,8 @@ async fn a_supported_starting_point_ends_its_sweep_at_once() {
             event.text[at..].split(' ').next().unwrap().parse::<usize>().unwrap()
         })
         .sum();
-    // Walking the hub's downstream would take 20 000 nodes per drop; other tests' sweeps add a few.
-    assert!(walked < 20_000, "sweeps walked {walked} nodes");
+    // Walking the hub's downstream would take `children` nodes per drop; other tests' sweeps add a few.
+    assert!(walked < children, "sweeps walked {walked} nodes");
 }
 
 #[lithia::test]

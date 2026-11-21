@@ -27,7 +27,7 @@ a nightly release is promoted (`extended.yml`), so a model that fails blocks a r
 
 A process's pending frame visits and releases are sets, handled in every order: a superset of the
 engine's. Bodies are abstract: a run writes any subset of its targets, freely while the clock stays
-below `MaxClock`, and changes its value or not; a node outside `Equal` always changes.
+within `MaxClock`, and changes its value or not; a node outside `Changing` never changes.
 
 Not modelled: node creation and lifetimes (in `Lifetimes.tla`), creator order, fragility, reflow,
 generators, `WHOLE_EPOCHS` and disposal. The loom models and the edge tests cover those.
@@ -48,7 +48,7 @@ generators, `WHOLE_EPOCHS` and disposal. The loom models and the edge tests cove
 
 | Model | Graph and load |
 | --- | --- |
-| `MCDiamond` | A diamond under two outside writes: glitch freedom, supersession and handover. One side may compute an equal value. |
+| `MCDiamond` | A diamond under two outside writes: glitch freedom, supersession and handover. One side never changes its value, the other at most once (`MaxClock = 3`). |
 | `MCSupersede` | A chain of synchronous nodes under two outside writes. |
 | `MCAsyncChain` | The same with an async middle node that polls twice: child epochs and protected runs. |
 | `MCSharedTarget` | Two runs serving one epoch write the same source, whose region is a chain. |

@@ -124,10 +124,12 @@ created between a write's framing and its release, and F5 is equivalent to the o
 
 `.github/scripts/stress.sh <release runs> <debug runs> <one-core runs>` runs every test binary that
 many times, in release, in debug and pinned to one core (Linux only), and keeps the output of every
-failed run. `extended.yml` runs it 200, 100 and 100 times.
+failed run. A failure in a test listed in `.github/scripts/known-flaky.txt`, each described in
+`known_bugs.md`, is reported without failing the run. `extended.yml` runs it 200, 100 and 100 times.
 
 ## Miri
 
 `extended.yml` runs the unit tests and validation cases, and the edge-case tests in three shards by
-module, under Miri, with isolation and leak checks off for tokio's threads. Several tests stage races with sleeps, which Miri's
-slowness can reorder, so the job fails only on undefined behaviour or an operation Miri cannot run.
+module, under Miri, with isolation and leak checks off for tokio's threads. Several tests stage
+races with sleeps, which Miri's slowness can reorder, so the job fails only on undefined behaviour
+or an operation Miri cannot run.

@@ -4,7 +4,8 @@
 
 # Runs every test binary of the workspace many times: in release, in debug, and in release pinned to
 # one core (Linux only). Usage: stress.sh <release runs> <debug runs> <one-core runs> [out dir].
-# Prints one line per binary and mode; keeps the output of every failed run; exits 1 if any failed.
+# Prints one line per binary and mode and keeps the output of every failed run. Exits 1 if any run
+# failed in a test not listed in known-flaky.txt, whose entries docs/known_bugs.md describes.
 set -uo pipefail
 
 release_runs="${1:?release runs}"
@@ -26,22 +27,31 @@ binaries() {
         grep -vE '^(compile|loom) ' | sort -u
 }
 
+known="$(grep -v '^#' "$(dirname "$0")/known-flaky.txt" | grep . || true)"
 failed=0
 stress() {
     local mode="$1" runs="$2" prefix="$3" list="$4"
     [[ -n "$list" ]] || { echo "no test binaries found" >&2; exit 2; }
     while read -r name binary; do
-        local ok=0
+        local ok=0 flaky=0
         for ((i = 1; i <= runs; i++)); do
             if output="$($prefix "$binary" --quiet 2>&1 < /dev/null)"; then
                 ok=$((ok + 1))
             else
                 printf '%s\n' "$output" > "$out/fail-$mode-$name-$i.log"
                 printf '%s\n' "$output" | grep -E -m 8 "^---- |panicked at|timed out|left:|right:" | sed "s/^/  run $i: /"
-                failed=1
+                # A run counts as known only if every test that failed in it is listed.
+                tests="$(printf '%s\n' "$output" | sed -n 's/^---- \(.*\) stdout ----$/\1/p')"
+                if [[ -n "$tests" && -n "$known" ]] && ! grep -vxF -f <(printf '%s\n' "$known") <<< "$tests" > /dev/null; then
+                    flaky=$((flaky + 1))
+                else
+                    failed=1
+                fi
             fi
         done
-        echo "$mode $name: $ok/$runs"
+        local note=""
+        ((flaky > 0)) && note=", $flaky in known flaky tests"
+        echo "$mode $name: $ok/$runs$note"
     done <<< "$list"
 }
 

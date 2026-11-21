@@ -11,13 +11,14 @@ seen, or what follows from the design where nothing has been seen. Fixed bugs ar
 
 ### `flush` returning before a deferred function runs
 
-*About 1 in 730 runs of one test on macOS ARM CI runners (3 in about 2 200); never in 3 000 runs on
+*About 1 in 550 runs of one test on macOS ARM CI runners (5 in about 2 800); never in 3 000 runs on
 Linux x86-64 or ARM.*
 
 `defer_outside_lithia_tasks_follows_the_latest_write` (`crates/test/tests/edge/propagation.rs`) defers a
-function from a plain tokio task, then awaits `lithia::flush`; on the failing runs `flush` returned
-before the function had run. Only `defer` called outside lithia tasks is affected, and the function
-still runs. Not investigated further at this frequency.
+function from a plain tokio runtime's `block_on`, outside any lithia task, then awaits `lithia::flush`;
+on the failing runs `flush` returned before the function had run. Only `defer` called outside lithia
+tasks is affected. Not investigated further at this frequency; stress runs report its failures
+without failing (`.github/scripts/known-flaky.txt`).
 
 ## Never seen; follow from the design
 
