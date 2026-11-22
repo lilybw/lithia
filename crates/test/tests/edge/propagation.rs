@@ -188,6 +188,15 @@ fn defer_outside_lithia_tasks_follows_the_latest_write() {
     });
 }
 
+#[lithia::test]
+#[ignore = "known bug: a deferred function that panics leaks its scope's token (docs/known_bugs.md)"]
+async fn flush_returns_after_a_deferred_function_panics() {
+    lithia::defer(|| panic!("deferred function panics"));
+    let done: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(2), lithia::flush()).await;
+    assert!(done.is_ok(), "flush hung after a deferred function panicked");
+}
+
 #[lithia::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "known bug: an epoch settles before the run that absorbed its change publishes (docs/known_bugs.md)"]
 async fn flush_waits_for_the_run_that_absorbed_its_write() {
