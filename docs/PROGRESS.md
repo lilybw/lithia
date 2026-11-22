@@ -337,6 +337,21 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   of repeating the CI lists; VERIFICATION's loom section drops its version-by-version inventory;
   `docs/BENCHMARKS.md` leads with current figures and keeps the history once, not twice.
 
+## Value versioning and code review (2026-11-22)
+
+- Value versioning (Claude doc "lithia: value versioning"): six approaches compared, five measured in a
+  scratch benchmark. Recommended: versions carried by releases for reads inside runs, a pin-gated side
+  history for snapshots (+1 ns per publish and 8 bytes per node when unused), cursors per consumer for
+  lossless streams. Before 1.0: `get()` returns an opaque `Ref<K>`, and the spec drops "every read sees
+  the newest value". A node record is 832 bytes today (`Header` 744, `Sched` 320).
+- Code review (Claude doc "lithia: code review"), five reviewers. Confirmed bugs, now in
+  `docs/known_bugs.md`: a deferred function that panics hangs `flush` (ignored test
+  `flush_returns_after_a_deferred_function_panics`), and `effect!` rejects bodies that read `_NAME`
+  constants and four similar forms. Also reported, not yet reproduced here: a stale failure after a
+  superseded panic, key comparison under the scheduling lock, the fast path open during a body's poll.
+  arc-swap writes slow with every thread that has read (a run at 1.97 µs with 64 reader threads against
+  1.10 µs). Plan: fix bugs, add safety nets, restructure (module map in the doc), then tune.
+
 ## Design migration to v0.3.0 (ownership)
 
 - `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc), revision 12 plus its implementation notes. A node created in a run is
@@ -417,7 +432,8 @@ Five passes from `TODO.md`, run in series:
 
 1. Fix the settle bug (`docs/known_bugs.md`): extend `Scheduling.tla` to two scopes with the property
    that an epoch settles only after every run it reached has published, then change `decide`/`settle`.
-2. Work through the review's path to 1.0, starting with the v0.5.x items.
+2. Work through the architectural review's path to 1.0 and the code review's plan, starting with the
+   bugs in `docs/known_bugs.md`.
 3. Review what the weekly cargo-mutants run leaves alive.
 4. v0.4.1's allocation work: per-thread scratch buffers for a step's work lists and reuse of a run's
    `RunShared` (review 2.5, 2.6). Measure on an 8–64 core machine, including the one sweep lock.
