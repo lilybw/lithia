@@ -3,18 +3,16 @@
 
 # TLA+ models
 
-Two specifications, checked by TLC on the small graphs in [`models/`](models), are the TLA+ specification
-design spec §11.4 step 8 asks for:
+Two TLA+ specifications of the engine, checked by TLC on the small graphs in [`models/`](models):
 
-- [`Scheduling.tla`](Scheduling.tla): the scheduling protocol (§7.2–7.4, §11.4);
+- [`Scheduling.tla`](Scheduling.tla): the scheduling protocol (design spec §7.2–7.4, §11.4);
 - [`Lifetimes.tla`](Lifetimes.tla): node lifetimes, support and sweeps (§10.1–10.2).
 
-Each step of either is one lock section or one atomic operation of the engine. TLC checks the models
-on each push and pull request (`ci.yml`), and the two largest, `MCSharedTarget` and `MCDiamond`, before
-a nightly release is promoted (`extended.yml`), so a model that fails blocks a release. `MCDiamond`
-does not finish within a CI runner's six hours (11 million states and depth 65 after two hours
-here), so `extended.yml` explores it breadth-first for 270 minutes, which checks every state up to
-the depth reached.
+Each step is one lock section or one atomic operation of the engine. `ci.yml` checks the models on
+each push and pull request. The two largest, `MCSharedTarget` and `MCDiamond`, run in `extended.yml`
+before a nightly release is promoted, so a failing model blocks a release. `MCDiamond` needs about four
+hours: it finished once in CI with 26 147 949 states at depth 109 and no error. Since runners differ in
+speed, `extended.yml` stops it after 270 minutes and passes it if no error was found by then.
 
 ## Scheduling
 

@@ -2,3 +2,4 @@
 # SPDX-License-Identifier: MPL-2.0
 # Tests whose rare failures docs/known_bugs.md describes; stress.sh reports them without failing.
 propagation::defer_outside_lithia_tasks_follows_the_latest_write
+case_bv_whole_epochs

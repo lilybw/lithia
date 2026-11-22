@@ -7,18 +7,40 @@ Everything known to be wrong or missing in lithia, most frequent first. A freque
 seen, or what follows from the design where nothing has been seen. Fixed bugs are in
 [`CHANGELOG.md`](../CHANGELOG.md).
 
+## Reproduced, not yet fixed
+
+### An epoch settling before the run that absorbed its change publishes
+
+*Every time a run, started for one epoch, reads a write whose own epoch reaches the node only later.
+Reproduced deterministically by `flush_waits_for_the_run_that_absorbed_its_write`
+(`crates/test/tests/edge/propagation.rs`, ignored until fixed).*
+
+A node runs for an epoch only if a release in it carries a change newer than the start of its last run
+(spec §7.2). When a run has started after a write but before that write's epoch reaches the node, the
+write's entry settles unchanged, although the run that read the write has not published yet. The
+write's epoch can then settle: `flush` returns, and `defer` runs, while the node still holds its old
+value. Found by the architectural review of 2026-11-22. It very likely explains the macOS failures of
+`defer_outside_lithia_tasks_follows_the_latest_write`, where `seen` was still 0 after `flush`: the
+node's first run, started after the write, had not published. Stress runs report that test's failures
+without failing (`.github/scripts/known-flaky.txt`) until the fix lands.
+
+The fix: an entry that would settle because a run in flight absorbed its change joins that run, which
+then releases the entry's epoch when it publishes. If the run has already released, the entry settles
+with the node's current version, so its children test the change in turn. `Scheduling.tla` misses this
+because it has one scope and `ScopeConsistent` checks only that runs started; it needs two scopes and the
+property "an epoch settles only after every run it reached has published".
+
 ## Seen in testing
 
-### `flush` returning before a deferred function runs
+### Case BV timing out
 
-*About 1 in 450 runs of one test on macOS ARM CI runners (7 in about 3 100); never in 3 000 runs on
-Linux x86-64 or ARM.*
+*2 in about 2 100 runs on macOS ARM CI runners since the test's rework, both in one job; never in
+7 300 runs on Linux, under load or pinned to one core.*
 
-`defer_outside_lithia_tasks_follows_the_latest_write` (`crates/test/tests/edge/propagation.rs`) defers a
-function from a plain tokio runtime's `block_on`, outside any lithia task, then awaits `lithia::flush`;
-on the failing runs `flush` returned before the function had run. Only `defer` called outside lithia
-tasks is affected. Not investigated further at this frequency; stress runs report its failures
-without failing (`.github/scripts/known-flaky.txt`).
+`case_bv_whole_epochs` (`crates/validation/tests/consistency.rs`) timed out after 20 seconds. The test
+blocks one of its two worker threads in a synchronous body on purpose, and whether the engine or that
+blocked worker stalls the rest is not known. Not investigated further at this frequency; listed in
+`known-flaky.txt`.
 
 ## Never seen; follow from the design
 
@@ -66,8 +88,9 @@ warning catch the leaks.
   reaching its subscribers at release time rather than those it framed, needs a node created between a
   write's framing and its release; F5 is equivalent to the original.
 - The TLA+ models (`docs/tla`) leave out creator order, fragility, reflow, generators,
-  `WHOLE_EPOCHS`, keyed nodes, disposal and ghosts, and check small graphs only; `MCDiamond` only up
-  to the depth TLC reaches in 270 minutes. The loom models (`crates/test/tests/loom.rs`) run with at
+  `WHOLE_EPOCHS`, keyed nodes, disposal and ghosts, and check small graphs only. `MCDiamond` has
+  finished once in CI (26 147 949 states, depth 109, 3 h 57 min, no error); runners differ in speed,
+  so CI stops it after 270 minutes and passes it if it found no error by then. The loom models (`crates/test/tests/loom.rs`) run with at
   most three preemptions on each push and four on nightly.
 - cargo-mutants has run over the engine only as a local sample (29 mutants of `support.rs`); it
   runs over all of it weekly from v0.5.0.

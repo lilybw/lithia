@@ -322,6 +322,21 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   unviable, 4 missed, all equivalent: they only skip or add work of the walk gate and of the check for
   the outermost operation.
 
+## Architectural review and plain-language pass (2026-11-22, version 0.5.0)
+
+- Five independent reviews (reactive semantics; concurrency and formal methods; Rust API; UI, game and
+  real-time consumers; dataflow at scale), gathered in the Claude doc "lithia: architectural review"
+  with a path to 1.0: v0.5.x fixes, v0.6 semantics, v0.7 an API for the variants, then 1.0-rc.
+- The concurrency review found a protocol bug: an epoch can settle before the run that absorbed its
+  change publishes, so `flush` returns and `defer` runs early. Reproduced deterministically by
+  `flush_waits_for_the_run_that_absorbed_its_write` (ignored until fixed); it very likely explains the
+  macOS `defer` flake. Recorded in `docs/known_bugs.md` with the fix.
+- `MCDiamond` finished once in CI: 26 147 949 states, depth 109, 3 h 57 min, no error. Case BV timed out
+  in 2 of about 2 100 macOS runs (none in 7 300 local runs); listed as known flaky.
+- Docs rewritten in plainer language: README and CONTRIBUTING point to `docs/VERIFICATION.md` instead
+  of repeating the CI lists; VERIFICATION's loom section drops its version-by-version inventory;
+  `docs/BENCHMARKS.md` leads with current figures and keeps the history once, not twice.
+
 ## Design migration to v0.3.0 (ownership)
 
 - `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc), revision 12 plus its implementation notes. A node created in a run is
@@ -400,8 +415,10 @@ Five passes from `TODO.md`, run in series:
 
 ## Next steps
 
-1. Review what the weekly cargo-mutants run leaves alive. Run `MCDiamond` to the end on a machine with
-   many cores (`cd docs/tla/models && ../tlc.sh MCDiamond`).
-2. v0.4.1's allocation work: per-thread scratch buffers for a step's work lists and reuse of a run's
+1. Fix the settle bug (`docs/known_bugs.md`): extend `Scheduling.tla` to two scopes with the property
+   that an epoch settles only after every run it reached has published, then change `decide`/`settle`.
+2. Work through the review's path to 1.0, starting with the v0.5.x items.
+3. Review what the weekly cargo-mutants run leaves alive.
+4. v0.4.1's allocation work: per-thread scratch buffers for a step's work lists and reuse of a run's
    `RunShared` (review 2.5, 2.6). Measure on an 8–64 core machine, including the one sweep lock.
-3. Make `blocked()` in `support.rs` cheap while scoped nodes exist (`docs/known_bugs.md`, Performance).
+5. Make `blocked()` in `support.rs` cheap while scoped nodes exist (`docs/known_bugs.md`, Performance).

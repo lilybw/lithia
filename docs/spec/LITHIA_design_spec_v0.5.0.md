@@ -1,6 +1,6 @@
 # LITHIA design spec v0.5.0
 
-2026-11-21 · Lily
+2026-11-22 · Lily
 
 What changed in each version is in [`CHANGELOG.md`](https://github.com/lilybw/lithia/blob/nightly/CHANGELOG.md). This spec states the design as it
 stands; the validation cases it names live in `crates/validation`, the details of how lithia is verified in
@@ -9,7 +9,7 @@ and what is known to be wrong or missing in [`docs/known_bugs.md`](https://githu
 
 ## 1. Overview and scope
 
-LITHIA is a thread-safe, fine-grained reactive engine for Rust on tokio. It brings the core of Solid 2.0's signal model to Rust through one primitive, the `effect!` proc macro.
+lithia is a thread-safe, fine-grained reactive engine for Rust on tokio. It brings the core of Solid 2.0's signal model to Rust through one primitive, the `effect!` proc macro.
 
 ### Goals
 
@@ -49,9 +49,9 @@ What Loud Failures cannot see, since no check can tell these mistakes from inten
 - Nodes whose values are not `Send + Sync`.
 - Writable derived nodes, such as Solid's writable memos (16).
 
-### Where LITHIA departs from Solid 2.0
+### Where lithia departs from Solid 2.0
 
-| Solid 2.0 | LITHIA |
+| Solid 2.0 | lithia |
 | --- | --- |
 | Dependencies tracked automatically | Dependencies listed explicitly |
 | Writes inside reactive scope are errors | Writes inside bodies are allowed |
@@ -969,7 +969,7 @@ When a node becomes a ghost, its surviving children rerun, so fragility and the 
 
 ## 11. Concurrency and runtime
 
-LITHIA runs on tokio's multi-threaded runtime: values live in per-node lock-free cells, and scheduling is a protocol on per-node state, with no central thread (11.4).
+lithia runs on tokio's multi-threaded runtime: values live in per-node lock-free cells, and scheduling is a protocol on per-node state, with no central thread (11.4).
 
 - Reads: `get()` loads the node's value cell (an `arc-swap` `ArcSwapOption<K>`) without locking, from any thread.
 - Writes: applied on the caller's thread under the node's write lock, then recorded in the caller's batch.
@@ -1193,10 +1193,10 @@ Expected changes, and what they replace:
 - An implicit `equals` default for `K: PartialEq`? Left out for now: it would stop `()` effects propagating, and behave differently in generic code (6.4).
 - Final names for `FRAGILE` / `SEMI_FRAGILE` and for the three ghost policies.
 - Keep the token stream in release builds, or only behind a diagnostics feature?
-- Tasks lithia did not start get one batch per write. Offer a runtime hook to batch them too? Batching halves the cost of 100 writes (15).
+- Tasks lithia did not start get one batch per write. Offer a runtime hook to batch them too? Batching cuts the cost of 100 writes to under a third (15).
 - The rerun-rate threshold is an environment variable (`LITHIA_RERUN_RATE`); should it also get an API (12)?
 - Should `try_set` hand the rejected value back, e.g. `Result<(), Ghosted<K>>`?
 - A truly in-place `modify` would need reads to take a brief lock, which slows every read and lets cross-node reads inside closures deadlock. Worth it for large values?
-- Why does the eight-way binding mesh take 13–15 runs under v0.3.0 against 8 under v0.2.5, when nothing in v0.3.0 changes how writes propagate (15)?
+- Run counts in an eight-way binding mesh vary with scheduling, from 15 to 58. Should write cycles be defined as rounds, so that the count is fixed (7.4, 15)?
 
 Questions resolved in earlier versions are recorded in `CHANGELOG.md`.

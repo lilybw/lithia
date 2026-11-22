@@ -1,23 +1,19 @@
 # Contributing to lithia
 
-Thank you for helping. lithia is small and strict about behaving as its
-[design spec](https://lilybw.com/lithia/spec/) says, so most of this is about keeping the code, the
-tests and the spec in step.
+The [design spec](https://lilybw.com/lithia/spec/) defines how lithia behaves, so most of this is about
+keeping the code, the tests and the spec in step.
 
 ## How a change lands
 
 1. Fork the repository and branch from `nightly`.
-2. Open a pull request into `nightly`. CI ([`ci.yml`](.github/workflows/ci.yml)) runs on Linux (x86-64
-   and ARM), macOS and Windows: format, lints (also under loom), docs, the tests with the validation and
-   compile-fail cases, the loom models on Linux and Windows, the tests on rustc 1.95, the declared
-   minimum, and TLC on the TLA+ models in `docs/tla`. All of it must pass, and the maintainer reviews.
-   The slower checks of [`extended.yml`](.github/workflows/extended.yml) run too: Miri, the loom models at
-   bound 4, stress runs, TLC on the two largest models and the kept mutations. They do not gate a merge.
+2. Open a pull request into `nightly`. CI ([`ci.yml`](.github/workflows/ci.yml)) must pass, and the
+   maintainer reviews. The slower checks of [`extended.yml`](.github/workflows/extended.yml) run too but
+   do not gate a merge. [`docs/VERIFICATION.md`](docs/VERIFICATION.md) lists what each one runs.
 3. Once merged, the push to `nightly` is released as the next `v<version>.<n>` and the docs site is
-   rebuilt. `release` is then moved to that release's commit, not to `nightly`'s tip, once the extended
-   checks have passed on it and it has been on `nightly` for a few days without a fix on top.
+   rebuilt. `release` later moves to that release's commit, once the extended checks have passed on it
+   and it has gone a few days on `nightly` without a fix on top.
 
-Only pull requests change `nightly` and `release`; the maintainer can also push to them directly.
+Changes reach `nightly` and `release` through pull requests; the maintainer may also push directly.
 
 ## Layout
 
@@ -48,12 +44,11 @@ LITHIA_RANDOM_SEEDS=500 cargo test -p lithia-test --test edge --release -- rando
 python3 .github/scripts/site.py snapshot --version 0.0.0 --out target/site-snapshot  # needs pandoc and npx
 ```
 
-Loom explores every thread interleaving of the scheduling protocol up to a preemption bound (3 by
-default; `LOOM_MAX_PREEMPTIONS=4` goes deeper, in minutes rather than seconds). `LITHIA_LOOM_FAST_PATH=off`
-runs the models with every ready run in a task of its own, the path the fast path falls back to; CI runs both.
-`.cargo/config.toml` runs every `#[lithia::test]` under a timeout, so a `flush` or `settled` that never returns
-fails its test. [`docs/tla`](docs/tla) holds the TLA+ models of the protocol and of node lifetimes, and
-`docs/tla/tlc.sh` checks one with TLC; a change to either updates its model too.
+Loom explores every thread interleaving up to a preemption bound: 3 by default, and
+`LOOM_MAX_PREEMPTIONS=4` goes deeper in minutes rather than seconds. `LITHIA_LOOM_FAST_PATH=off` gives
+every ready run a task of its own; CI runs the models both ways. `.cargo/config.toml` puts every
+`#[lithia::test]` under a timeout, so a `flush` or `settled` that never returns fails its test. A change
+to the scheduling protocol or to lifetimes updates its TLA+ model in [`docs/tla`](docs/tla) too.
 
 The compile-fail cases' expected errors depend on the compiler: CI uses rustc 1.97.0, and
 `TRYBUILD=overwrite cargo test -p lithia-validation --test compile` updates them on that version.

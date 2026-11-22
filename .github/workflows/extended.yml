@@ -148,9 +148,9 @@ jobs:
           path: target/stress
           if-no-files-found: ignore
 
-  # The two models too large for ci.yml; the others run there. MCDiamond does not finish within a
-  # runner's six hours, so it is explored breadth-first for 270 minutes: every state up to the depth
-  # reached is checked, and only a violation fails the job.
+  # The two models too large for ci.yml; the others run there. MCDiamond takes about four hours and
+  # runners differ in speed, so it stops after 270 minutes: every state up to the depth reached is
+  # checked, and only a violation fails the job.
   tla:
     name: tlc (${{ matrix.model }})
     strategy:

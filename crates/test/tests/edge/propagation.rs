@@ -6,7 +6,7 @@
 #![allow(clippy::type_complexity)]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use lithia::{Accessor, DerivedNode, SourceNode, effect};
@@ -186,6 +186,33 @@ fn defer_outside_lithia_tasks_follows_the_latest_write() {
         lithia::flush().await;
         assert_eq!(*seen.get(), 8);
     });
+}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "known bug: an epoch settles before the run that absorbed its change publishes (docs/known_bugs.md)"]
+async fn flush_waits_for_the_run_that_absorbed_its_write() {
+    let x: SourceNode<u32> = effect!(1);
+    let y: SourceNode<u32> = effect!(0);
+    let started: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let doubled: DerivedNode<u32> = effect!(|x, y| {
+        let _ = y.get();
+        let value: u32 = *x.get() * 2;
+        started.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(100));
+        value
+    });
+    lithia::flush().await;
+    started.store(false, Ordering::SeqCst);
+    // `x`'s batch waits for this poll to end; meanwhile a write from another thread starts a run,
+    // which reads `x` = 4 before `x`'s epoch reaches the node.
+    x.set(4);
+    let y2: SourceNode<u32> = y.clone();
+    std::thread::spawn(move || y2.set(1));
+    while !started.load(Ordering::SeqCst) {
+        std::hint::spin_loop();
+    }
+    lithia::flush().await;
+    assert_eq!(*doubled.get(), 8);
 }
 
 #[lithia::test(flavor = "multi_thread", worker_threads = 4)]

@@ -22,19 +22,18 @@ async fn main() {
 
 ## What it does
 
-- **One primitive.** `effect!(value)` makes a source node you write to. `effect!(|a, b| …)` makes a derived
-  node that reruns when `a` or `b` changes; one that returns `()` is an effect.
-- **Built for threads.** Handles are `Send + Sync`, and runs execute on tokio's worker threads. A batch of writes
-  propagates without glitches: a node that depends on it along two paths runs once, with both updated.
-  Batches written at the same time may meet at such a node, unless it asks to wait (`WHOLE_EPOCHS`).
-- **Async and generators.** Bodies can `.await`, and can `yield` several values in turn. Pending and failed
-  are states a node can be in, and a panic fails its node instead of the program.
-- **Lifetimes without owners.** A node lives as long as something outside lithia can still make it run.
-  Nodes created inside a body are rebuilt on each of its runs, or kept with `key = …`, which reruns only
-  those whose inputs changed.
-- **Checked.** The spec's validation cases, compile-fail cases, loom models and TLC on [TLA+ models](docs/tla)
-  of the scheduling protocol and of node lifetimes run before every release, the tests on Linux (x86-64 and
-  ARM), macOS and Windows. Miri, deeper loom runs, stress runs and the largest TLC models follow on nightly.
+- `effect!(value)` makes a source node you write to. `effect!(|a, b| …)` makes a derived node that reruns
+  when `a` or `b` changes; one that returns `()` is an effect.
+- Handles are `Send + Sync`, and bodies run on tokio's worker threads. Within one batch of writes,
+  propagation is glitch-free: a node reached along two paths runs once, with both inputs updated.
+  Batches written concurrently can still meet at such a node; `WHOLE_EPOCHS` makes it wait for both.
+- Bodies can `.await` and can `yield` several values in turn. Pending and failed are states of a node,
+  and a panic fails its node, not the program.
+- No owners: a node lives while something outside lithia can still make it run. Nodes created inside
+  a body are rebuilt on each run, or kept with `key = …`, which reruns only those whose inputs changed.
+- Every release passes the tests on Linux, macOS and Windows, the loom models, and TLC on
+  [TLA+ models](docs/tla) of scheduling and lifetimes. [`docs/VERIFICATION.md`](docs/VERIFICATION.md)
+  lists every check.
 
 ## Using it
 
@@ -50,17 +49,14 @@ it from inside any tokio runtime. Until 1.0, the API may still change between re
 
 ## Releases and docs
 
-Every push to `nightly` that passes CI is released as `v<version>.<n>`, such as `v0.3.1.4`, with the crate
-packages, the docs and the spec attached, and the [docs site](https://lilybw.com/lithia/) is rebuilt.
-`release` moves to a nightly release once the nightly checks have passed on it and it has had time to
-settle. Each release's docs stay online: add `?v=0.3.1.4` to
-any page under `api/` or `spec/` to read that version.
+Every push to `nightly` that passes CI becomes a release named `v<version>.<n>`, such as `v0.5.0.1`, with
+the crate packages, the docs and the spec attached. `release` follows later, once a nightly release has
+passed the slower checks and gone a few days without a fix. Each release's docs stay online: add
+`?v=0.5.0.1` to any page under `api/` or `spec/` of the [docs site](https://lilybw.com/lithia/).
 
 The [design spec](https://lilybw.com/lithia/spec/) is the full reference for how lithia behaves and why.
-[`CHANGELOG.md`](CHANGELOG.md) lists what changed in each version, [`docs/known_bugs.md`](docs/known_bugs.md)
-what is known to be wrong or missing, [`docs/VERIFICATION.md`](docs/VERIFICATION.md) how lithia is checked,
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) its measurements, and [`docs/PROGRESS.md`](docs/PROGRESS.md) the
-implementation's progress.
+Also in the repository: [`CHANGELOG.md`](CHANGELOG.md), [`docs/known_bugs.md`](docs/known_bugs.md),
+[`docs/VERIFICATION.md`](docs/VERIFICATION.md) and [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 ## Contributing
 
