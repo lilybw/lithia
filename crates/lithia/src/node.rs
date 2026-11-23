@@ -213,7 +213,55 @@ pub(crate) struct Sched {
     pub(crate) whole_deferred: u32,
 }
 
+/// A node's scheduling lock, held; debug builds check the lock's invariants (spec §11.4) as it
+/// is released. `let guard: SchedGuard<'_> = header.lock_sched();`
+pub(crate) struct SchedGuard<'a>(MutexGuard<'a, Sched>);
+
+impl std::ops::Deref for SchedGuard<'_> {
+    type Target = Sched;
+
+    fn deref(&self) -> &Sched {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SchedGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Sched {
+        &mut self.0
+    }
+}
+
+impl Drop for SchedGuard<'_> {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        if !std::thread::panicking() {
+            self.0.check();
+        }
+    }
+}
+
 impl Sched {
+    /// Panics unless the lock's invariants hold: entries in epoch order, a runnable entry waiting on
+    /// no parent, an unreleased obligation holding a token, and a handover only while no run is in flight.
+    #[cfg(debug_assertions)]
+    fn check(&self) {
+        let mut previous: Option<EpochId> = None;
+        for (id, entry) in self.entries.iter() {
+            assert!(previous.is_none_or(|before: EpochId| before < *id), "lithia: entries out of epoch order");
+            assert_eq!(*id, entry.epoch.id, "lithia: an entry filed under another epoch");
+            assert!(
+                !entry.due.contains(Due::RUNNABLE) || entry.waiting.is_empty(),
+                "lithia: a runnable entry still waits on a parent"
+            );
+            previous = Some(*id);
+        }
+        let served: &[Served] = self.run.as_ref().map_or(&[], |slot: &RunSlot| slot.served.as_slice());
+        for record in served.iter().chain(&self.inherited) {
+            assert!(record.released || record.tokens > 0, "lithia: an unreleased obligation holds no token");
+        }
+        assert!(self.run.is_none() || self.inherited.is_empty(), "lithia: a handover beside a run in flight");
+    }
+
     pub(crate) fn new(unseeded: bool) -> Sched {
         Sched {
             entries: Entries::default(),
@@ -241,9 +289,11 @@ impl Sched {
     /// Whether this node, as `child`'s creator, may still replace it or keep it: an entry it has not
     /// decided, a run it will start or restart, or a run under way that has not reclaimed `child`.
     pub(crate) fn decides(&self, child: &Header) -> bool {
-        let undecided_entry: bool = self.entries.values().any(|entry: &Entry| !entry.runnable);
+        let undecided_entry: bool = self.entries.values().any(|entry: &Entry| !entry.due.contains(Due::RUNNABLE));
         let next_run: bool = self.run.is_none()
-            && (self.queued || !self.inherited.is_empty() || self.entries.values().any(|entry: &Entry| entry.runnable));
+            && (self.queued
+                || !self.inherited.is_empty()
+                || self.entries.values().any(|entry: &Entry| entry.due.contains(Due::RUNNABLE)));
         let restart: bool = self.run.as_ref().is_some_and(|slot: &RunSlot| slot.restart);
         undecided_entry || next_run || restart || child.undecided.load(Ordering::SeqCst)
     }
@@ -312,8 +362,9 @@ impl Sched {
     }
 
     /// Whether the node still owes its children a release for `epoch` through a run.
-    pub(crate) fn owes(&mut self, epoch: EpochId) -> bool {
-        self.owed_mut(epoch).is_some()
+    pub(crate) fn owes(&self, epoch: EpochId) -> bool {
+        let owed = |s: &Served| s.epoch.id == epoch && !s.released;
+        self.run.as_ref().is_some_and(|slot: &RunSlot| slot.served.iter().any(owed)) || self.inherited.iter().any(owed)
     }
 
     /// Whether any run work is pending or in flight.
@@ -418,22 +469,31 @@ pub(crate) struct Entry {
     pub(crate) waiting: ParentMask,
     /// Writers on the chains that reached this entry.
     pub(crate) writers: WriterSet,
-    /// Newest change stamp a release carried, or 0.
+    /// Newest change stamp a release carried, or none.
     pub(crate) newest: Stamp,
     /// Change stamp to hand on to the children when this entry settles.
     pub(crate) carry: Stamp,
-    /// The node's first run is due in this epoch.
-    pub(crate) first: bool,
-    /// A `lithia::reflow` is due in this epoch.
-    pub(crate) reflow: bool,
-    /// Run whatever the versions say (fragility recovery, ghost parent).
-    pub(crate) force: bool,
-    /// The writer check refused the node in this epoch.
-    pub(crate) cut: bool,
-    /// Ready to be taken by the next run start.
-    pub(crate) runnable: bool,
+    /// What makes the node due in this epoch besides a newer change, and whether it is runnable.
+    pub(crate) due: Due,
     /// The written node at the head of the chain, for cut diagnostics.
     pub(crate) origin: Option<&'static Site>,
+}
+
+bitflags::bitflags! {
+    /// Why an entry's node runs in its epoch besides a newer change, and how far deciding it got.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct Due: u8 {
+        /// The node's first run is due in this epoch.
+        const FIRST = 1;
+        /// A `lithia::reflow` is due in this epoch.
+        const REFLOW = 1 << 1;
+        /// Run whatever the versions say (fragility recovery, ghost parent).
+        const FORCE = 1 << 2;
+        /// The writer check refused the node in this epoch.
+        const CUT = 1 << 3;
+        /// Ready to be taken by the next run start.
+        const RUNNABLE = 1 << 4;
+    }
 }
 
 impl Entry {
@@ -444,13 +504,19 @@ impl Entry {
             writers: WriterSet::new(),
             newest: Stamp::NONE,
             carry: Stamp::NONE,
-            first: false,
-            reflow: false,
-            force: false,
-            cut: false,
-            runnable: false,
+            due: Due::empty(),
             origin: None,
         }
+    }
+
+    /// Runnable and waiting on no parent: the next run start takes it.
+    pub(crate) fn is_ready(&self) -> bool {
+        self.due.contains(Due::RUNNABLE) && self.waiting.is_empty()
+    }
+
+    /// Due only for a reflow: no first run, no forced rerun, no change newer than `ran_at`.
+    pub(crate) fn reflow_only(&self, ran_at: Stamp) -> bool {
+        self.due.intersection(Due::FIRST | Due::REFLOW | Due::FORCE) == Due::REFLOW && self.newest <= ran_at
     }
 }
 
@@ -500,8 +566,10 @@ impl Header {
         self.phase() & phase::GHOST != 0
     }
 
-    pub(crate) fn set_bits(&self, bits: u32) {
-        self.phase.fetch_or(bits, Ordering::SeqCst);
+    /// Sets `set` and clears `clear` in one step, so no reader sees a phase between the two.
+    pub(crate) fn transition(&self, set: u32, clear: u32) {
+        let update = |bits: u32| Some((bits | set) & !clear);
+        let _ = self.phase.fetch_update(Ordering::SeqCst, Ordering::SeqCst, update);
     }
 
     pub(crate) fn clear_bits(&self, bits: u32) {
@@ -516,11 +584,7 @@ impl Header {
         } else if bits & phase::FAILED != 0 {
             match self.failure.load_full() {
                 Some(failure) => Status::Failed(failure),
-                None => Status::Failed(Arc::new(Failure {
-                    message: "failed".to_string(),
-                    site: *self.site,
-                    causes: Vec::new(),
-                })),
+                None => Status::Failed(Arc::new(Failure::new("failed", *self.site))),
             }
         } else if bits & phase::PENDING != 0 {
             Status::Pending
@@ -547,11 +611,15 @@ impl Header {
         }
     }
 
+    /// Takes the node's scheduling lock (spec §11.4, step 1).
+    pub(crate) fn lock_sched(&self) -> SchedGuard<'_> {
+        SchedGuard(self.sched.lock())
+    }
+
     /// Records a failure and enters `Failed`.
     pub(crate) fn fail(&self, failure: Failure) {
         self.failure.store(Some(Arc::new(failure)));
-        self.set_bits(phase::FAILED);
-        self.clear_bits(phase::PENDING);
+        self.transition(phase::FAILED, phase::PENDING);
     }
 
     /// Index of `parent` in this node's parent list.
@@ -561,14 +629,14 @@ impl Header {
 
     /// Strong references to the live children, pruning freed ones.
     pub(crate) fn subscribers(&self) -> Children {
-        let children: Children = self.sched.lock().children();
+        let children: Children = self.lock_sched().children();
         children
     }
 
     /// Removes a freed or disposed child from the subscriber list; the last one leaving may leave
     /// a memo unread (spec §12).
     pub(crate) fn unsubscribe(&self, child: NodeId) {
-        let mut guard: MutexGuard<'_, Sched> = self.sched.lock();
+        let mut guard: SchedGuard<'_> = self.lock_sched();
         let last: bool = guard.subscribers.remove(&child).is_some() && guard.subscribers.is_empty();
         drop(guard);
         if last {
@@ -688,7 +756,7 @@ impl<K: NodeValue> Drop for Node<K> {
             debug_assert!(before > 0, "lithia: scope {} counted fewer live nodes than it holds", header.scope.id);
         }
         let sched: &mut Sched = header.sched.get_mut();
-        let mut tokens: Tokens = Vec::new();
+        let mut tokens: Tokens = Tokens::new();
         for (_, entry) in std::mem::take(&mut sched.entries) {
             tokens.push(entry.epoch);
         }
@@ -697,15 +765,11 @@ impl<K: NodeValue> Drop for Node<K> {
             slot.shared.cancel();
             slot.shared.wake();
             for served in slot.served {
-                for _ in 0..served.tokens {
-                    tokens.push(served.epoch.clone());
-                }
+                tokens.add(served.epoch, served.tokens);
             }
         }
         for served in std::mem::take(&mut sched.inherited) {
-            for _ in 0..served.tokens {
-                tokens.push(served.epoch.clone());
-            }
+            tokens.add(served.epoch, served.tokens);
         }
         sched.subscribers.clear();
         sched.created.clear();
@@ -716,9 +780,7 @@ impl<K: NodeValue> Drop for Node<K> {
                 parent.header().unsubscribe(header.id);
             }
         }
-        for epoch in tokens {
-            epoch.close_token();
-        }
+        tokens.close();
         let runtime: Option<Handle> = header.runtime.clone();
         if let Some(value) = self.value.swap(None) {
             crate::drops::drop_value(value, runtime.as_ref());

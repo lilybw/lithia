@@ -88,41 +88,42 @@ type TaskScopes = BTreeMap<tokio::task::Id, Weak<Scope>>;
 type ThreadScope = Option<Arc<Scope>>;
 
 crate::sync::thread_local! {
-    static CURRENT: Cell<*const Frame> = Cell::new(std::ptr::null());
-    static CLOSURE_DEPTH: Cell<u32> = Cell::new(0);
-    static CLOSURE_CREATIONS: RefCell<Vec<WeakNodeRef>> = RefCell::new(Vec::new());
-    static THREAD_SCOPE: RefCell<ThreadScope> = RefCell::new(None);
+    static CURRENT: Cell<*const Frame> = const { Cell::new(std::ptr::null()) };
+    static CLOSURE_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static CLOSURE_CREATIONS: RefCell<Vec<WeakNodeRef>> = const { RefCell::new(Vec::new()) };
+    static THREAD_SCOPE: RefCell<ThreadScope> = const { RefCell::new(None) };
     /// The task whose scope this thread looked up last, so its repeated writes skip `TASK_SCOPES`.
-    static LAST_TASK: RefCell<Option<TaskScope>> = RefCell::new(None);
+    static LAST_TASK: RefCell<Option<TaskScope>> = const { RefCell::new(None) };
 }
 
-/// Restores the previous frame when dropped.
-pub(crate) struct FrameGuard<'a> {
-    previous: *const Frame,
-    entered: *const Frame,
-    _frame: PhantomData<&'a Frame>,
-}
-
-/// Makes `frame` current on this thread until the guard drops.
-pub(crate) fn enter(frame: &Frame) -> FrameGuard<'_> {
-    let previous: *const Frame = CURRENT.with(|current: &Cell<*const Frame>| current.replace(frame));
-    FrameGuard { previous, entered: frame, _frame: PhantomData }
-}
-
-impl Drop for FrameGuard<'_> {
-    fn drop(&mut self) {
-        CURRENT.with(|current: &Cell<*const Frame>| {
-            debug_assert!(std::ptr::eq(current.get(), self.entered), "lithia: frames left out of order");
-            current.set(self.previous);
-        });
+/// Runs `f` with `frame` current on this thread; the previous frame is current again once `f`
+/// returns or unwinds. `let n: u32 = context::entered(&frame, || 1);`
+pub(crate) fn entered<R>(frame: &Frame, f: impl FnOnce() -> R) -> R {
+    /// Restores the previous frame; private to this call, so it is never leaked or reordered.
+    struct Restore {
+        previous: *const Frame,
+        entered: *const Frame,
     }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = CURRENT.try_with(|current: &Cell<*const Frame>| {
+                debug_assert!(std::ptr::eq(current.get(), self.entered), "lithia: frames left out of order");
+                current.set(self.previous);
+            });
+        }
+    }
+    let previous: *const Frame = CURRENT.with(|current: &Cell<*const Frame>| current.replace(frame));
+    let _restore: Restore = Restore { previous, entered: frame };
+    f()
 }
 
 /// Calls `f` with the current frame, if any.
+#[allow(unsafe_code)]
 pub(crate) fn with_frame<R>(f: impl FnOnce(Option<&Frame>) -> R) -> R {
     let pointer: *const Frame = CURRENT.try_with(Cell::get).unwrap_or(std::ptr::null());
-    // SAFETY: a non-null pointer was set by `enter`, whose guard keeps the frame alive
-    // and restores the previous pointer before the frame goes out of scope.
+    // SAFETY: a non-null pointer was set by `entered`, which outlives its borrow of the frame and
+    // restores the previous pointer on return or unwind; its guard is private to it, so it can be
+    // neither leaked nor dropped out of order, and the pointer belongs to this thread alone.
     let frame: Option<&Frame> = unsafe { pointer.as_ref() };
     f(frame)
 }
@@ -154,6 +155,7 @@ pub(crate) fn detached_scope() -> Arc<Scope> {
 }
 
 /// Scopes of tasks lithia did not start, by task id.
+#[allow(clippy::disallowed_types)] // loom models run no tokio tasks
 static TASK_SCOPES: parking_lot::Mutex<TaskScopes> = parking_lot::Mutex::new(BTreeMap::new());
 
 fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
@@ -192,13 +194,14 @@ fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
     scope
 }
 
-/// Marks the current thread as running a user closure that may not write (spec §6.1).
-pub(crate) struct ClosureGuard(());
+/// Marks the current thread as running a user closure that may not write (spec §6.1); counts on
+/// this thread, so it is not `Send`.
+pub(crate) struct ClosureGuard(PhantomData<*const ()>);
 
 impl ClosureGuard {
     pub(crate) fn enter() -> ClosureGuard {
         CLOSURE_DEPTH.with(|depth: &Cell<u32>| depth.set(depth.get() + 1));
-        ClosureGuard(())
+        ClosureGuard(PhantomData)
     }
 }
 
@@ -209,6 +212,7 @@ impl Drop for ClosureGuard {
 }
 
 /// Panics if called inside an `update`, `modify` or `equals` closure.
+#[track_caller]
 pub(crate) fn assert_not_in_closure(operation: &str) {
     let depth: u32 = CLOSURE_DEPTH.try_with(Cell::get).unwrap_or(0);
     if depth > 0 {
@@ -266,7 +270,7 @@ fn note_written(node: &NodeRef) {
     if edge {
         return;
     }
-    let mut guard: crate::sync::MutexGuard<'_, crate::node::Sched> = header.sched.lock();
+    let mut guard: crate::node::SchedGuard<'_> = header.lock_sched();
     guard.wrote.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
     if !guard.wrote.iter().any(|weak: &WeakNodeRef| std::ptr::eq(weak.as_ptr().cast::<()>(), target)) {
         guard.wrote.push(Arc::downgrade(node));

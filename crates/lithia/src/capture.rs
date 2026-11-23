@@ -18,10 +18,10 @@ pub(crate) type SharedLease = Arc<Lease>;
 type Recorded = Vec<(NodeRef, bool)>;
 
 crate::sync::thread_local! {
-    static RECORDING: RefCell<Option<Recorded>> = RefCell::new(None);
-    static READ_ONLY: Cell<bool> = Cell::new(false);
-    static MOVED: RefCell<Vec<NodeRef>> = RefCell::new(Vec::new());
-    static LEASE: RefCell<Option<SharedLease>> = RefCell::new(None);
+    static RECORDING: RefCell<Option<Recorded>> = const { RefCell::new(None) };
+    static READ_ONLY: Cell<bool> = const { Cell::new(false) };
+    static MOVED: RefCell<Vec<NodeRef>> = const { RefCell::new(Vec::new()) };
+    static LEASE: RefCell<Option<SharedLease>> = const { RefCell::new(None) };
 }
 
 /// The handles one `move` body took over, by node. A one-shot block ends its lease when it is

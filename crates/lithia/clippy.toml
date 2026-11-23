@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 lithia Authors
+# SPDX-License-Identifier: MPL-2.0
+
+# Locks, atomics and lazy cells go through `crate::sync`, so loom sees them in model builds. A
+# primitive loom need not see is allowed where it stands, with the reason beside it.
+disallowed-types = [
+    { path = "std::sync::atomic::AtomicBool", reason = "use crate::sync::AtomicBool, which loom sees" },
+    { path = "std::sync::atomic::AtomicU32", reason = "use crate::sync::AtomicU32, which loom sees" },
+    { path = "std::sync::atomic::AtomicU64", reason = "use crate::sync::AtomicU64, which loom sees" },
+    { path = "std::sync::atomic::AtomicUsize", reason = "use crate::sync::AtomicUsize, which loom sees" },
+    { path = "std::sync::Mutex", reason = "use crate::sync::Mutex, which loom sees" },
+    { path = "std::sync::RwLock", reason = "use crate::sync::Mutex, which loom sees" },
+    { path = "std::sync::OnceLock", reason = "loom cannot see it; allow it where it stands, with a reason" },
+    { path = "std::sync::LazyLock", reason = "loom cannot see it; allow it where it stands, with a reason" },
+    { path = "parking_lot::Mutex", reason = "use crate::sync::Mutex, which loom sees" },
+    { path = "parking_lot::RwLock", reason = "use crate::sync::Mutex, which loom sees" },
+]

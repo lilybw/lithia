@@ -96,9 +96,79 @@ impl Drop for ScopeToken {
 
 /// A function waiting for an epoch to settle.
 pub(crate) type SettleHook = Box<dyn FnOnce() + Send>;
-/// Epoch tokens a caller holds, one entry per token, closed with `close_all` once no node
-/// reference is held.
-pub(crate) type Tokens = Vec<Arc<Epoch>>;
+/// Epoch tokens a caller holds, counted by epoch, closed with [`Tokens::close`] once it holds no
+/// node reference (spec §10.1); dropping them unclosed is a bug, caught in debug builds.
+#[must_use = "epoch tokens must be closed with `Tokens::close`"]
+#[derive(Default)]
+pub(crate) struct Tokens(Vec<(Arc<Epoch>, u32)>);
+
+impl Tokens {
+    pub(crate) const fn new() -> Tokens {
+        Tokens(Vec::new())
+    }
+
+    /// Adds one token of `epoch`.
+    pub(crate) fn push(&mut self, epoch: Arc<Epoch>) {
+        self.add(epoch, 1);
+    }
+
+    /// Adds `count` tokens of `epoch`; consecutive tokens of one epoch share an entry.
+    pub(crate) fn add(&mut self, epoch: Arc<Epoch>, count: u32) {
+        if count == 0 {
+            return;
+        }
+        match self.0.last_mut() {
+            Some((last, held)) if Arc::ptr_eq(last, &epoch) => *held += count,
+            _ => self.0.push((epoch, count)),
+        }
+    }
+
+    /// Takes over `other`'s tokens.
+    pub(crate) fn append(&mut self, mut other: Tokens) {
+        if self.0.is_empty() {
+            std::mem::swap(&mut self.0, &mut other.0);
+        } else {
+            self.0.append(&mut other.0);
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The epochs these tokens are held in, to wait on once they are closed.
+    pub(crate) fn epochs(&self) -> Epochs {
+        self.0.iter().map(|(epoch, _): &(Arc<Epoch>, u32)| epoch.clone()).collect()
+    }
+
+    /// Closes every token; the tokens of one epoch close in one step, so fewer writes hit its
+    /// shared counters, in id order, so loom models stay deterministic.
+    pub(crate) fn close(mut self) {
+        let mut list: Vec<(Arc<Epoch>, u32)> = std::mem::take(&mut self.0);
+        if list.is_empty() {
+            return;
+        }
+        list.sort_by_key(|(epoch, _): &(Arc<Epoch>, u32)| epoch.id);
+        let mut list: std::iter::Peekable<std::vec::IntoIter<(Arc<Epoch>, u32)>> = list.into_iter().peekable();
+        while let Some((epoch, mut count)) = list.next() {
+            while let Some((_, more)) = list.next_if(|(next, _): &(Arc<Epoch>, u32)| Arc::ptr_eq(next, &epoch)) {
+                count += more;
+            }
+            epoch.close_tokens(count as usize);
+        }
+        crate::settle_wait::bump();
+    }
+}
+
+impl Drop for Tokens {
+    fn drop(&mut self) {
+        if !self.0.is_empty() && !std::thread::panicking() {
+            debug_assert!(false, "lithia: epoch tokens dropped unclosed");
+            // A release build closes them late rather than leave the scope unsettled for good.
+            Tokens(std::mem::take(&mut self.0)).close();
+        }
+    }
+}
 /// Epochs referred to without holding a token.
 pub(crate) type Epochs = Vec<Arc<Epoch>>;
 

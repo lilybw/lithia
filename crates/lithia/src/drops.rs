@@ -8,8 +8,6 @@ use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 #[cfg(not(lithia_loom))]
-use std::sync::LazyLock;
-#[cfg(not(lithia_loom))]
 use std::sync::mpsc;
 
 use tokio::runtime::Handle;
@@ -18,11 +16,12 @@ use crate::node::{NodeRef, Parents};
 use crate::run::PanicPayload;
 
 crate::sync::thread_local! {
-    static RELEASING: Cell<bool> = Cell::new(false);
-    static PENDING_PARENTS: RefCell<Vec<NodeRef>> = RefCell::new(Vec::new());
+    static RELEASING: Cell<bool> = const { Cell::new(false) };
+    static PENDING_PARENTS: RefCell<Vec<NodeRef>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Payload drops queued on a pool or the drop thread and not yet run.
+#[allow(clippy::disallowed_types)] // counts for test support; loom models drop inline
 static QUEUED: crate::sync::Padded<std::sync::atomic::AtomicUsize> =
     crate::sync::Padded(std::sync::atomic::AtomicUsize::new(0));
 
@@ -101,18 +100,23 @@ std::thread_local! {
 #[cfg(not(lithia_loom))]
 const BAG_LIMIT: usize = 64;
 
-/// Gathers this thread's deferred drops while alive, then queues them as one task per runtime.
+/// Gathers this thread's deferred drops while alive, then queues them as one task per runtime;
+/// counts on this thread, so it is not `Send`.
 pub(crate) struct Batch {
     #[cfg(not(lithia_loom))]
     counted: bool,
+    _thread: std::marker::PhantomData<*const ()>,
 }
 
 /// Opens a drop batch on this thread; batches nest, and the outermost one hands the drops on.
 pub(crate) fn batch() -> Batch {
     #[cfg(not(lithia_loom))]
-    return Batch { counted: BAG.try_with(|bag: &RefCell<Bag>| bag.borrow_mut().depth += 1).is_ok() };
+    return Batch {
+        counted: BAG.try_with(|bag: &RefCell<Bag>| bag.borrow_mut().depth += 1).is_ok(),
+        _thread: std::marker::PhantomData,
+    };
     #[cfg(lithia_loom)]
-    return Batch {};
+    return Batch { _thread: std::marker::PhantomData };
 }
 
 impl Drop for Batch {
@@ -224,7 +228,8 @@ fn run_drop(payload: Option<Payload>) {
 
 /// lithia's drop thread, started on first use.
 #[cfg(not(lithia_loom))]
-static DROP_THREAD: LazyLock<mpsc::Sender<Parcel>> = LazyLock::new(|| {
+#[allow(clippy::disallowed_types)] // lithia's own thread, absent from loom builds
+static DROP_THREAD: std::sync::LazyLock<mpsc::Sender<Parcel>> = std::sync::LazyLock::new(|| {
     let (sender, receiver): (mpsc::Sender<Parcel>, mpsc::Receiver<Parcel>) = mpsc::channel();
     std::thread::Builder::new()
         .name("lithia-drop".to_string())

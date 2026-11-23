@@ -277,3 +277,25 @@ async fn a_stream_started_late_or_across_disposal_sees_the_right_values() {
     assert!(second.next().await.is_none());
     assert!(n.changes().next().await.is_none(), "a stream started after it ends at once");
 }
+
+#[lithia::test]
+async fn disposal_ends_a_run_parked_on_a_future_that_never_wakes_it() {
+    let base: usize = lithia::test::live_nodes().await;
+    let a: SourceNode<u32> = effect!(1);
+    let waiting: DerivedNode<u32> = effect!(async |a| {
+        let value: u32 = *a.get();
+        std::future::pending::<()>().await;
+        value
+    });
+    lithia::flush().await;
+    lithia::dispose(&waiting);
+    drop((a, waiting));
+    lithia::flush().await;
+    let left: Result<(), tokio::time::error::Elapsed> = tokio::time::timeout(Duration::from_secs(2), async {
+        while lithia::test::live_nodes().await > base {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(left.is_ok(), "the parked run kept its parent alive");
+}

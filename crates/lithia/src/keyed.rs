@@ -21,7 +21,6 @@ type StoredInput = Box<dyn Any + Send + Sync>;
 use crate::node::{Header, Kind, Node, NodeRef, TypedNodeRef};
 use crate::options::{Options, Shape};
 use crate::run::RunShared;
-use crate::sync::MutexGuard;
 use crate::{NodeValue, Site};
 
 /// A value `effect!`'s `key` option accepts.
@@ -379,25 +378,28 @@ impl KeyedSet {
         Some(node)
     }
 
-    fn contains(&self, key: &KeyRef<'_>) -> bool {
-        self.0.get(&key.hash).is_some_and(|list: &Vec<NodeRef>| {
-            list.iter().any(|node: &NodeRef| node.header().key.as_ref().is_some_and(|own: &Key| own.matches(key)))
+    /// The nodes whose key hashes to `hash` and that `fits`, in creation order; compares no keys.
+    fn bucket(&self, hash: KeyHash, fits: impl Fn(&Header) -> bool) -> Vec<NodeRef> {
+        self.0.get(&hash).map_or_else(Vec::new, |list: &Vec<NodeRef>| {
+            list.iter().filter(|node: &&NodeRef| fits(node.header())).cloned().collect()
         })
     }
 
-    /// Takes the first node, in creation order, that `fits`.
-    fn take(&mut self, key: &KeyRef<'_>, fits: impl Fn(&Header) -> bool) -> Option<NodeRef> {
-        let list: &mut Vec<NodeRef> = self.0.get_mut(&key.hash)?;
-        let at: usize = list.iter().position(|node: &NodeRef| {
-            let header: &Header = node.header();
-            header.key.as_ref().is_some_and(|own: &Key| own.matches(key)) && fits(header)
-        })?;
+    /// Takes node `id` from the nodes whose key hashes to `hash`.
+    fn take(&mut self, hash: KeyHash, id: NodeId) -> Option<NodeRef> {
+        let list: &mut Vec<NodeRef> = self.0.get_mut(&hash)?;
+        let at: usize = list.iter().position(|node: &NodeRef| node.header().id == id)?;
         let node: NodeRef = list.remove(at);
         if list.is_empty() {
-            self.0.remove(&key.hash);
+            self.0.remove(&hash);
         }
         Some(node)
     }
+}
+
+/// Whether `node`'s key equals `key`; runs the key type's `PartialEq`, so never under a lock.
+fn has_key(node: &NodeRef, key: &KeyRef<'_>) -> bool {
+    node.header().key.as_ref().is_some_and(|own: &Key| own.matches(key))
 }
 
 /// The creator of keyed creations made here: the node whose run is being polled, unless disposed.
@@ -407,17 +409,13 @@ fn creator() -> Option<NodeRef> {
 }
 
 /// Reclaims the creator's held-over node with this key, site, kind, value type, shape and parents,
-/// and moves it into the current generation's keyed set (spec §10.1, Keyed nodes).
+/// and moves it into the current generation's keyed set (spec §10.1, Keyed nodes). Keys are compared
+/// with the scheduling lock released, as they run user code; a candidate gone meanwhile is looked for again.
 fn reclaim(key: &KeyRef<'_>, kind: Kind, value_type: TypeId, shape: &Shape, parent_ids: &[NodeId]) -> Option<NodeRef> {
     let creator: NodeRef = creator()?;
     let header: &Header = creator.header();
-    let mut guard: MutexGuard<'_, crate::node::Sched> = header.sched.lock();
-    if guard.closed {
-        return None;
-    }
-    let duplicate: bool = guard.keyed.contains(key);
     let site: &'static Site = key.site;
-    let found: Option<NodeRef> = guard.holdover.take(key, |candidate: &Header| {
+    let fits = |candidate: &Header| -> bool {
         std::ptr::eq(candidate.site, site)
             && candidate.kind == kind
             && candidate.value_type == value_type
@@ -426,37 +424,65 @@ fn reclaim(key: &KeyRef<'_>, kind: Kind, value_type: TypeId, shape: &Shape, pare
             && candidate.flags == shape.flags
             && !candidate.is_ghost()
             && *candidate.parent_ids == *parent_ids
-    });
-    if let Some(node) = &found {
-        guard.keyed.insert(node.clone());
+    };
+    loop {
+        let (candidates, created): (Vec<NodeRef>, Vec<NodeRef>) = {
+            let guard: crate::node::SchedGuard<'_> = header.lock_sched();
+            if guard.closed {
+                return None;
+            }
+            (guard.holdover.bucket(key.hash, fits), guard.keyed.bucket(key.hash, |_: &Header| true))
+        };
+        let duplicate: bool = created.iter().any(|node: &NodeRef| has_key(node, key));
+        let chosen: Option<NodeRef> = candidates.into_iter().find(|node: &NodeRef| has_key(node, key));
+        let found: Option<NodeRef> = match chosen {
+            None => None,
+            Some(node) => {
+                let mut guard: crate::node::SchedGuard<'_> = header.lock_sched();
+                if guard.closed {
+                    return None;
+                }
+                let Some(taken) = guard.holdover.take(key.hash, node.header().id) else {
+                    continue;
+                };
+                guard.keyed.insert(taken.clone());
+                Some(taken)
+            }
+        };
+        if duplicate {
+            crate::diag::duplicate_key(site);
+        }
+        return found;
     }
-    drop(guard);
-    if duplicate {
-        crate::diag::duplicate_key(site);
-    }
-    found
 }
 
 /// Gives a reclaimed node back: its creator's generation lets go of it at once.
 pub(crate) fn unclaim(node: &NodeRef) {
     let creator: Option<NodeRef> = creator();
     let released: Option<NodeRef> =
-        creator.as_ref().and_then(|creator: &NodeRef| creator.header().sched.lock().keyed.remove(node.header().id));
+        creator.as_ref().and_then(|creator: &NodeRef| creator.header().lock_sched().keyed.remove(node.header().id));
     if let Some(released) = released {
         crate::support::release_generation(vec![released]);
     }
 }
 
-/// Whether a duplicate of `key` was already created by the current run; reported, never refused.
-pub(crate) fn note_fresh(creator: &mut crate::node::Sched, node: &NodeRef) -> bool {
+/// Adds a fresh keyed node to its creator's set; returns the nodes there already whose key hashes
+/// alike, for [`is_duplicate`] once the lock is released.
+pub(crate) fn note_fresh(creator: &mut crate::node::Sched, node: &NodeRef) -> Vec<NodeRef> {
+    let hash: KeyHash = node.header().key.as_ref().map_or(0, |key: &Key| key.hash);
+    let alike: Vec<NodeRef> = creator.keyed.bucket(hash, |_: &Header| true);
+    creator.keyed.insert(node.clone());
+    alike
+}
+
+/// Whether one of `alike` has `node`'s key: a run created it twice; reported, never refused.
+pub(crate) fn is_duplicate(node: &NodeRef, alike: &[NodeRef]) -> bool {
     let header: &Header = node.header();
     let Some(key) = header.key.as_ref() else {
         return false;
     };
     let probe: KeyRef<'_> = KeyRef { site: header.site, hash: key.hash, value: &*key.value };
-    let duplicate: bool = creator.keyed.contains(&probe);
-    creator.keyed.insert(node.clone());
-    duplicate
+    alike.iter().any(|other: &NodeRef| has_key(other, &probe))
 }
 
 pub(crate) fn typed<K: NodeValue>(node: NodeRef) -> TypedNodeRef<K> {

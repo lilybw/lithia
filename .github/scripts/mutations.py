@@ -39,8 +39,8 @@ class Mutation:
 MUTATIONS: list[Mutation] = [
     Mutation(
         "W1", "A parent framed again before its release arrived counted once", "crates/lithia/src/protocol.rs",
-        "                        entry.waiting.add(index);\n                        entry.runnable = false;",
-        "                        entry.waiting.ensure(index);\n                        entry.runnable = false;",
+        "                        entry.waiting.add(index);\n                        entry.due.remove(Due::RUNNABLE);",
+        "                        entry.waiting.ensure(index);\n                        entry.due.remove(Due::RUNNABLE);",
         "loom", "two_runs_write_one_source_in_one_epoch",
     ),
     Mutation(
@@ -84,9 +84,9 @@ MUTATIONS: list[Mutation] = [
         "edge", "ready_runs_packed_for_a_runtime_that_shuts_down_fail_like_runs",
     ),
     Mutation(
-        "F4", "Tokens of one epoch closed together counted as one", "crates/lithia/src/protocol.rs",
-        "        epochs[at].close_tokens(same);\n",
-        "        epochs[at].close_tokens(1);\n",
+        "F4", "Tokens of one epoch closed together counted as one", "crates/lithia/src/epoch.rs",
+        "            epoch.close_tokens(count as usize);\n",
+        "            epoch.close_tokens(1);\n",
         "deep_chain", "",
     ),
     Mutation(
@@ -113,6 +113,24 @@ MUTATIONS: list[Mutation] = [
         "    cfg!(lithia_loom) || LET_GO.load(Ordering::SeqCst) != 0\n",
         "    cfg!(lithia_loom)\n",
         "edge", "an_anchor_that_returns_holds_again_what_support_let_go_of",
+    ),
+    Mutation(
+        "K1", "A write stopping a block without waking it", "crates/lithia/src/protocol.rs",
+        "        diag::Diag::Superseded { site: node.header().site, run: shared.id() }.emit();\n        shared.wake();\n",
+        "        diag::Diag::Superseded { site: node.header().site, run: shared.id() }.emit();\n",
+        "loom", "a_write_wakes_the_parked_block_it_stops",
+    ),
+    Mutation(
+        "K2", "Disposal retiring a run without waking it", "crates/lithia/src/protocol.rs",
+        "    if let Some(shared) = shared {\n        shared.cancel();\n        shared.wake();\n    }\n    drain(work);\n",
+        "    if let Some(shared) = shared {\n        shared.cancel();\n    }\n    drain(work);\n",
+        "loom", "disposal_wakes_a_parked_run",
+    ),
+    Mutation(
+        "K3", "A freed node cancelling its run without waking it", "crates/lithia/src/node.rs",
+        "            slot.shared.cancel();\n            slot.shared.wake();\n",
+        "            slot.shared.cancel();\n",
+        "loom", "freeing_a_node_wakes_its_parked_run",
     ),
 ]
 

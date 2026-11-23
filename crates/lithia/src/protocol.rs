@@ -15,7 +15,9 @@ use crate::context::{Batch, Deferred};
 use crate::diag::Diag;
 use crate::epoch::{Epoch, Epochs, Scope, ScopeToken, Tokens};
 use crate::ids::{self, EpochId, NodeId, RunId, Stamp, WriterId};
-use crate::node::{Children, Entry, Header, Kind, NodeRef, Parents, RunSlot, Sched, Served, merge_served, phase};
+use crate::node::{
+    Children, Due, Entry, Header, Kind, NodeRef, Parents, RunSlot, Sched, SchedGuard, Served, merge_served, phase,
+};
 use crate::options::{Fragility, GhostPolicy};
 use crate::run::{RunShared, TaskFuture};
 use crate::sets::WriterSet;
@@ -77,9 +79,13 @@ impl Work {
 }
 
 impl Drop for Work {
+    /// Carries out what it still holds, so a panic through a step cannot leave a scope unsettled.
     fn drop(&mut self) {
-        // Undrained, its token closes are lost and its scope never settles.
-        debug_assert!(std::thread::panicking() || self.is_drained(), "lithia: protocol work dropped undrained");
+        if self.is_drained() {
+            return;
+        }
+        debug_assert!(std::thread::panicking(), "lithia: protocol work dropped undrained");
+        drain(std::mem::take(self));
     }
 }
 
@@ -93,37 +99,10 @@ struct CutRerun {
 
 /// Carries out gathered work: releases, spawns and wakes, then token closes.
 pub(crate) fn drain(work: Work) {
-    let closes: Tokens = drain_deferred(work);
-    close_all(closes);
-}
-
-/// Closes tokens; callers drop every strong node reference first, so a settled scope
-/// never finds a node kept alive only by lithia (spec §10.1).
-pub(crate) fn close_all(mut epochs: Tokens) {
-    // Several tokens of one epoch close in one step, so fewer writes hit its shared counters;
-    // by id, not address, so loom models stay deterministic.
-    epochs.sort_by_key(|epoch: &Arc<Epoch>| epoch.id);
-    let mut at: usize = 0;
-    while at < epochs.len() {
-        let same: usize = epochs[at..].iter().take_while(|epoch: &&Arc<Epoch>| Arc::ptr_eq(epoch, &epochs[at])).count();
-        epochs[at].close_tokens(same);
-        at += same;
-    }
-    drop(epochs);
-    settle_wait::bump();
-}
-
-/// Appends `more` to `closes`, taking over `more`'s buffer when `closes` is empty.
-pub(crate) fn append_closes(closes: &mut Tokens, more: Tokens) {
-    if closes.is_empty() {
-        *closes = more;
-    } else {
-        closes.extend(more);
-    }
+    drain_deferred(work).close();
 }
 
 /// Like `drain`, but hands the token closes back to the caller.
-#[must_use = "the returned tokens must be closed with close_all"]
 pub(crate) fn drain_deferred(mut work: Work) -> Tokens {
     while let Some(release) = work.releases.pop_front() {
         let Release { from, children, epoch, carry, writers, origin } = release;
@@ -167,9 +146,8 @@ pub(crate) fn drain_deferred(mut work: Work) -> Tokens {
 
 /// Queues a run of an idle node that has work left, as one its creator gated; true if it did.
 fn queue_if_runnable(node: &NodeRef) -> bool {
-    let mut guard: MutexGuard<'_, Sched> = node.header().sched.lock();
-    let ready: bool = !guard.inherited.is_empty()
-        || guard.entries.values().any(|entry: &Entry| entry.runnable && entry.waiting.is_empty());
+    let mut guard: SchedGuard<'_> = node.header().lock_sched();
+    let ready: bool = !guard.inherited.is_empty() || guard.entries.values().any(|entry: &Entry| entry.is_ready());
     let queue: bool = ready && guard.run.is_none() && !guard.queued && !node.header().is_ghost();
     if queue {
         guard.queued = true;
@@ -209,7 +187,7 @@ fn frame_level(parent_id: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, stac
     for child in children {
         let recurse: Option<Children> = {
             let header: &Header = child.header();
-            let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+            let mut guard: SchedGuard<'_> = header.lock_sched();
             let sched: &mut Sched = &mut guard;
             match header.parent_index(parent_id) {
                 None => None,
@@ -217,7 +195,7 @@ fn frame_level(parent_id: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, stac
                 Some(index) => {
                     if let Some(entry) = sched.entries.get_mut(&epoch.id) {
                         entry.waiting.add(index);
-                        entry.runnable = false;
+                        entry.due.remove(Due::RUNNABLE);
                         None
                     } else {
                         let owes: bool = sched.owes(epoch.id);
@@ -247,7 +225,7 @@ fn rerun_cut(rerun: CutRerun) {
         return;
     }
     let epoch: Arc<Epoch> = Epoch::child(&parent);
-    header.sched.lock().suppress_in.push(parent.clone());
+    header.lock_sched().suppress_in.push(parent.clone());
     let mut work: Work = Work::default();
     seed(&node, &epoch, &rerun.writers.without(Some(header.writer)), Seed::Rerun, &mut work);
     evaluate(&node, &mut work);
@@ -271,7 +249,7 @@ fn release_children(
     for child in children {
         {
             let header: &Header = child.header();
-            let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+            let mut guard: SchedGuard<'_> = header.lock_sched();
             let sched: &mut Sched = &mut guard;
             if let (Some(index), Some(entry)) = (header.parent_index(from_id), sched.entries.get_mut(&epoch.id))
                 && entry.waiting.take(index)
@@ -282,7 +260,7 @@ fn release_children(
                     entry.origin = origin;
                 }
                 if entry.writers.contains(header.writer) {
-                    entry.cut = true;
+                    entry.due.insert(Due::CUT);
                 }
                 if entry.waiting.is_empty() {
                     decide(&child, sched, epoch.id, work);
@@ -304,16 +282,13 @@ fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<Causes> {
         let bits: u32 = parent_header.phase();
         if bits & phase::GHOST != 0 {
             if parent_header.ghost == GhostPolicy::CauseFailure {
-                causes.push(Arc::new(Failure {
-                    message: "parent disposed".to_string(),
-                    site: *parent_header.site,
-                    causes: Vec::new(),
-                }));
+                causes.push(Arc::new(Failure::new("parent disposed", *parent_header.site)));
             }
         } else if bits & phase::FAILED != 0 {
-            let failure: Arc<Failure> = parent_header.failure.load_full().unwrap_or_else(|| {
-                Arc::new(Failure { message: "failed".to_string(), site: *parent_header.site, causes: Vec::new() })
-            });
+            let failure: Arc<Failure> = parent_header
+                .failure
+                .load_full()
+                .unwrap_or_else(|| Arc::new(Failure::new("failed", *parent_header.site)));
             causes.push(failure);
         }
     }
@@ -345,7 +320,7 @@ fn whole_epochs_wait(header: &Header, sched: &Sched) -> bool {
 /// Fails a fragile node whose condition holds (spec §9.2).
 fn fail_by_fragility(header: &Header, sched: &mut Sched, causes: Causes, work: &mut Work) {
     let parent: String = causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
-    header.fail(Failure { message: "parent failed".to_string(), site: *header.site, causes });
+    header.fail(Failure { causes, ..Failure::new("parent failed", *header.site) });
     sched.failed_by_fragility = true;
     work.diags.push(Diag::FragilityFailed { site: header.site, parent });
 }
@@ -363,7 +338,7 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     let Some(entry) = sched.entries.get(&epoch) else {
         return;
     };
-    if entry.cut {
+    if entry.due.contains(Due::CUT) {
         work.diags.push(Diag::Cut { writer: header.site, is_unit: header.is_unit, written: entry.origin });
         work.cut_reruns.push(CutRerun {
             node: Arc::downgrade(node),
@@ -409,14 +384,24 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     let Some(entry) = sched.entries.get_mut(&epoch) else {
         return;
     };
-    entry.force |= force;
+    entry.due.set(Due::FORCE, force || entry.due.contains(Due::FORCE));
     let changed: bool = entry.newest > ran_at;
-    if !(entry.first || entry.force || entry.reflow || changed) {
+    if !(entry.due.intersects(Due::FIRST | Due::FORCE | Due::REFLOW) || changed) {
+        if entry.newest.is_some() {
+            // A run started after this change absorbed it: the epoch waits for that run's item.
+            if join_run(sched, epoch, work) {
+                return;
+            }
+            // That run has released, or ended: the children test the node's current version.
+            if let Some(entry) = sched.entries.get_mut(&epoch) {
+                entry.carry = entry.carry.max(header.version.load(Ordering::SeqCst));
+            }
+        }
         settle(node, sched, epoch, work);
         return;
     }
-    entry.runnable = true;
-    let waits_for_run: bool = entry.reflow && !entry.first && !entry.force && !changed;
+    entry.due.insert(Due::RUNNABLE);
+    let waits_for_run: bool = entry.reflow_only(ran_at);
     let mut whole_wait: bool = whole_epochs_wait(header, sched);
     if whole_wait && sched.run.is_none() {
         // Input that never pauses would keep it waiting: past the bound it runs on what is ready.
@@ -449,6 +434,28 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     }
 }
 
+/// Hands an entry over to the run in flight, if that run has not released yet: the run then releases
+/// the entry's epoch with its first item, or when it ends (spec §7.2). True if it did.
+fn join_run(sched: &mut Sched, epoch: EpochId, work: &mut Work) -> bool {
+    let unreleased: bool =
+        sched.run.as_ref().is_some_and(|slot: &RunSlot| slot.served.iter().any(|served: &Served| !served.released));
+    if !unreleased {
+        return false;
+    }
+    let Some(entry) = sched.entries.remove(&epoch) else {
+        return false;
+    };
+    if sched.entries.is_empty() {
+        sched.whole_deferred = 0;
+    }
+    wake_gated(sched, work);
+    let Entry { epoch, writers, carry, .. } = entry;
+    if let Some(slot) = sched.run.as_mut() {
+        merge_served(&mut slot.served, Served { epoch, writers, tokens: 1, released: false, carry });
+    }
+    true
+}
+
 /// Closes an entry without running; its children are released unless a run still owes them.
 fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
     let Some(entry) = sched.entries.remove(&epoch) else {
@@ -463,7 +470,7 @@ fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
         && sched.run.is_none()
         && !sched.queued
         && !whole_epochs_wait(node.header(), sched)
-        && sched.entries.values().any(|entry: &Entry| entry.runnable)
+        && sched.entries.values().any(|entry: &Entry| entry.due.contains(Due::RUNNABLE))
     {
         sched.release_generation(&mut work.released);
         sched.queued = true;
@@ -489,12 +496,12 @@ fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
 /// Decides every ready entry not yet marked runnable.
 fn evaluate(node: &NodeRef, work: &mut Work) {
     let header: &Header = node.header();
-    let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+    let mut guard: SchedGuard<'_> = header.lock_sched();
     let sched: &mut Sched = &mut guard;
     let ready: Vec<EpochId> = sched
         .entries
         .iter()
-        .filter(|(_, entry): &(&EpochId, &Entry)| entry.waiting.is_empty() && !entry.runnable)
+        .filter(|(_, entry): &(&EpochId, &Entry)| entry.waiting.is_empty() && !entry.due.contains(Due::RUNNABLE))
         .map(|(id, _): (&EpochId, &Entry)| *id)
         .collect();
     for epoch in ready {
@@ -519,7 +526,7 @@ fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, wor
     // loop through creation is cut like any other (7.4).
     let cut: bool = writers.contains(header.writer);
     let created: Option<Vec<NodeRef>> = {
-        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         if header.is_ghost() {
             return;
@@ -530,11 +537,11 @@ fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, wor
         match sched.entries.get_mut(&epoch.id) {
             Some(entry) => {
                 match kind {
-                    Seed::First => entry.first = true,
-                    Seed::Rerun => entry.force = true,
+                    Seed::First => entry.due.insert(Due::FIRST),
+                    Seed::Rerun => entry.due.insert(Due::FORCE),
                 }
                 entry.writers.union(writers);
-                entry.cut |= cut;
+                entry.due.set(Due::CUT, cut || entry.due.contains(Due::CUT));
                 None
             }
             None => {
@@ -542,11 +549,11 @@ fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, wor
                 epoch.open_token();
                 let mut entry: Entry = Entry::new(epoch.clone());
                 match kind {
-                    Seed::First => entry.first = true,
-                    Seed::Rerun => entry.force = true,
+                    Seed::First => entry.due.insert(Due::FIRST),
+                    Seed::Rerun => entry.due.insert(Due::FORCE),
                 }
                 entry.writers = writers.clone();
-                entry.cut = cut;
+                entry.due.set(Due::CUT, cut);
                 sched.entries.insert(epoch.id, entry);
                 (!owes).then(|| sched.children())
             }
@@ -561,7 +568,7 @@ fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, wor
 fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet, stamp: Stamp, work: &mut Work) {
     let header: &Header = node.header();
     let created: Option<Vec<NodeRef>> = {
-        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         if header.is_ghost() {
             return;
@@ -569,20 +576,20 @@ fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet, stamp: Sta
         let cut: bool = chain.contains(header.writer);
         match sched.entries.get_mut(&epoch.id) {
             Some(entry) => {
-                entry.reflow = true;
+                entry.due.insert(Due::REFLOW);
                 entry.carry = entry.carry.max(stamp);
                 entry.writers.union(chain);
-                entry.cut |= cut;
+                entry.due.set(Due::CUT, cut || entry.due.contains(Due::CUT));
                 None
             }
             None => {
                 let owes: bool = sched.owes(epoch.id);
                 epoch.open_token();
                 let mut entry: Entry = Entry::new(epoch.clone());
-                entry.reflow = true;
+                entry.due.insert(Due::REFLOW);
                 entry.carry = stamp;
                 entry.writers = chain.clone();
-                entry.cut = cut;
+                entry.due.set(Due::CUT, cut);
                 sched.entries.insert(epoch.id, entry);
                 (!owes).then(|| sched.children())
             }
@@ -729,32 +736,33 @@ pub(crate) fn deliver_into(
 
 /// Delivers an outside batch as a new root epoch of `scope`, with an empty writer set.
 pub(crate) fn deliver_outside(batch: Batch, scope: &Arc<Scope>) {
-    close_all(deliver_outside_deferred(batch, scope));
+    deliver_outside_deferred(batch, scope).close();
 }
 
 /// Like `deliver_outside`, but hands the epoch's guard token back to the caller.
-#[must_use = "the returned tokens must be closed with close_all"]
 pub(crate) fn deliver_outside_deferred(batch: Batch, scope: &Arc<Scope>) -> Tokens {
+    let mut tokens: Tokens = Tokens::new();
     if batch.is_empty() {
-        return Vec::new();
+        return tokens;
     }
     let epoch: Arc<Epoch> = Epoch::root(scope);
     scope.set_last(&epoch);
     deliver_into(batch, &[(epoch.clone(), WriterSet::new())], None, None);
-    vec![epoch]
+    tokens.push(epoch);
+    tokens
 }
 
 /// Delivers a run's later batch as one child epoch per epoch it serves; returns them still
-/// holding their guard token, which the caller closes with `close_all`.
-#[must_use = "the returned tokens must be closed with close_all"]
+/// holding their guard token, which the caller closes.
 pub(crate) fn deliver_children(
     node: &NodeRef,
     served: &[(Arc<Epoch>, WriterSet)],
     batch: Batch,
     own_stamp: Stamp,
 ) -> Tokens {
+    let mut tokens: Tokens = Tokens::new();
     if batch.is_empty() && !own_stamp.is_some() {
-        return Vec::new();
+        return tokens;
     }
     let children: Targets = served
         .iter()
@@ -762,7 +770,10 @@ pub(crate) fn deliver_children(
         .collect();
     let own: Option<OwnItem<'_>> = own_stamp.is_some().then_some(OwnItem { node, stamp: own_stamp });
     deliver_into(batch, &children, Some(node.header().writer), own);
-    children.into_iter().map(|(epoch, _)| epoch).collect()
+    for (epoch, _) in children {
+        tokens.push(epoch);
+    }
+    tokens
 }
 
 /// Runs the deferred functions once every one of `epochs` has settled (spec §6.3).
@@ -811,16 +822,41 @@ pub(crate) fn fire_deferred(deferred: Deferred) {
             drop(handle.spawn(future));
         }
         None => {
-            std::thread::spawn(move || {
-                let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("lithia: cannot build a runtime for a deferred function");
-                runtime.block_on(future);
-            });
+            let _ = DEFER_THREAD.send(Box::pin(future));
         }
     }
 }
+
+/// A deferred function's task, for the defer thread.
+#[cfg(not(lithia_loom))]
+type DeferTask = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// lithia's defer thread, started on first use: a single-threaded runtime for deferred functions
+/// fired where no runtime runs.
+#[cfg(not(lithia_loom))]
+#[allow(clippy::disallowed_types)] // lithia's own thread, absent from loom builds
+static DEFER_THREAD: std::sync::LazyLock<tokio::sync::mpsc::UnboundedSender<DeferTask>> =
+    std::sync::LazyLock::new(|| {
+        let (sender, mut receiver): (
+            tokio::sync::mpsc::UnboundedSender<DeferTask>,
+            tokio::sync::mpsc::UnboundedReceiver<DeferTask>,
+        ) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::Builder::new()
+            .name("lithia-defer".to_string())
+            .spawn(move || {
+                let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("lithia: cannot build the defer thread's runtime");
+                runtime.block_on(async move {
+                    while let Some(task) = receiver.recv().await {
+                        drop(tokio::spawn(task));
+                    }
+                });
+            })
+            .expect("lithia: cannot start the defer thread");
+        sender
+    });
 
 /// Runs a deferred function; a panic is reported and its writes up to the panic still land.
 fn run_deferred(f: Box<dyn FnOnce() + Send>) {
@@ -835,11 +871,11 @@ pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) -> bool {
     let header: &Header = node.header();
     let weak: crate::node::WeakNodeRef = Arc::downgrade(node);
     let mut all_closed: bool = true;
-    let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+    let mut guard: SchedGuard<'_> = header.lock_sched();
     for parent in parents {
         let parent_header: &Header = parent.header();
         let epochs: Epochs = {
-            let mut parent_guard: MutexGuard<'_, Sched> = parent_header.sched.lock();
+            let mut parent_guard: SchedGuard<'_> = parent_header.lock_sched();
             let parent_sched: &mut Sched = &mut parent_guard;
             all_closed &= parent_sched.closed;
             parent_sched.subscribers.insert(header.id, weak.clone());
@@ -887,7 +923,7 @@ fn standing(node: &NodeRef, creator: Option<&NodeRef>) -> Standing {
         return Standing::Free;
     };
     let header: &Header = node.header();
-    let mut guard: MutexGuard<'_, Sched> = creator.header().sched.lock();
+    let mut guard: SchedGuard<'_> = creator.header().lock_sched();
     if header.held_by.lock().is_none() {
         return Standing::Free;
     }
@@ -910,7 +946,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Token
     // Epochs a cut rerun read its writes from, dropped once the lock is released.
     let mut suppress_from: Epochs = Vec::new();
     let started: bool = {
-        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         sched.queued = false;
         let standing: Standing = if sched.run.is_some() || header.creator.is_none() {
@@ -928,7 +964,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Token
             let replaced: bool = !sched.inherited.is_empty();
             let mut served: Vec<Served> = std::mem::take(&mut sched.inherited);
             sched.entries.take_where(
-                |entry: &Entry| entry.runnable && entry.waiting.is_empty(),
+                |entry: &Entry| entry.is_ready(),
                 |entry: Entry| {
                     let record: Served = Served {
                         epoch: entry.epoch,
@@ -1022,9 +1058,7 @@ fn close_served(node: &NodeRef, sched: &mut Sched, served: Vec<Served>, work: &m
                 origin: None,
             });
         }
-        for _ in 0..record.tokens {
-            work.closes.push(record.epoch.clone());
-        }
+        work.closes.add(record.epoch.clone(), record.tokens);
     }
     address_releases(sched, work, released);
 }
@@ -1056,7 +1090,6 @@ pub(crate) enum Outcome {
 
 /// Delivers a poll's batch and, at the first yield or suspension, releases the children.
 /// Returns tokens for the caller to close once it holds no strong reference to the node.
-#[must_use = "the returned tokens must be closed with close_all"]
 pub(crate) fn after_poll(
     node: &NodeRef,
     shared: &Arc<RunShared>,
@@ -1073,20 +1106,20 @@ pub(crate) fn after_poll(
         diag::run_panicked(header.site, message);
         // Only the current run fails the node, as only it publishes: writes and run starts are held off.
         let _write: MutexGuard<'_, ()> = header.write.lock();
-        let guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let guard: SchedGuard<'_> = header.lock_sched();
         let current: bool = !shared.is_cancelled()
             && !header.is_ghost()
             && header.runs.load(Ordering::SeqCst) == shared.id()
             && guard.run.as_ref().is_some_and(|slot: &RunSlot| slot.id == shared.id());
         if current {
-            header.fail(Failure { message: message.clone(), site: *header.site, causes: Vec::new() });
+            header.fail(Failure::new(message.clone(), *header.site));
         }
     }
     let first: bool = !shared.first_done();
     // The served epochs are copied only when there is something to deliver into them.
     let delivers: bool = !batch.is_empty() || (!first && own_stamp.is_some());
     let snapshot: Option<(ServedEpochs, ServedEpochs, bool)> = {
-        let guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let guard: SchedGuard<'_> = header.lock_sched();
         match &guard.run {
             Some(slot) if slot.id == shared.id() => Some((
                 if delivers {
@@ -1113,17 +1146,17 @@ pub(crate) fn after_poll(
         // The run was torn down meanwhile; its writes are applied and still propagate.
         return deliver_outside_deferred(batch, &shared.scope());
     };
-    let mut pending: Tokens = Vec::new();
+    let mut pending: Tokens = Tokens::new();
     if first {
         shared.set_first_done();
         deliver_into(batch, &served, Some(header.writer), None);
         if !released.is_empty() {
             // A published item reaches the children of epochs released already as a later item does.
-            append_closes(&mut pending, deliver_children(node, &released, Batch::default(), own_stamp));
+            pending.append(deliver_children(node, &released, Batch::default(), own_stamp));
         }
     } else {
         // A published item is delivered even if the run was superseded since it published.
-        append_closes(&mut pending, deliver_children(node, &served, batch, own_stamp));
+        pending.append(deliver_children(node, &served, batch, own_stamp));
     }
     if matches!(outcome, Outcome::Yielded) && !cancelled {
         protect_ends(node, shared);
@@ -1134,13 +1167,13 @@ pub(crate) fn after_poll(
             carry_published(node, shared, own_stamp);
         }
         if !matches!(outcome, Outcome::Yielded | Outcome::Suspended) {
-            append_closes(&mut pending, finalize(node, shared, End::Finished));
+            pending.append(finalize(node, shared, End::Finished));
         }
         return pending;
     }
     let mut work: Work = Work::default();
     {
-        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         let mut released: usize = 0;
         let Sched { run, entries, .. } = &mut *sched;
@@ -1168,18 +1201,16 @@ pub(crate) fn after_poll(
                     }
                 }
                 if closes_tokens {
-                    for _ in 0..record.tokens {
-                        work.closes.push(record.epoch.clone());
-                    }
+                    work.closes.add(record.epoch.clone(), record.tokens);
                     record.tokens = 0;
                 }
             }
         }
         address_releases(sched, &mut work, released);
     }
-    append_closes(&mut pending, drain_deferred(work));
+    pending.append(drain_deferred(work));
     if matches!(outcome, Outcome::Ended | Outcome::Panicked(_)) {
-        append_closes(&mut pending, finalize(node, shared, End::Finished));
+        pending.append(finalize(node, shared, End::Finished));
     }
     pending
 }
@@ -1187,7 +1218,7 @@ pub(crate) fn after_poll(
 /// A superseded run published its first item: the run that takes its epochs over releases them
 /// with the item's stamp, so the children see the change even if the new run's item is equal.
 fn carry_published(node: &NodeRef, shared: &Arc<RunShared>, stamp: Stamp) {
-    let mut guard: MutexGuard<'_, Sched> = node.header().sched.lock();
+    let mut guard: SchedGuard<'_> = node.header().lock_sched();
     if let Some(slot) = guard.run.as_mut().filter(|slot: &&mut RunSlot| slot.id == shared.id()) {
         for record in slot.served.iter_mut().filter(|record: &&mut Served| !record.released) {
             record.carry = record.carry.max(stamp);
@@ -1200,14 +1231,11 @@ fn protect_ends(node: &NodeRef, shared: &Arc<RunShared>) {
     let header: &Header = node.header();
     let mut work: Work = Work::default();
     {
-        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         let ran_at: Stamp = sched.ran_at;
         // As in `decide`: an entry runnable only for a reflow waits for the run to end.
-        let waiting: bool = sched.entries.values().any(|entry: &Entry| {
-            let reflow_only: bool = entry.reflow && !entry.first && !entry.force && entry.newest <= ran_at;
-            entry.runnable && entry.waiting.is_empty() && !reflow_only
-        });
+        let waiting: bool = sched.entries.values().any(|entry: &Entry| entry.is_ready() && !entry.reflow_only(ran_at));
         if let Some(slot) = sched.run.as_mut().filter(|slot: &&mut RunSlot| slot.id == shared.id() && slot.replaced) {
             slot.replaced = false;
             if waiting && !slot.restart {
@@ -1231,18 +1259,17 @@ pub(crate) enum End {
 
 /// Ends a run: hands its epochs to the next run if superseded, otherwise closes them.
 /// Returns tokens for the caller to close once it holds no strong reference to the node.
-#[must_use = "the returned tokens must be closed with close_all"]
 pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Tokens {
     let header: &Header = node.header();
     let mut work: Work = Work::default();
     {
-        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         let slot: RunSlot = match sched.run.take() {
             Some(slot) if slot.id == shared.id() => slot,
             other => {
                 sched.run = other;
-                return Vec::new();
+                return Tokens::new();
             }
         };
         let restart: bool = slot.restart && end == End::Finished && !header.is_ghost();
@@ -1286,14 +1313,12 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Tok
                         }
                     }
                 }
-                for _ in 0..record.tokens {
-                    work.closes.push(record.epoch.clone());
-                }
+                work.closes.add(record.epoch.clone(), record.tokens);
             }
             address_releases(sched, &mut work, released);
             header.clear_bits(phase::PENDING);
-            let follow_up: bool = !whole_epochs_wait(header, sched)
-                && sched.entries.values().any(|entry: &Entry| entry.runnable && entry.waiting.is_empty());
+            let follow_up: bool =
+                !whole_epochs_wait(header, sched) && sched.entries.values().any(|entry: &Entry| entry.is_ready());
             if end == End::Finished && follow_up && !sched.queued && !header.is_ghost() {
                 sched.queued = true;
                 work.spawns.push(node.clone());
@@ -1305,20 +1330,19 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Tok
     let releasing: bool = !work.released.is_empty();
     let closes: Tokens = drain_deferred(work);
     if releasing {
-        header.sched.lock().releasing = false;
+        header.lock_sched().releasing = false;
         crate::settle_wait::bump();
     }
     closes
 }
 
 /// Gives up on a node whose run task was dropped because its runtime shut down (spec §11.3).
-#[must_use = "the returned tokens must be closed with close_all"]
 pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunShared>) -> Tokens {
     let mut pending: Tokens = finalize(node, shared, End::Shutdown);
     let header: &Header = node.header();
     let mut work: Work = Work::default();
     {
-        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         if sched.run.is_some() {
             return pending;
@@ -1327,7 +1351,7 @@ pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunShared>) -> Tokens {
         let ready: Vec<EpochId> = sched
             .entries
             .iter()
-            .filter(|(_, entry): &(&EpochId, &Entry)| entry.runnable)
+            .filter(|(_, entry): &(&EpochId, &Entry)| entry.due.contains(Due::RUNNABLE))
             .map(|(id, _): (&EpochId, &Entry)| *id)
             .collect();
         for epoch in ready {
@@ -1337,16 +1361,16 @@ pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunShared>) -> Tokens {
         close_served(node, sched, inherited, &mut work);
     }
     if !header.is_ghost() {
-        header.fail(Failure { message: "runtime shut down".to_string(), site: *header.site, causes: Vec::new() });
+        header.fail(Failure::new("runtime shut down", *header.site));
     }
-    append_closes(&mut pending, drain_deferred(work));
+    pending.append(drain_deferred(work));
     pending
 }
 
 /// Stops the async block or generator feeding a source node after a write (spec §7.3 item 5).
 pub(crate) fn kill_run(node: &NodeRef) {
     let shared: Option<Arc<RunShared>> = {
-        let guard: MutexGuard<'_, Sched> = node.header().sched.lock();
+        let guard: SchedGuard<'_> = node.header().lock_sched();
         guard.run.as_ref().map(|slot: &RunSlot| slot.shared.clone())
     };
     if let Some(shared) = shared {
@@ -1361,7 +1385,7 @@ pub(crate) fn retire(node: &NodeRef) {
     let header: &Header = node.header();
     let mut work: Work = Work::default();
     let shared: Option<Arc<RunShared>> = {
-        let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         let epochs: Vec<EpochId> = sched.entries.keys().copied().collect();
         for epoch in epochs {

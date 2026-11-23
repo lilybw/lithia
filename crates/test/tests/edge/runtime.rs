@@ -190,3 +190,24 @@ fn ready_runs_packed_for_a_runtime_that_shuts_down_fail_like_runs() {
         }
     }
 }
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_body_blocking_on_flush_does_not_wait_for_its_own_poll_to_end() {
+    let input: SourceNode<u32> = effect!(0);
+    let out: SourceNode<u32> = effect!(0);
+    let doubled: DerivedNode<u32> = effect!(|out| *out.get() * 2);
+    let _blocker: DerivedNode<()> = effect!(|input| {
+        let value: u32 = *input.get();
+        if value > 0 {
+            out.set(value);
+            // Waits for `doubled`, which the write readied while this body polls.
+            tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(lithia::flush()));
+        }
+    });
+    lithia::flush().await;
+    input.set(5);
+    let flushed: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(5), lithia::flush()).await;
+    assert!(flushed.is_ok(), "the body's flush waited for a run queued behind its own poll");
+    assert_eq!(*doubled.get(), 10);
+}

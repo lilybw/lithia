@@ -15,6 +15,7 @@ use crate::protocol;
 use crate::sync::MutexGuard;
 
 /// Frees `root` and every descendant with no live parent outside the freed branch.
+#[track_caller]
 pub(crate) fn dispose(root: &NodeRef) {
     context::assert_not_in_closure("lithia::dispose");
     dispose_unchecked(root);
@@ -117,8 +118,7 @@ fn is_ghost_parent(node: &NodeRef, parent: NodeId) -> bool {
 fn mark_ghost(node: &NodeRef) {
     let header: &Header = node.header();
     let _write: MutexGuard<'_, ()> = header.write.lock();
-    header.set_bits(phase::GHOST);
-    header.clear_bits(phase::PENDING);
+    header.transition(phase::GHOST, phase::PENDING);
 }
 
 /// Tears a ghost down; returns the children linked when it closed.
@@ -128,7 +128,7 @@ fn teardown(node: &NodeRef) -> Vec<NodeRef> {
     // The children linked by the time it closes, under the lock `link` takes: a child linked later
     // finds the node closed.
     let (generation, linked): (Vec<NodeRef>, Vec<NodeRef>) = {
-        let mut guard: MutexGuard<'_, crate::node::Sched> = header.sched.lock();
+        let mut guard: crate::node::SchedGuard<'_> = header.lock_sched();
         guard.closed = true;
         let linked: Vec<NodeRef> = guard.subscribers.values().filter_map(WeakNodeRef::upgrade).collect();
         (guard.release_all(), linked)

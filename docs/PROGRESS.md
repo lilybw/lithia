@@ -78,7 +78,7 @@ creation is cut); Cases T and BG are extended.
 | §9 Failure, fragility | done | |
 | §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/support.rs`, `capture.rs`); v0.3.1: keyed nodes, holdover (`keyed.rs`, `create.rs`) |
 | §11 Concurrency, scopes | done | fast path and runner tasks (§11.4 step 4, `crates/lithia/src/inline.rs`) since v0.4.0 |
-| §11.4 step 8 loom | done | 48 models, bound 3 by default, bound 4 on nightly; see "Model checking" below |
+| §11.4 step 8 loom | done | 51 models, bound 3 by default, bound 4 on nightly; see "Model checking" below |
 | §11.4 step 8 TLA+ | done | `docs/tla`: scheduling and lifetimes, ten TLC models; TLC gates a release |
 | §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 50 000/s since v0.5.0); first-run, growth and unread-memo warnings |
 | §15 Benchmarks | done | results and observations in `docs/BENCHMARKS.md` |

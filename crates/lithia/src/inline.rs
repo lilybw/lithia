@@ -50,8 +50,12 @@ struct Inline {
     closes: Tokens,
 }
 
+impl Inline {
+    const CLOSED: Inline = Inline { open: false, runtime: NO_RUNTIME, next: VecDeque::new(), closes: Tokens::new() };
+}
+
 crate::sync::thread_local! {
-    static INLINE: RefCell<Inline> = RefCell::new(Inline::default());
+    static INLINE: RefCell<Inline> = const { RefCell::new(Inline::CLOSED) };
 }
 
 /// The fast path, open while a run or runner task is polled; closes when dropped.
@@ -122,7 +126,41 @@ impl Drop for Open {
                 node.spawn_run();
             }
         }
-        crate::protocol::close_all(closes);
+        closes.close();
+    }
+}
+
+/// The fast path closed while user code polls, so a body that blocks until runs finish never waits
+/// for runs only its own poll's end would start; reopened as it was when dropped.
+pub(crate) struct Paused {
+    saved: Option<Inline>,
+    _thread: std::marker::PhantomData<*const ()>,
+}
+
+/// Closes the fast path of this thread, if open, until the guard drops.
+pub(crate) fn pause() -> Paused {
+    let saved: Option<Inline> = INLINE
+        .try_with(|cell: &RefCell<Inline>| {
+            let mut inline: std::cell::RefMut<'_, Inline> = cell.borrow_mut();
+            inline.open.then(|| std::mem::take(&mut *inline))
+        })
+        .ok()
+        .flatten();
+    Paused { saved, _thread: std::marker::PhantomData }
+}
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved.take() {
+            let _ = INLINE.try_with(|cell: &RefCell<Inline>| {
+                let mut inline: std::cell::RefMut<'_, Inline> = cell.borrow_mut();
+                debug_assert!(
+                    !inline.open && inline.next.is_empty() && inline.closes.is_empty(),
+                    "lithia: the fast path was left open or holding runs while paused"
+                );
+                *inline = saved;
+            });
+        }
     }
 }
 
@@ -135,11 +173,11 @@ pub(crate) fn close_later(closes: Tokens) {
         if inline.open
             && let Some(more) = closes.take()
         {
-            crate::protocol::append_closes(&mut inline.closes, more);
+            inline.closes.append(more);
         }
     });
     if let Some(closes) = closes {
-        crate::protocol::close_all(closes);
+        closes.close();
     }
 }
 
@@ -303,6 +341,7 @@ fn spawn_task(runtime: Option<tokio::runtime::Handle>, task: RunTask) {
 /// Loom models take the fast path unless `LITHIA_LOOM_FAST_PATH=off`, so CI checks both paths.
 #[cfg(lithia_loom)]
 fn enabled() -> bool {
+    #[allow(clippy::disallowed_types)] // a model's configuration, read once
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("LITHIA_LOOM_FAST_PATH").map_or(true, |value: String| value != "off"))
 }
@@ -314,13 +353,12 @@ fn enabled() -> bool {
 
 /// The key of a run whose node is gone, which never takes the fast path.
 #[cfg(not(lithia_loom))]
-pub(crate) fn no_runtime() -> RuntimeKey {
-    None
-}
-
+const NO_RUNTIME: RuntimeKey = None;
 #[cfg(lithia_loom)]
+const NO_RUNTIME: RuntimeKey = RuntimeKey;
+
 pub(crate) fn no_runtime() -> RuntimeKey {
-    RuntimeKey
+    NO_RUNTIME
 }
 
 #[cfg(not(lithia_loom))]

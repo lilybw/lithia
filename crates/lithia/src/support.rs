@@ -22,6 +22,7 @@ loom::lazy_static! {
 const START_BUDGET: usize = 64;
 
 /// Set once any node is scoped; until then no node can be blocked by a scoped parent.
+#[allow(clippy::disallowed_types)] // a hint that skips work; loom models always do the work
 static ANY_SCOPED: crate::sync::Padded<std::sync::atomic::AtomicBool> =
     crate::sync::Padded(std::sync::atomic::AtomicBool::new(false));
 
@@ -38,11 +39,13 @@ struct Op {
 }
 
 crate::sync::thread_local! {
-    static OP: RefCell<Op> =
-        RefCell::new(Op { depth: 0, running: false, starts: Vec::new(), keep: Vec::new(), resumes: Vec::new() });
+    static OP: RefCell<Op> = const {
+        RefCell::new(Op { depth: 0, running: false, starts: Vec::new(), keep: Vec::new(), resumes: Vec::new() })
+    };
 }
 
 /// Nodes support let go of that still live. A walk can hold something again only while there are some.
+#[allow(clippy::disallowed_types)] // a hint that skips work; loom models always do the work
 static LET_GO: crate::sync::Padded<std::sync::atomic::AtomicUsize> =
     crate::sync::Padded(std::sync::atomic::AtomicUsize::new(0));
 
@@ -60,6 +63,8 @@ pub(crate) struct OpGuard {
 
 /// Enters an operation on this thread.
 pub(crate) fn enter() -> OpGuard {
+    #[cfg(lithia_loom)]
+    crate::model::busy();
     let drops: crate::drops::Batch = crate::drops::batch();
     let _ = OP.try_with(|op: &RefCell<Op>| op.borrow_mut().depth += 1);
     OpGuard { _drops: drops }
@@ -69,7 +74,7 @@ impl Drop for OpGuard {
     fn drop(&mut self) {
         let outermost: bool = OP
             .try_with(|op: &RefCell<Op>| {
-                let mut op = op.borrow_mut();
+                let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
                 op.depth -= 1;
                 op.depth == 0 && !op.running
             })
@@ -77,6 +82,8 @@ impl Drop for OpGuard {
         if outermost {
             run();
         }
+        #[cfg(lithia_loom)]
+        crate::model::idle();
     }
 }
 
@@ -164,7 +171,7 @@ fn finish(keep: Vec<NodeRef>, held: Vec<&'static crate::Site>) {
     }
     let mut keep: Option<Vec<NodeRef>> = Some(keep);
     let _ = OP.try_with(|op: &RefCell<Op>| {
-        let mut op = op.borrow_mut();
+        let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
         if (op.depth > 0 || op.running)
             && let Some(keep) = keep.take()
         {
@@ -195,7 +202,7 @@ pub(crate) fn start(node: NodeRef) {
     let mut node: Option<NodeRef> = Some(node);
     let now: Option<bool> = OP
         .try_with(|op: &RefCell<Op>| {
-            let mut op = op.borrow_mut();
+            let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
             if let Some(node) = node.take() {
                 op.starts.push(node);
             }
@@ -220,7 +227,7 @@ fn needs_sweep(node: &NodeRef) -> bool {
     if is_held(header) || !header.targets.is_empty() {
         return true;
     }
-    let guard: MutexGuard<'_, crate::node::Sched> = header.sched.lock();
+    let guard: crate::node::SchedGuard<'_> = header.lock_sched();
     !guard.subscribers.is_empty() || guard.holds_creations()
 }
 
@@ -228,7 +235,7 @@ fn needs_sweep(node: &NodeRef) -> bool {
 fn run() {
     let entered: bool = OP
         .try_with(|op: &RefCell<Op>| {
-            let mut op = op.borrow_mut();
+            let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
             if op.running {
                 false
             } else {
@@ -250,7 +257,7 @@ fn run() {
     loop {
         let (keep, starts, resumes): (Vec<NodeRef>, Vec<NodeRef>, Vec<WeakNodeRef>) = OP
             .try_with(|op: &RefCell<Op>| {
-                let mut op = op.borrow_mut();
+                let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
                 (std::mem::take(&mut op.keep), std::mem::take(&mut op.starts), std::mem::take(&mut op.resumes))
             })
             .unwrap_or_default();
@@ -356,14 +363,14 @@ fn unread(header: &Header) -> Option<&'static crate::Site> {
         return None;
     }
     let readers: bool = header.changes.lock().as_ref().is_some_and(|sender: &ChangeSender| sender.receiver_count() > 0);
-    (!readers && header.sched.lock().subscribers.is_empty()).then_some(header.site)
+    (!readers && header.lock_sched().subscribers.is_empty()).then_some(header.site)
 }
 
 /// Nodes support flows to from `node`: children, its generation, and the nodes it may write.
 fn successors(node: &NodeRef, keep: &mut Vec<NodeRef>) -> Vec<NodeRef> {
     let header: &Header = node.header();
     let mut out: Vec<NodeRef> = header.subscribers();
-    out.extend(header.sched.lock().creations().cloned());
+    out.extend(header.lock_sched().creations().cloned());
     out.extend(header.targets.iter().filter_map(|weak: &WeakNodeRef| weak.upgrade()));
     keep.extend(out.iter().cloned());
     out
@@ -529,7 +536,7 @@ pub(crate) fn scope(node: &NodeRef) {
     }
     let creator: Option<NodeRef> = header.held_by.lock().take().and_then(|weak: WeakNodeRef| weak.upgrade());
     let released: Option<NodeRef> =
-        creator.as_ref().and_then(|creator: &NodeRef| creator.header().sched.lock().remove_creation(header.id));
+        creator.as_ref().and_then(|creator: &NodeRef| creator.header().lock_sched().remove_creation(header.id));
     defer_resume(node);
     start(node.clone());
     drop(released);
@@ -556,7 +563,7 @@ pub(crate) fn defer_resume(node: &NodeRef) {
     let weak: WeakNodeRef = std::sync::Arc::downgrade(node);
     let queued: bool = OP
         .try_with(|op: &RefCell<Op>| {
-            let mut op = op.borrow_mut();
+            let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
             op.resumes.push(weak);
             op.depth == 0 && !op.running
         })

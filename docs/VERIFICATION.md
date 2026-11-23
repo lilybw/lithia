@@ -40,7 +40,7 @@ runs the real engine: the main thread delivers batches and polls runs, worker th
 it, and the model checks the final values once everything settles. Lifetime models also check each
 scope's live count.
 
-- Models: 48, in `crates/test/tests/loom.rs`. Each one's doc comment says what it races and which case
+- Models: 51, in `crates/test/tests/loom.rs`. Each one's doc comment says what it races and which case
   it covers.
 - Paths: every model runs with the fast path and again with `LITHIA_LOOM_FAST_PATH=off`, which gives
   every ready run a task of its own.
@@ -49,6 +49,14 @@ scope's live count.
 - Determinism: sweeps keep their maps ordered by `NodeId`, loom builds always take the full path for
   scoped nodes, and tokens that close together close in epoch order. Models running side by side in
   one process therefore explore the same interleavings.
+- Wakers: a pending task is parked until its waker moves it back to the queue. A thread waiting for a
+  scope fails the model when every task stays parked while nothing else is under way, which is what a
+  lost wakeup looks like.
+- What loom sees: `crates/lithia/clippy.toml` forbids std's and parking_lot's locks, atomics and lazy
+  cells outside `sync.rs`. A use loom need not see, such as an id counter, a diagnostics table or a
+  handle's own flag, is allowed where it stands, with the reason beside it.
+- Debug checks: every release of a scheduling lock checks its invariants (`Sched::check`), and epoch
+  tokens dropped unclosed fail a debug build.
 - Not modelled: reference counts (`Arc`, `Weak`) and tokio's internals. A race that lies entirely
   between two operations loom sees is collapsed. Every path that depends on a reference count is
   bracketed by locks or atomics loom does see, and stress runs check the rest. For example, the Case J
@@ -143,7 +151,7 @@ These make nothing fail, and are harmless:
 
 `.github/scripts/mutations.py` keeps each mutation as code, applies it to a copy of the workspace and
 runs the test named for it, which must fail; `--list` names them. W1–W4 cover the protocol, F1–F5 the
-fast path and S1–S3 support's walks. Two survive: W3 needs a node created between a write's framing and
+fast path, S1–S3 support's walks, and K1–K3 the wakes that end a stopped, retired or freed run. Two survive: W3 needs a node created between a write's framing and
 its release, and F5 is equivalent to the original. cargo-mutants also runs weekly over `crates/lithia`
 in 16 shards and lists the mutants the tests leave alive.
 

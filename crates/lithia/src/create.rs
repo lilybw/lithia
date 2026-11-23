@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicUsize, Mutex, MutexGuard};
+use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicUsize, Mutex};
 use tokio::runtime::Handle;
 
 use crate::capture::{Captured, SharedLease};
@@ -17,7 +17,8 @@ use crate::handles::{DerivedNode, NodeHandle, SourceNode};
 use crate::ids::{self, Atomic, NodeId, Place, RunId, Stamp, WriterId};
 use crate::keyed::{self, Inputs, Key, Keyed};
 use crate::node::{
-    Body, BodySlot, BoxFut, Header, Kind, Node, NodeRef, Parents, RateWindow, Sched, TypedNodeRef, WeakNodeRef, phase,
+    Body, BodySlot, BoxFut, Header, Kind, Node, NodeRef, Parents, RateWindow, Sched, SchedGuard, TypedNodeRef,
+    WeakNodeRef, phase,
 };
 use crate::options::{Equals, Options};
 use crate::run::{RunShared, Yielder};
@@ -118,9 +119,8 @@ fn refresh<K: NodeValue>(
     }
     // A run the node owes already, gated until now, runs the new body: no rerun is needed for it.
     let owed: bool = header.kind == Kind::Derived && {
-        let guard: MutexGuard<'_, Sched> = header.sched.lock();
-        guard.run.is_none()
-            && guard.entries.values().any(|entry: &crate::node::Entry| entry.runnable && entry.waiting.is_empty())
+        let guard: SchedGuard<'_> = header.lock_sched();
+        guard.run.is_none() && guard.entries.values().any(|entry: &crate::node::Entry| entry.is_ready())
     };
     if !owed {
         context::record_refresh(&erased);
@@ -209,7 +209,7 @@ fn new_node<K: NodeValue>(
         }
         _ => WriterId::node(id),
     };
-    let closed: bool = creator_node.as_ref().is_some_and(|c: &NodeRef| c.header().sched.lock().closed);
+    let closed: bool = creator_node.as_ref().is_some_and(|c: &NodeRef| c.header().lock_sched().closed);
     let held: bool = creator_node.is_some() && !closed;
     let top_level: bool = run.is_none();
     let supportable: bool = top_level && !parents.is_empty() && kind != Kind::Source;
@@ -272,26 +272,27 @@ fn new_node<K: NodeValue>(
         crate::diag::key_outside_run(site);
     }
     if let Some(creator) = creator_node.as_ref() {
-        let mut guard: MutexGuard<'_, Sched> = creator.header().sched.lock();
+        let mut guard: SchedGuard<'_> = creator.header().lock_sched();
         // Pruned once doubled since the last prune, so a run creating many nodes stays linear.
         if guard.created.len() >= 2 * guard.created_floor.max(8) {
             guard.created.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
             guard.created_floor = guard.created.len();
         }
         guard.created.push(Arc::downgrade(&erased));
-        let mut duplicate: bool = false;
+        let mut alike: Vec<NodeRef> = Vec::new();
         if !guard.closed {
             *erased.header().held_by.lock() = Some(Arc::downgrade(creator));
             if keyed {
-                duplicate = keyed::note_fresh(&mut guard, &erased);
+                alike = keyed::note_fresh(&mut guard, &erased);
             } else {
                 guard.generation.push(erased.clone());
             }
         }
         drop(guard);
-        if duplicate {
+        if keyed::is_duplicate(&erased, &alike) {
             crate::diag::duplicate_key(site);
         }
+        drop(alike);
         settle_wait::bump();
     }
     drop(creator_node);

@@ -166,11 +166,16 @@ impl Atomic<RunId> {
 }
 
 // The clock and the two busiest counters each sit on lines of their own: every run reads the
-// clock, and every publish, delivery and creation writes one of them.
+// clock, and every publish, delivery and creation writes one of them. Id counters hand out unique
+// values and order nothing, so loom need not see them; it sees the clock.
+#[allow(clippy::disallowed_types)]
 static NEXT_NODE: Padded<std::sync::atomic::AtomicU64> = Padded(std::sync::atomic::AtomicU64::new(1));
+#[allow(clippy::disallowed_types)]
 static NEXT_EPOCH: Padded<std::sync::atomic::AtomicU64> = Padded(std::sync::atomic::AtomicU64::new(1));
+#[allow(clippy::disallowed_types)]
 static NEXT_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 #[cfg(not(lithia_loom))]
+#[allow(clippy::disallowed_types)]
 static CLOCK: Padded<std::sync::atomic::AtomicU64> = Padded(std::sync::atomic::AtomicU64::new(1));
 #[cfg(lithia_loom)]
 loom::lazy_static! {

@@ -3,6 +3,8 @@
 
 //! Progress signalling for `lithia::test::settled` (spec §11.3).
 
+#![allow(clippy::disallowed_types)] // test support (`lithia::test::settled`), which models do not run
+
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use tokio::sync::Notify;

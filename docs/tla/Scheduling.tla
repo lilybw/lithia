@@ -64,14 +64,14 @@ InitLoc(p) == [n |-> IF p[1] = "T" THEN p[2] ELSE 0, todo |-> IF p[1] = "W" THEN
                snap |-> {}, rel |-> {}, cx |-> FALSE, done |-> FALSE, e |-> 0, par |-> 0, wr |-> {}]
 
 VARIABLES
-    clock, version, ranAt,
+    clock, version, ranAt, relAt,
     ent, run, inh, queued, spawned, suppIn,
     epOn, epPar, own, sub, settled, wlog, hooks, scope, nextE,
     undelivered,
     pc, fr, plan, rl, sp, hk, cl, cd, loc,
     hookFree, anomaly, glitch
 
-timeV == <<clock, version, ranAt>>
+timeV == <<clock, version, ranAt, relAt>>
 nodeV == <<ent, run, inh, queued>>
 epV == <<epOn, epPar, own, sub, settled, wlog, hooks, scope, nextE>>
 workV == <<fr, plan, rl, sp, hk, cl, cd>>
@@ -106,13 +106,32 @@ Settle(n, e, s, w) ==
               ELSE [w EXCEPT !.rl = @ \cup RelTo(n, e, en.ca, en.wr)]
     IN <<s2, [w1 EXCEPT !.cl[e] = @ + 1]>>
 
-\* decide (protocol.rs): a ready entry is cut, settles unchanged, starts a run or supersedes one.
+\* join_run (protocol.rs): the entry's epoch joins the run in flight, which releases it with its
+\* first item or when it ends; the entry's token goes with it.
+Join(n, e, s, w) ==
+    LET en == s.ent[e]
+        s1 == [s EXCEPT !.ent = [x \in DOMAIN s.ent \ {e} |-> s.ent[x]]]
+        rec == IF e \in DOMAIN s.run.sv
+               THEN [s.run.sv[e] EXCEPT !.tok = @ + 1, !.rel = FALSE, !.wr = @ \cup en.wr, !.ca = Max(@, en.ca)]
+               ELSE [tok |-> 1, rel |-> FALSE, wr |-> en.wr, ca |-> en.ca]
+    IN <<[s1 EXCEPT !.run.sv = Put(@, e, rec)], w>>
+
+\* A run in flight that has not released yet: its first poll is still to be marked.
+Unreleased(s) == s.run.on /\ \E f \in DOMAIN s.run.sv : ~s.run.sv[f].rel
+
+\* decide (protocol.rs): a ready entry is cut, settles unchanged, starts a run or supersedes one. An
+\* unchanged entry that carries a change absorbed by a run started after it joins that run; once the
+\* run has released, the entry settles with the node's version, so its children test the change.
 Decide(n, e, s, w) ==
     LET en == s.ent[e] IN
     IF en.cut
     THEN Settle(n, e, s, [w EXCEPT !.hk = @ \cup {[n |-> n, e |-> e, wr |-> en.wr]}])
     ELSE IF ~(en.fo \/ en.nw > ranAt[n])
-    THEN Settle(n, e, s, w)
+    THEN IF en.nw > 0 /\ Unreleased(s)
+         THEN Join(n, e, s, w)
+         ELSE IF en.nw > 0
+         THEN Settle(n, e, [s EXCEPT !.ent[e].ca = Max(@, version[n])], w)
+         ELSE Settle(n, e, s, w)
     ELSE LET s1 == [s EXCEPT !.ent[e].rn = TRUE] IN
          IF ~s1.run.on
          THEN IF s1.q THEN <<s1, w>> ELSE <<[s1 EXCEPT !.q = TRUE], [w EXCEPT !.sp = @ \cup {n}]>>
@@ -285,7 +304,7 @@ W_Write(p) ==
         /\ version' = [version EXCEPT ![s] = clock + 1]
         /\ undelivered' = undelivered \cup {<<s, clock + 1>>}
         /\ loc' = [loc EXCEPT ![p].todo = @ \ {s}, ![p].ws = @ \cup {<<s, clock + 1>>}]
-    /\ UNCHANGED <<ranAt, nodeV, epV, workV, spawned, suppIn, hookFree, anomaly, glitch, pc>>
+    /\ UNCHANGED <<ranAt, relAt, nodeV, epV, workV, spawned, suppIn, hookFree, anomaly, glitch, pc>>
 
 W_Deliver(p) ==
     /\ pc[p] = "w_apply" /\ loc[p].todo = {}
@@ -299,11 +318,12 @@ W_Deliver(p) ==
             /\ sub' = [sub EXCEPT ![e] = 1]
             /\ scope' = scope + 1
             /\ cd' = [cd EXCEPT ![p][e] = 1]
+            /\ wlog' = [wlog EXCEPT ![e] = {<<0, x[1], x[2]>> : x \in loc[p].ws}]
             /\ fr' = [fr EXCEPT ![p] = UNION {{<<x[1], c, e>> : c \in Children(x[1])} : x \in loc[p].ws}]
             /\ plan' = [plan EXCEPT ![p] = {[f |-> x[1], e |-> e, ca |-> x[2], wr |-> {}] : x \in loc[p].ws}]
             /\ undelivered' = undelivered \ loc[p].ws
             /\ pc' = [pc EXCEPT ![p] = "w_frame"]
-            /\ UNCHANGED <<timeV, nodeV, epPar, settled, wlog, hooks, rl, sp, hk, cl>>
+            /\ UNCHANGED <<timeV, nodeV, epPar, settled, hooks, rl, sp, hk, cl>>
             /\ UNCHANGED <<spawned, suppIn, hookFree, anomaly, glitch, loc>>
 
 -----------------------------------------------------------------------------
@@ -345,7 +365,7 @@ T_Start(p) ==
                   /\ pc' = [pc EXCEPT ![p] = "t_poll"]
              ELSE /\ pc' = [pc EXCEPT ![p] = "idle"]
                   /\ UNCHANGED <<ent, inh, run, suppIn, ranAt, glitch, loc>>
-    /\ UNCHANGED <<clock, version, epV, workV, spawned, undelivered, hookFree, anomaly>>
+    /\ UNCHANGED <<clock, version, relAt, epV, workV, spawned, undelivered, hookFree, anomaly>>
 
 \* One poll of the body: it may write its targets and, when it ends, publish a changed value,
 \* which is discarded if the run was superseded by then (run.rs Node::publish). A node without
@@ -369,7 +389,7 @@ T_Poll(p) ==
             /\ loc' = [loc EXCEPT ![p].ws = {<<t, St(t)>> : t \in wr}, ![p].own = mine,
                                   ![p].out = out, ![p].polls = @ + 1]
             /\ pc' = [pc EXCEPT ![p] = "t_snap"]
-    /\ UNCHANGED <<ranAt, nodeV, epV, workV, spawned, suppIn, hookFree, anomaly, glitch>>
+    /\ UNCHANGED <<ranAt, relAt, nodeV, epV, workV, spawned, suppIn, hookFree, anomaly, glitch>>
 
 \* after_poll's snapshot of the run under its node's lock.
 T_Snap(p) ==
@@ -465,8 +485,9 @@ T_Mark(p) ==
                /\ run' = [run EXCEPT ![n].sv = sv2]
                /\ rl' = [rl EXCEPT ![p] = @ \cup (UNION {RelTo(n, e, sv2[e].ca, sv[e].wr) : e \in toRel})]
                /\ cl' = [cl EXCEPT ![p] = [e \in Epoch |-> @[e] + (IF e \in DOMAIN sv THEN sv[e].tok ELSE 0)]]
+               /\ relAt' = IF first THEN [relAt EXCEPT ![n] = ranAt[n]] ELSE relAt
                /\ pc' = [pc EXCEPT ![p] = "t_mdrain"]
-               /\ UNCHANGED <<timeV, inh, queued, epV, fr, plan, sp, hk, cd, miscV, loc>>
+               /\ UNCHANGED <<clock, version, ranAt, inh, queued, epV, fr, plan, sp, hk, cd, miscV, loc>>
 
 \* poll_run after after_poll: an ended run finalizes; a suspended one finalizes if superseded.
 T_AfterMark(p) ==
@@ -552,7 +573,7 @@ ProcNext(p) ==
     \/ H_Supp(p) \/ H_Seed(p) \/ H_Eval(p)
 
 Init ==
-    /\ clock = 0 /\ version = [n \in Node |-> 0] /\ ranAt = [n \in Node |-> 0]
+    /\ clock = 0 /\ version = [n \in Node |-> 0] /\ ranAt = [n \in Node |-> 0] /\ relAt = [n \in Node |-> 0]
     /\ ent = [n \in Node |-> EmptyF] /\ run = [n \in Node |-> NoRun] /\ inh = [n \in Node |-> EmptyF]
     /\ queued = [n \in Node |-> FALSE] /\ spawned = [n \in Node |-> FALSE] /\ suppIn = [n \in Node |-> {}]
     /\ epOn = {} /\ epPar = [e \in Epoch |-> 0] /\ own = Zero /\ sub = Zero
@@ -608,6 +629,13 @@ ObligationsHeld ==
 ScopeConsistent ==
     scope = 0 => \A c \in Derived : \A q \in Parents[c] :
         version[q] <= ranAt[c] \/ <<q, version[q]>> \in undelivered
+
+\* flush in a writer's scope returns once its root epoch has no open work in its subtree; by then
+\* every child of a source it wrote has released a run started after the write. Cut writers rerun
+\* later by design, so this holds without writes from bodies.
+AbsorbedReleased == NoBodyWrites =>
+    \A e \in epOn : epPar[e] = 0 /\ sub[e] = 0 =>
+        \A y \in wlog[e] : Len(y) = 3 => \A c \in Derived : y[2] \in Parents[c] => relAt[c] >= y[3]
 
 \* Without writes from bodies, a run never starts on an entry while a parent still owes the epoch.
 NoGlitch == NoBodyWrites => ~glitch

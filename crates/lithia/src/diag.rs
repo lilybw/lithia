@@ -5,7 +5,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::LazyLock;
 use std::time::Instant;
 
 use crate::Site;
@@ -20,8 +19,11 @@ pub(crate) type Millis = u64;
 
 pub(crate) const DEFAULT_RERUN_RATE: u64 = 50_000;
 
+// Diagnostics' own state, below, orders nothing the protocol reads, so loom need not see it.
+
 /// Rerun-rate threshold, read from the environment once per process.
-static RERUN_THRESHOLD: LazyLock<u64> = LazyLock::new(|| {
+#[allow(clippy::disallowed_types)]
+static RERUN_THRESHOLD: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
     std::env::var("LITHIA_RERUN_RATE")
         .ok()
         .and_then(|raw: String| raw.trim().parse::<u64>().ok())
@@ -29,12 +31,15 @@ static RERUN_THRESHOLD: LazyLock<u64> = LazyLock::new(|| {
         .unwrap_or(DEFAULT_RERUN_RATE)
 });
 
-static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+#[allow(clippy::disallowed_types)]
+static START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
 
 /// Support-held nodes per creating site, for the growth warning.
+#[allow(clippy::disallowed_types)]
 static HELD: parking_lot::Mutex<BTreeMap<SiteKey, usize>> = parking_lot::Mutex::new(BTreeMap::new());
 
 /// Sites already warned about an unread memo.
+#[allow(clippy::disallowed_types)]
 static UNREAD_WARNED: parking_lot::Mutex<BTreeSet<SiteKey>> = parking_lot::Mutex::new(BTreeSet::new());
 
 /// Runs one `tracing` emission; diagnostics run inside protocol steps, so a panicking subscriber is contained.
@@ -176,6 +181,7 @@ fn cut(writer: &Site, is_unit: bool, written: Option<&'static Site>) {
 }
 
 /// Sites already warned that a `WHOLE_EPOCHS` node ran before its epochs were whole.
+#[allow(clippy::disallowed_types)]
 static WHOLE_WARNED: parking_lot::Mutex<BTreeSet<SiteKey>> = parking_lot::Mutex::new(BTreeSet::new());
 
 fn whole_epochs_bound(site: &'static Site) {

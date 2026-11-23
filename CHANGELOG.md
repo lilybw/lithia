@@ -29,7 +29,15 @@ with the validation cases, verification details, benchmark history and this chan
 | 9.1 | A run that panics after it was superseded, or after a write stopped its block, no longer fails its node; a write's value stayed `Failed` until the next write. | review |
 | 10.3 | Comparators, keys and kept inputs are dropped off the protocol, as values and bodies are, so their `Drop` cannot panic through a teardown or a refresh. | review |
 | 12 | A panicking `tracing` subscriber is caught where lithia emits, so it cannot interrupt a protocol step; the rerun-rate warning is emitted after the node's rate lock is released. | review |
-| — | Ids and dense generic types are named by documented aliases, and debug builds check token, anchor and live counts and version order with assertions. | review |
+| 7.2 | An entry whose change a run in flight already read joins that run while it has not released, so `flush` and `defer` no longer return before the value that includes the change; once the run has released, the entry settles with the node's version. A TLA+ property and model (`AbsorbedReleased`, `MCAbsorb`) catch the old behaviour. | architectural review; TLA+ |
+| 4.2 | Captures: a leading underscore no longer makes a constant a variable (`_LIMIT`); `use` items and statement macros such as `tokio::pin!` bind names; only a macro's format string is scanned, in every macro; `matches!`, `select!` and `tracing`'s fields are parsed; an unparsable macro takes every name in it for a possible write instead of capturing nothing. | review |
+| 4.7 | Keys are compared after the creator's scheduling lock is released, so a key's `PartialEq` can no longer deadlock against the creator. | review |
+| 11.4 | The fast path is closed while a body polls, so a body that blocks on `flush` no longer waits for runs only its own poll's end would start. | review |
+| 3 | `Readable`, `Writable`, `Reflow` and `Dispose` require `Send + Sync`; `Failure` is `#[non_exhaustive]` and an `Error` whose source is its first cause; the panicking reads and writes carry `#[track_caller]`, and `try_get`, `changes`, `accessor` and `setter` are `#[must_use]`. | review |
+| 6.3 | A deferred function fired where no runtime runs goes to one defer thread, started on first use, instead of a thread and runtime of its own. | review |
+| 11.4 | Debug builds check a scheduling lock's invariants each time it is released; epoch tokens are a type that must be closed; the frame pointer is set only through a scoped call; failing and disposal change a node's phase in one step. | review |
+| 11.4 | loom's model executor parks pending tasks until woken, so a lost wakeup fails a model; a clippy rule keeps locks, atomics and lazy cells loom cannot see out of the engine except where a use says why. | review |
+| — | Ids, stamps and run ids are newtypes, writer ids are built only from a node or a lineage, and dense generic types are named by documented aliases; debug builds check token, anchor and live counts and version order with assertions. | review |
 | all | About 24 000 words instead of 41 000: the validation cases live in `crates/validation`, the verification details in `docs/VERIFICATION.md`, the benchmark history in `docs/BENCHMARKS.md` and the changes in this file. | review |
 
 ## 0.4.0

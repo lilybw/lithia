@@ -341,3 +341,56 @@ async fn a_refreshed_source_is_written_with_the_new_comparator() {
     lithia::flush().await;
     assert_eq!(*(*made.get()).clone().expect("made").get(), 5);
 }
+
+/// The source a [`WritingKey`] writes from another thread the first time it is compared.
+static WRITTEN_BY_KEY: std::sync::OnceLock<SourceNode<u32>> = std::sync::OnceLock::new();
+static KEY_WROTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A key whose comparison waits for a write to its creator's parent on another thread.
+struct WritingKey(u32);
+
+impl std::hash::Hash for WritingKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl PartialEq for WritingKey {
+    fn eq(&self, other: &WritingKey) -> bool {
+        if !KEY_WROTE.swap(true, Ordering::SeqCst)
+            && let Some(input) = WRITTEN_BY_KEY.get()
+        {
+            let input: SourceNode<u32> = input.clone();
+            std::thread::spawn(move || input.update(|n: &u32| n + 1)).join().unwrap();
+        }
+        self.0 == other.0
+    }
+}
+
+impl Eq for WritingKey {}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_comparison_runs_outside_the_creators_lock() {
+    let input: SourceNode<u32> = effect!(0);
+    let _ = WRITTEN_BY_KEY.set(input.clone());
+    let tick: SourceNode<u32> = effect!(0);
+    let child_runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let creator: DerivedNode<u32> = effect!(|input| {
+        let _child: DerivedNode<()> = effect!(
+            |tick| {
+                let _ = tick.get();
+                child_runs.fetch_add(1, Ordering::SeqCst);
+            },
+            key = WritingKey(7)
+        );
+        *input.get()
+    });
+    lithia::flush().await;
+    input.set(10); // the rerun reclaims the child, comparing its key, which writes `input` again
+    let flushed: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(std::time::Duration::from_secs(5), lithia::flush()).await;
+    assert!(flushed.is_ok(), "a write waited on by a key comparison deadlocked against the creator's lock");
+    lithia::test::settled(&creator).await;
+    assert_eq!(*creator.get(), 11);
+    assert_eq!(count(&child_runs), 1, "the child was reclaimed each time");
+}

@@ -14,7 +14,7 @@ use std::task::{Context, Poll, Waker};
 use crate::sync::{AtomicBool, Mutex, MutexGuard};
 
 use crate::NodeValue;
-use crate::context::{self, Batch, ClosureGuard, Frame, FrameGuard, Target};
+use crate::context::{self, Batch, ClosureGuard, Frame, Target};
 use crate::epoch::{Scope, Tokens};
 use crate::ids::{self, Atomic, NodeId, RunId, Stamp};
 use crate::node::{
@@ -47,11 +47,14 @@ pub(crate) struct RunShared {
     stamp: Atomic<Stamp>,
     /// Creations so far at each site, by site address: an unkeyed node's place in its lineage.
     creations: Mutex<SiteCounts>,
-    /// Nodes this run's writes and reflows leave alone: a cut writer's rerun (spec §7.4).
+    /// Nodes this run's writes and reflows leave alone: a cut writer's rerun (spec §7.4). Set under
+    /// the node's scheduling lock before the body first polls, so loom need not see it.
+    #[allow(clippy::disallowed_types)]
     suppress: std::sync::OnceLock<Vec<NodeId>>,
 }
 
 impl RunShared {
+    #[allow(clippy::disallowed_types)]
     pub(crate) fn new(node: WeakNodeRef, node_id: Option<NodeId>, scope: Arc<Scope>, expected: RunId) -> RunShared {
         RunShared {
             node,
@@ -274,7 +277,7 @@ impl<K: NodeValue> Future for RunFuture<K> {
         let (polled, closes): (Poll<()>, Tokens) = this.poll_run(cx);
         match &open {
             Some(open) => {
-                protocol::close_all(closes);
+                closes.close();
                 open.run(cx, &mut std::collections::VecDeque::new());
             }
             None => crate::inline::close_later(closes),
@@ -286,7 +289,7 @@ impl<K: NodeValue> Future for RunFuture<K> {
 impl<K: NodeValue> RunFuture<K> {
     fn poll_run(&mut self, cx: &mut Context<'_>) -> (Poll<()>, Tokens) {
         if matches!(self.state, RunState::Done) {
-            return (Poll::Ready(()), Vec::new());
+            return (Poll::Ready(()), Tokens::new());
         }
         // Only a run that can suspend is woken: a synchronous body ends within its first poll.
         if matches!(self.state, RunState::Future(_)) {
@@ -294,40 +297,38 @@ impl<K: NodeValue> RunFuture<K> {
         }
         let Some(node) = self.node.upgrade() else {
             self.stop();
-            return (Poll::Ready(()), Vec::new());
+            return (Poll::Ready(()), Tokens::new());
         };
         let erased: NodeRef = node.clone();
-        let mut closes: Tokens = Vec::new();
+        let mut closes: Tokens = Tokens::new();
         if matches!(self.state, RunState::Init) {
             let (started, pending): (bool, Tokens) = protocol::start_run(&erased, &self.shared);
-            protocol::append_closes(&mut closes, pending);
+            closes.append(pending);
             if !started {
                 self.stop();
                 return (Poll::Ready(()), closes);
             }
             let frame: Frame = Frame::new(Target::Run(self.shared.clone()));
-            let prepared: Result<RunState<K>, PanicPayload> = {
-                let _entered: FrameGuard<'_> = context::enter(&frame);
-                catch_unwind(AssertUnwindSafe(|| self.prepare(&node)))
-            };
+            let prepared: Result<RunState<K>, PanicPayload> =
+                context::entered(&frame, || catch_unwind(AssertUnwindSafe(|| self.prepare(&node))));
             match prepared {
                 Ok(state) => self.state = state,
                 Err(panic) => {
                     let batch: Batch = frame.take_batch();
                     let outcome: Outcome = Outcome::Panicked(panic_message(&*panic));
                     self.stop();
-                    protocol::append_closes(
-                        &mut closes,
-                        protocol::after_poll(&erased, &self.shared, batch, &outcome, Stamp::NONE),
-                    );
+                    closes.append(protocol::after_poll(&erased, &self.shared, batch, &outcome, Stamp::NONE));
                     return (Poll::Ready(()), closes);
                 }
             }
             if matches!(self.state, RunState::Done) {
-                protocol::append_closes(
-                    &mut closes,
-                    protocol::after_poll(&erased, &self.shared, frame.take_batch(), &Outcome::Ended, Stamp::NONE),
-                );
+                closes.append(protocol::after_poll(
+                    &erased,
+                    &self.shared,
+                    frame.take_batch(),
+                    &Outcome::Ended,
+                    Stamp::NONE,
+                ));
                 return (Poll::Ready(()), closes);
             }
             // A cancel before this point finds no waker; the check after the poll catches it.
@@ -336,31 +337,31 @@ impl<K: NodeValue> RunFuture<K> {
             }
         } else if self.shared.is_cancelled() {
             self.stop();
-            protocol::append_closes(&mut closes, protocol::finalize(&erased, &self.shared, End::Finished));
+            closes.append(protocol::finalize(&erased, &self.shared, End::Finished));
             return (Poll::Ready(()), closes);
         }
 
         self.shared.begin_poll();
         let frame: Frame = Frame::new(Target::Run(self.shared.clone()));
-        let outcome: Outcome = {
-            let _entered: FrameGuard<'_> = context::enter(&frame);
-            let state: &mut RunState<K> = &mut self.state;
-            let polled: Result<Polled<K>, PanicPayload> = catch_unwind(AssertUnwindSafe(|| match state {
-                RunState::Sync(f) => Poll::Ready(Some(f())),
-                RunState::Future(future) => future.as_mut().poll(cx),
-                RunState::Init | RunState::Done => Poll::Ready(None),
-            }));
+        let state: &mut RunState<K> = &mut self.state;
+        let shared: &RunShared = &self.shared;
+        let outcome: Outcome = context::entered(&frame, || {
+            let polled: Result<Polled<K>, PanicPayload> = {
+                let _paused: crate::inline::Paused = crate::inline::pause();
+                catch_unwind(AssertUnwindSafe(|| match state {
+                    RunState::Sync(f) => Poll::Ready(Some(f())),
+                    RunState::Future(future) => future.as_mut().poll(cx),
+                    RunState::Init | RunState::Done => Poll::Ready(None),
+                }))
+            };
             match polled {
-                Ok(Poll::Ready(Some(value))) => {
-                    let shared: &RunShared = &self.shared;
-                    match catch_unwind(AssertUnwindSafe(|| node.publish(shared, value))) {
-                        Ok(()) => Outcome::Ended,
-                        Err(panic) => Outcome::Panicked(panic_message(&*panic)),
-                    }
-                }
+                Ok(Poll::Ready(Some(value))) => match catch_unwind(AssertUnwindSafe(|| node.publish(shared, value))) {
+                    Ok(()) => Outcome::Ended,
+                    Err(panic) => Outcome::Panicked(panic_message(&*panic)),
+                },
                 Ok(Poll::Ready(None)) => Outcome::Ended,
                 Ok(Poll::Pending) => {
-                    if self.shared.yielded.swap(false, Ordering::SeqCst) {
+                    if shared.yielded.swap(false, Ordering::SeqCst) {
                         Outcome::Yielded
                     } else {
                         Outcome::Suspended
@@ -368,7 +369,7 @@ impl<K: NodeValue> RunFuture<K> {
                 }
                 Err(panic) => Outcome::Panicked(panic_message(&*panic)),
             }
-        };
+        });
         let batch: Batch = frame.take_batch();
         drop(frame);
         self.polls = self.polls.saturating_add(1);
@@ -380,13 +381,13 @@ impl<K: NodeValue> RunFuture<K> {
             self.stop();
         }
         let stamp: Stamp = self.shared.stamp.swap(Stamp::NONE, Ordering::SeqCst);
-        protocol::append_closes(&mut closes, protocol::after_poll(&erased, &self.shared, batch, &outcome, stamp));
+        closes.append(protocol::after_poll(&erased, &self.shared, batch, &outcome, stamp));
         if ended {
             return (Poll::Ready(()), closes);
         }
         if self.shared.is_cancelled() {
             self.stop();
-            protocol::append_closes(&mut closes, protocol::finalize(&erased, &self.shared, End::Finished));
+            closes.append(protocol::finalize(&erased, &self.shared, End::Finished));
             return (Poll::Ready(()), closes);
         }
         (Poll::Pending, closes)
@@ -405,10 +406,10 @@ impl<K: NodeValue> Drop for RunFuture<K> {
                 let erased: NodeRef = node;
                 protocol::abandon(&erased, &self.shared)
             }
-            None => Vec::new(),
+            None => Tokens::new(),
         };
         crate::drops::drop_later(state, None);
-        protocol::close_all(closes);
+        closes.close();
     }
 }
 
@@ -536,10 +537,7 @@ impl<F: Future> Future for TaskFuture<F> {
             }
         }
         let deliver: Deliver<'_> = Deliver { frame: &frame, scope: &this.scope };
-        let polled: Poll<F::Output> = {
-            let _entered: FrameGuard<'_> = context::enter(&frame);
-            this.future.as_mut().poll(cx)
-        };
+        let polled: Poll<F::Output> = context::entered(&frame, || this.future.as_mut().poll(cx));
         drop(deliver);
         polled
     }

@@ -138,3 +138,49 @@ async fn options_accept_bare_constants_and_paths() {
     lithia::dispose(&m);
     assert_eq!((*n.get(), *m.get()), (1, 1));
 }
+
+const _LIMIT: u32 = 7;
+
+#[lithia::test]
+async fn bodies_with_constants_use_items_and_statement_macros_compile() {
+    let n: SourceNode<u32> = effect!(9);
+    let limited: DerivedNode<u32> = effect!(|n| (*n.get()).min(_LIMIT));
+    let circle: DerivedNode<f64> = effect!(|n| {
+        use std::f64::consts::PI as pi;
+        f64::from(*n.get()) * pi
+    });
+    let pinned: DerivedNode<u32> = effect!(async |n| {
+        let value: u32 = *n.get();
+        tokio::pin! {
+            let next = std::future::ready(value + 1);
+        }
+        next.await
+    });
+    let checked: DerivedNode<u32> = effect!(|n| {
+        assert_ne!(n.get().to_string(), "{name}");
+        tracing::trace!(value = %n.get(), seen = ?n.get(), "{} seen", n.get());
+        *n.get()
+    });
+    lithia::test::settled(&n).await;
+    assert_eq!(*limited.get(), 7);
+    assert!((*circle.get() - 9.0 * std::f64::consts::PI).abs() < 1e-9);
+    assert_eq!((*pinned.get(), *checked.get()), (10, 9));
+}
+
+#[lithia::test]
+async fn a_write_inside_a_match_guard_is_a_writer_edge() {
+    let seen: SourceNode<u32> = effect!(0);
+    let a: SourceNode<u32> = effect!(1);
+    let x: SourceNode<u32> = effect!(0);
+    // The only write of `x` sits in a `matches!` guard; the edge keeps `x`'s watcher alive.
+    effect!(|a| {
+        let _ = matches!(Some(*a.get()), Some(v) if { x.set(v * 10); true });
+    });
+    effect!(|x| seen.set(*x.get()));
+    lithia::flush().await;
+    assert_eq!(*seen.get(), 10);
+    drop(x);
+    a.set(2);
+    lithia::flush().await;
+    assert_eq!(*seen.get(), 20);
+}

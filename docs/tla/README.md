@@ -42,6 +42,7 @@ generators, `WHOLE_EPOCHS` and disposal. The loom models and the edge tests cove
 | `NoStuckWait`, `WaitsCounted` | A child waits on a parent only for releases that parent still owes it or has under way. |
 | `ObligationsHeld` | An unreleased obligation holds a token, so its epoch cannot settle before the release. |
 | `ScopeConsistent` | When the scope's count is zero (`flush` returns), every node's last run started after its parents' last changes, except changes not yet delivered. |
+| `AbsorbedReleased` | Without writes from bodies, once a root epoch's subtree has no open work (its writer's `flush` returns), every child of a source it wrote has released a run that started after the write. |
 | `NoGlitch` | Without writes from bodies, no run starts on an entry while a parent still owes the epoch. |
 | `Terminates` | Under weak fairness, every behaviour reaches a state with no work left. |
 
@@ -55,6 +56,7 @@ generators, `WHOLE_EPOCHS` and disposal. The loom models and the edge tests cove
 | `MCSharedTarget` | Two runs serving one epoch write the same source, whose region is a chain. |
 | `MCWriteBack` | A body writes its own parent beside a join (Case P): cuts and cut reruns. |
 | `MCBinding` | A two-way binding of two sources: a write cycle through two writers. |
+| `MCAbsorb` | Two writers, each writing one parent of a join: a run started for one write reads the other before that write's epoch reaches it. |
 
 ### Findings
 
@@ -75,6 +77,14 @@ reaches exactly the children its framing counted. For the second, the run that t
 run's epochs releases with the stamp of the item it published. Undoing either fix in the model fails it
 again: waits that do not count break `NoStuckWait` on `MCSharedTarget`, and dropping the successor's
 stamp breaks `ScopeConsistent` on `MCSupersede`.
+
+The architectural review of 2026-11-22 found a fourth, which the model missed because `ScopeConsistent`
+checks only that runs started: a run started after a write, but before the write's epoch reached its
+node, absorbed the change, so the write's entry settled unchanged and its epoch could settle, `flush`
+returning, before the run published. `AbsorbedReleased` and `MCAbsorb` catch it (2 937 states, 3
+seconds). The fix in v0.5.0: such an entry joins the run in flight while that run has not released, and
+otherwise settles with the node's current version. With it, `MCAbsorb` passes: 265 525 states, depth 77,
+3 minutes.
 
 ## Lifetimes
 

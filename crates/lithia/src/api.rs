@@ -14,11 +14,11 @@ use tokio::runtime::Handle;
 use tokio::sync::futures::Notified;
 use tokio::task::JoinHandle;
 
-use crate::context::{self, Batch, Deferred, Frame, FrameGuard, Target};
-use crate::epoch::{Scope, ScopeToken, Tokens};
+use crate::context::{self, Batch, Deferred, Frame, Target};
+use crate::epoch::{Epochs, Scope, ScopeToken, Tokens};
 use crate::handles::NodeHandle;
 use crate::ids::{self, NodeId, Stamp};
-use crate::node::{Header, NodeRef, Sched, Served, WeakNodeRef};
+use crate::node::{Header, NodeRef, SchedGuard, Served, WeakNodeRef};
 use crate::protocol::ServedEpochs;
 use crate::run::{self, RunShared};
 use crate::settle_wait::SettleSeq;
@@ -31,11 +31,11 @@ fn take_pending() -> Option<(Batch, Target)> {
 }
 
 /// Delivers `batch` for `target`, returning the child epochs it opened for a run in flight.
-fn deliver(target: &Target, batch: Batch) -> Tokens {
+fn deliver(target: &Target, batch: Batch) -> Epochs {
     match target {
         Target::Scope(scope) => {
             protocol::deliver_outside(batch, scope);
-            Vec::new()
+            Epochs::new()
         }
         Target::Run(run) => deliver_for_run(run, batch),
     }
@@ -45,7 +45,7 @@ fn deliver(target: &Target, batch: Batch) -> Tokens {
 fn served_by(run: &Arc<RunShared>) -> Option<(NodeRef, ServedEpochs)> {
     let node: NodeRef = run.node.upgrade()?;
     let served: Option<ServedEpochs> = {
-        let guard: MutexGuard<'_, Sched> = node.header().sched.lock();
+        let guard: SchedGuard<'_> = node.header().lock_sched();
         match &guard.run {
             Some(slot) if slot.id == run.id() && !run.is_cancelled() => {
                 Some(slot.served.iter().map(|s: &Served| (s.epoch.clone(), s.writers.clone())).collect())
@@ -57,17 +57,18 @@ fn served_by(run: &Arc<RunShared>) -> Option<(NodeRef, ServedEpochs)> {
 }
 
 /// Delivers a run's batch as child epochs while it is in flight, else as an outside batch.
-fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Tokens {
+fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Epochs {
     match served_by(run) {
         Some((node, served)) => {
-            let epochs: Tokens = protocol::deliver_children(&node, &served, batch, Stamp::NONE);
+            let tokens: Tokens = protocol::deliver_children(&node, &served, batch, Stamp::NONE);
             drop(node);
-            protocol::close_all(epochs.clone());
+            let epochs: Epochs = tokens.epochs();
+            tokens.close();
             epochs
         }
         None => {
             protocol::deliver_outside(batch, &run.scope());
-            Vec::new()
+            Epochs::new()
         }
     }
 }
@@ -76,10 +77,10 @@ fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Tokens {
 /// `lithia::flush().await;` never waits for async results; tests use `lithia::test::settled`.
 pub async fn flush() {
     let pending: Option<(Batch, Target)> = take_pending();
-    let (scope, epochs): (Option<Arc<Scope>>, Tokens) = match pending {
-        None => (Some(context::detached_scope()), Vec::new()),
+    let (scope, epochs): (Option<Arc<Scope>>, Epochs) = match pending {
+        None => (Some(context::detached_scope()), Epochs::new()),
         Some((batch, target)) => {
-            let epochs: Tokens = deliver(&target, batch);
+            let epochs: Epochs = deliver(&target, batch);
             match target {
                 Target::Scope(scope) => (Some(scope), epochs),
                 Target::Run(_) => (None, epochs),
@@ -96,6 +97,7 @@ pub async fn flush() {
 
 /// Raises the node's version and reruns it after any run in flight; its children rerun even on an equal value.
 /// `lithia::reflow(&doubled);` from the node's own body reruns only its children.
+#[track_caller]
 pub fn reflow<N: Reflow>(node: &N) {
     let handle: NodeHandle = node.__lithia_reflow_node();
     if try_reflow(node).is_err() {
@@ -105,6 +107,7 @@ pub fn reflow<N: Reflow>(node: &N) {
 
 /// Like `reflow`, but returns `Err(Ghosted)` instead of panicking on a ghost.
 /// `assert_eq!(lithia::try_reflow(&disposed), Err(lithia::Ghosted));`
+#[track_caller]
 pub fn try_reflow<N: Reflow>(node: &N) -> Result<(), Ghosted> {
     context::assert_not_in_closure("lithia::reflow");
     let handle: NodeHandle = node.__lithia_reflow_node();
@@ -129,6 +132,7 @@ pub fn try_reflow<N: Reflow>(node: &N) -> Result<(), Ghosted> {
 
 /// Frees the node and every descendant with no live parent outside the freed branch, regardless of handles.
 /// ⚠ Use-after-free hazard: remaining handles become ghosts. `lithia::dispose(&cache);`
+#[track_caller]
 pub fn dispose<N: Dispose>(node: &N) {
     let handle: NodeHandle = node.__lithia_dispose_node();
     disposal::dispose(&handle.0);
@@ -168,10 +172,7 @@ pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static)
     });
     tokio::task::spawn_blocking(move || {
         let frame: Frame = Frame::new(target.clone());
-        let result: std::thread::Result<R> = {
-            let _entered: FrameGuard<'_> = context::enter(&frame);
-            catch_unwind(AssertUnwindSafe(f))
-        };
+        let result: std::thread::Result<R> = context::entered(&frame, || catch_unwind(AssertUnwindSafe(f)));
         let batch: Batch = frame.take_batch();
         drop(frame);
         deliver(&target, batch);
@@ -244,7 +245,7 @@ pub mod test_utils {
                 continue;
             }
             let reached: Vec<NodeRef> = {
-                let guard: MutexGuard<'_, Sched> = header.sched.lock();
+                let guard: SchedGuard<'_> = header.lock_sched();
                 guard.created.iter().chain(&guard.wrote).filter_map(|weak: &WeakNodeRef| weak.upgrade()).collect()
             };
             stack.extend(header.subscribers());
@@ -253,7 +254,7 @@ pub mod test_utils {
             closure.insert(header.id, node);
         }
         closure.values().all(|node: &NodeRef| {
-            let guard: MutexGuard<'_, Sched> = node.header().sched.lock();
+            let guard: SchedGuard<'_> = node.header().lock_sched();
             !(guard.busy() || guard.unseeded || !guard.entries.is_empty())
         })
     }

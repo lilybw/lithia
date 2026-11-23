@@ -203,7 +203,6 @@ async fn flush_returns_after_a_deferred_function_panics() {
 }
 
 #[lithia::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "known bug: an epoch settles before the run that absorbed its change publishes (docs/known_bugs.md)"]
 async fn flush_waits_for_the_run_that_absorbed_its_write() {
     let x: SourceNode<u32> = effect!(1);
     let y: SourceNode<u32> = effect!(0);

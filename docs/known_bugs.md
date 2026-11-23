@@ -9,37 +9,7 @@ seen, or what follows from the design where nothing has been seen. Fixed bugs ar
 
 ## Reproduced, not yet fixed
 
-### An epoch settling before the run that absorbed its change publishes
-
-*Every time a run, started for one epoch, reads a write whose own epoch reaches the node only later.
-Reproduced deterministically by `flush_waits_for_the_run_that_absorbed_its_write`
-(`crates/test/tests/edge/propagation.rs`, ignored until fixed).*
-
-A node runs for an epoch only if a release in it carries a change newer than the start of its last run
-(spec §7.2). When a run has started after a write but before that write's epoch reaches the node, the
-write's entry settles unchanged, although the run that read the write has not published yet. The
-write's epoch can then settle: `flush` returns, and `defer` runs, while the node still holds its old
-value. Found by the architectural review of 2026-11-22. It very likely explains the macOS failures of
-`defer_outside_lithia_tasks_follows_the_latest_write`, where `seen` was still 0 after `flush`: the
-node's first run, started after the write, had not published. Stress runs report that test's failures
-without failing (`.github/scripts/known-flaky.txt`) until the fix lands.
-
-The fix: an entry that would settle because a run in flight absorbed its change joins that run, which
-then releases the entry's epoch when it publishes. If the run has already released, the entry settles
-with the node's current version, so its children test the change in turn. `Scheduling.tla` misses this
-because it has one scope and `ScopeConsistent` checks only that runs started; it needs two scopes and the
-property "an epoch settles only after every run it reached has published".
-
-### `effect!` turns some valid bodies into compile errors
-
-*Every time, for the forms below.*
-
-A constant or static whose name starts with an underscore, such as `const _LIMIT`, is taken for a
-lowercase binding, captured, and then rejected (E0308). The code review of 2026-11-22 found more forms
-that fail the same way: a `use` inside a body, bindings made by a statement macro such as
-`tokio::pin!`, and `"{name}"` inside string literals that are not format strings. It also found that
-the capture analysis sees nothing inside a macro whose arguments it cannot parse, such as tracing's
-`%value` fields. The fixes are listed in the review.
+None.
 
 ## Seen in testing
 

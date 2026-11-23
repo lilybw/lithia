@@ -24,6 +24,7 @@ pub enum Status {
 
 /// Why a node failed: its own panic, or its parents' failures under `fragility`.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Failure {
     /// The panic message, or the fragility reason.
     pub message: String,
@@ -33,9 +34,23 @@ pub struct Failure {
     pub causes: Vec<Arc<Failure>>,
 }
 
+impl Failure {
+    /// A failure with no causes.
+    pub(crate) fn new(message: impl Into<String>, site: Site) -> Failure {
+        Failure { message: message.into(), site, causes: Vec::new() }
+    }
+}
+
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} ({})", self.message, self.site)
+    }
+}
+
+/// The first cause is the source; the others are in `causes`.
+impl std::error::Error for Failure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.causes.first().map(|cause: &Arc<Failure>| &**cause as &(dyn std::error::Error + 'static))
     }
 }
 

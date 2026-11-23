@@ -5,7 +5,7 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use crate::capture::SharedLease;
 use crate::changes::Changes;
@@ -37,7 +37,7 @@ mod sealed {
     label = "not `Readable`",
     note = "dependencies are nodes or `Accessor`s; a `Setter` is write-only, and being notified of changes would read it"
 )]
-pub trait Readable: sealed::Sealed {
+pub trait Readable: sealed::Sealed + Send + Sync {
     /// The node's value type.
     type Value: NodeValue;
     /// Current value. Panics if the node is a ghost under `ON_GHOST_CAUSE_FAILURE`.
@@ -59,6 +59,7 @@ impl<T: Readable + ?Sized> sealed::Sealed for &T {}
 #[diagnostic::do_not_recommend]
 impl<T: Readable + ?Sized> Readable for &T {
     type Value = T::Value;
+    #[track_caller]
     fn get(&self) -> Arc<T::Value> {
         (**self).get()
     }
@@ -78,7 +79,7 @@ impl<T: Readable + ?Sized> Readable for &T {
 
 /// Write access; implemented by `SourceNode` and `Setter`.
 /// `fn reset(n: &impl Writable<Value = u32>) { n.set(0); }`
-pub trait Writable: sealed::Sealed {
+pub trait Writable: sealed::Sealed + Send + Sync {
     /// The node's value type.
     type Value: NodeValue;
     /// Replaces the value; every read sees it immediately. Panics on a ghost.
@@ -88,13 +89,13 @@ pub trait Writable: sealed::Sealed {
 }
 
 /// May be passed to `lithia::reflow`; implemented by `SourceNode`, `DerivedNode` and `Setter`.
-pub trait Reflow: sealed::Sealed {
+pub trait Reflow: sealed::Sealed + Send + Sync {
     #[doc(hidden)]
     fn __lithia_reflow_node(&self) -> NodeHandle;
 }
 
 /// May be passed to `lithia::dispose`; implemented by `SourceNode` and `DerivedNode`.
-pub trait Dispose: sealed::Sealed {
+pub trait Dispose: sealed::Sealed + Send + Sync {
     #[doc(hidden)]
     fn __lithia_dispose_node(&self) -> NodeHandle;
 }
@@ -112,6 +113,7 @@ impl<K: NodeValue> Node<K> {
         self.value.load_full().ok_or(Ghosted)
     }
 
+    #[track_caller]
     pub(crate) fn read_or_panic(&self) -> Arc<K> {
         match self.read() {
             Ok(value) => value,
@@ -122,6 +124,7 @@ impl<K: NodeValue> Node<K> {
     }
 
     /// Applies a write to a source node: a run whose only item is the new value (spec §6.1).
+    #[track_caller]
     pub(crate) fn write(self: &Arc<Self>, guarded: bool, compute: impl FnOnce(&K) -> K) -> Result<(), Ghosted> {
         context::assert_not_in_closure("a lithia write");
         let header: &Header = &self.header;
@@ -188,6 +191,7 @@ impl<K: NodeValue> Node<K> {
         Ok(())
     }
 
+    #[track_caller]
     fn ghost_write_panic(&self) -> ! {
         panic!("lithia: write to a disposed node ({})", self.header.site)
     }
@@ -199,6 +203,7 @@ macro_rules! readable {
 
         impl<K: NodeValue> Readable for $ty<K> {
             type Value = K;
+            #[track_caller]
             fn get(&self) -> Arc<K> {
                 self.node.read_or_panic()
             }
@@ -218,16 +223,19 @@ macro_rules! readable {
 
         impl<K: NodeValue> $ty<K> {
             /// Current value. Panics if the node is a ghost under `ON_GHOST_CAUSE_FAILURE`.
+            #[track_caller]
             pub fn get(&self) -> Arc<K> {
                 self.node.read_or_panic()
             }
 
             /// Current value, or `Err(Ghosted)` where the ghost policy would make `get` panic.
+            #[must_use = "a read has no effect; use the value or drop the call"]
             pub fn try_get(&self) -> Result<Arc<K>, Ghosted> {
                 self.node.read()
             }
 
             /// Stream of this node's values from now on: the current value first, then each change.
+            #[must_use = "a stream does nothing unless polled"]
             pub fn changes(&self) -> Changes<K> {
                 Changes::new(&self.node)
             }
@@ -329,14 +337,17 @@ pub struct Setter<K: NodeValue> {
 
 /// How a handle counts: as an outside handle, or as a capture; a capture a `move` block took over
 /// holds the block's lease, and counts as an outside handle once the block has ended (spec §4.2).
+// A handle's own state, read and written only by whoever owns the handle.
+#[allow(clippy::disallowed_types)]
 pub(crate) struct Count {
-    internal: AtomicBool,
+    internal: std::sync::atomic::AtomicBool,
     lease: std::sync::OnceLock<SharedLease>,
 }
 
 impl Count {
+    #[allow(clippy::disallowed_types)]
     pub(crate) fn new(internal: bool) -> Count {
-        Count { internal: AtomicBool::new(internal), lease: std::sync::OnceLock::new() }
+        Count { internal: std::sync::atomic::AtomicBool::new(internal), lease: std::sync::OnceLock::new() }
     }
 }
 
@@ -508,11 +519,13 @@ macro_rules! writable {
     ($ty:ident) => {
         impl<K: NodeValue> Writable for $ty<K> {
             type Value = K;
+            #[track_caller]
             fn set(&self, value: K) {
                 if self.node.write(false, move |_: &K| value).is_err() {
                     self.node.ghost_write_panic();
                 }
             }
+            #[track_caller]
             fn try_set(&self, value: K) -> Result<(), Ghosted> {
                 self.node.write(false, move |_: &K| value)
             }
@@ -520,11 +533,13 @@ macro_rules! writable {
 
         impl<K: NodeValue> $ty<K> {
             /// Replaces the value; every read sees it immediately. Panics on a ghost.
+            #[track_caller]
             pub fn set(&self, value: K) {
                 Writable::set(self, value)
             }
 
             /// Like `set`, but returns `Err(Ghosted)` instead of panicking.
+            #[track_caller]
             pub fn try_set(&self, value: K) -> Result<(), Ghosted> {
                 Writable::try_set(self, value)
             }
@@ -537,6 +552,7 @@ writable!(Setter);
 
 impl<K: NodeValue> SourceNode<K> {
     /// Replaces the value with `f(&old)` under the node's write lock. Panics on a ghost.
+    #[track_caller]
     pub fn update(&self, f: impl FnOnce(&K) -> K) {
         if self.try_update(f).is_err() {
             self.node.ghost_write_panic();
@@ -544,12 +560,14 @@ impl<K: NodeValue> SourceNode<K> {
     }
 
     /// Like `update`, but returns `Err(Ghosted)` instead of panicking.
+    #[track_caller]
     pub fn try_update(&self, f: impl FnOnce(&K) -> K) -> Result<(), Ghosted> {
         self.node.write(true, f)
     }
 
     /// Mutates a copy of the value in place and publishes it; requires `K: Clone` only here.
     /// `history.modify(|v: &mut Vec<u32>| v.push(1));`
+    #[track_caller]
     pub fn modify(&self, f: impl FnOnce(&mut K))
     where
         K: Clone,
@@ -560,6 +578,7 @@ impl<K: NodeValue> SourceNode<K> {
     }
 
     /// Like `modify`, but returns `Err(Ghosted)` instead of panicking.
+    #[track_caller]
     pub fn try_modify(&self, f: impl FnOnce(&mut K)) -> Result<(), Ghosted>
     where
         K: Clone,
@@ -572,11 +591,13 @@ impl<K: NodeValue> SourceNode<K> {
     }
 
     /// Read-only view of this node.
+    #[must_use = "an accessor dropped at once anchors and lets go of the node for nothing"]
     pub fn accessor(&self) -> Accessor<K> {
         Accessor::outside(&self.node)
     }
 
     /// Write-only view of this node.
+    #[must_use = "a setter dropped at once anchors and lets go of the node for nothing"]
     pub fn setter(&self) -> Setter<K> {
         crate::support::add_anchors(&self.node.header, 1, || self.node.clone());
         Setter { node: self.node.clone(), internal: Count::new(false) }
@@ -594,6 +615,7 @@ impl<K: NodeValue> SourceNode<K> {
 
 impl<K: NodeValue> DerivedNode<K> {
     /// Read-only view of this node.
+    #[must_use = "an accessor dropped at once anchors and lets go of the node for nothing"]
     pub fn accessor(&self) -> Accessor<K> {
         Accessor::outside(&self.node)
     }
