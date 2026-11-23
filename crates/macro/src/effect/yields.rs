@@ -11,6 +11,8 @@ pub(super) struct YieldScan {
     pub(super) depth: usize,
     pub(super) direct: bool,
     pub(super) nested: Option<Span>,
+    /// A `yield` inside a macro call, which the expansion cannot see to lower.
+    pub(super) in_macro: Option<Span>,
 }
 
 impl<'ast> Visit<'ast> for YieldScan {
@@ -40,19 +42,62 @@ impl<'ast> Visit<'ast> for YieldScan {
         syn::visit::visit_item(self, node);
         self.depth -= 1;
     }
+
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        // A nested `effect!`'s yields are its own.
+        let nested: bool =
+            node.path.segments.last().is_some_and(|segment: &syn::PathSegment| segment.ident == "effect");
+        if !nested && self.in_macro.is_none() {
+            self.in_macro = yield_in(node.tokens.clone());
+        }
+    }
+}
+
+/// The first `yield` in a macro's tokens, outside any `effect!` call in them.
+fn yield_in(tokens: TokenStream) -> Option<Span> {
+    let trees: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    let mut index: usize = 0;
+    while index < trees.len() {
+        match &trees[index] {
+            proc_macro2::TokenTree::Ident(ident) if ident == "yield" => return Some(ident.span()),
+            proc_macro2::TokenTree::Ident(ident) if ident == "effect" => {
+                let bang: bool =
+                    matches!(trees.get(index + 1), Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '!');
+                if bang {
+                    index += 3;
+                    continue;
+                }
+            }
+            proc_macro2::TokenTree::Group(group) => {
+                if let Some(span) = yield_in(group.stream()) {
+                    return Some(span);
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
 }
 
 /// Whether a body yields directly; a `yield` nested in a closure, async block or item is an error.
 pub(super) fn scan_yields(visit: impl FnOnce(&mut YieldScan)) -> syn::Result<bool> {
     let mut scan: YieldScan = YieldScan::default();
     visit(&mut scan);
+    let mut errors: Option<syn::Error> = None;
     if let Some(span) = scan.nested {
-        return Err(syn::Error::new(
-            span,
-            "`yield` publishes the enclosing effect! body's items and only works directly in that body",
-        ));
+        let message: &str = "`yield` publishes the enclosing effect! body's items and only works directly in that body";
+        combine(&mut errors, syn::Error::new(span, message));
     }
-    Ok(scan.direct)
+    if let Some(span) = scan.in_macro {
+        let message: &str = "effect! cannot see a `yield` inside a macro call such as `select!`; \
+                             yield what the macro returns, after it";
+        combine(&mut errors, syn::Error::new(span, message));
+    }
+    match errors {
+        Some(errors) => Err(errors),
+        None => Ok(scan.direct),
+    }
 }
 
 /// Rewrites each direct `yield x` into `__lithia_y.item(x).await` (spec §16).

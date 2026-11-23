@@ -43,16 +43,16 @@ pub mod test {
 /// Items used by the macro expansions; not part of the public API.
 #[doc(hidden)]
 pub mod __private {
-    pub use crate::expand::capture::{Captured, Capturing};
+    pub use crate::expand::capture::{Captured, Capturing, ReadOnly};
     pub use crate::expand::create::{
         derived, derived_async, derived_gen, move_dep, node_ref, output, source, source_async, source_gen,
     };
-    pub use crate::expand::entry::{block_on_main, block_on_test};
+    pub use crate::expand::entry::{StartPaused, block_on_main, block_on_test};
     pub use crate::expand::keyed::{
         HandleId, Inputs, KeyRef, KeyValue, NodeKey, Probe, ProbeViaArc, ProbeViaEq, ProbeViaHandle, ProbeViaOpaque,
         Probed, Reclaim, Reclaimed, reclaim_derived, reclaim_source, reclaim_source_async,
     };
-    pub use crate::expand::traits::{Capture, CaptureAny, FieldAny, InitDefault, MoveAny};
+    pub use crate::expand::traits::{Capture, CaptureAny, CaptureSend, FieldAny, InitDefault, MoveAny};
     pub use crate::handles::NodeHandle;
     pub use crate::options::{Options, Shape};
     pub use crate::run::{TaskFuture, YieldItem, Yielder};

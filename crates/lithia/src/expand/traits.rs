@@ -33,19 +33,31 @@ pub trait Capture: Clone {}
 #[diagnostic::do_not_recommend]
 impl<T: Clone> Capture for T {}
 
+/// Bound on values an `effect!` body captures: a body runs on any worker thread (spec §4.2).
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is captured by an effect! body but is not `Send + Sync + 'static`",
+    label = "captured here",
+    note = "a body runs on any worker thread: replace `Rc` with `Arc`, and `RefCell` or `Cell` with `Mutex`, `RwLock` or an atomic"
+)]
+pub trait CaptureSend: Send + Sync + 'static {}
+
+#[diagnostic::do_not_recommend]
+impl<T: Send + Sync + 'static> CaptureSend for T {}
+
 /// Clones a captured value; method syntax looks through one reference, so a capture of a
 /// capture clones the value rather than the reference.
 #[doc(hidden)]
 pub trait CaptureAny {
-    /// Clones the value for the body; requires `Capture`.
+    /// Clones the value for the body; requires `Capture` and `CaptureSend`.
     fn __lithia_capture(&self) -> Self
     where
-        Self: Capture;
+        Self: Capture + CaptureSend;
 
     /// Like `__lithia_capture`; handle types shadow it to record a read-only capture.
     fn __lithia_capture_ro(&self) -> Self
     where
-        Self: Capture;
+        Self: Capture + CaptureSend;
 
     /// The value a capture would clone, borrowed, for a keyed node's probe.
     #[inline]
@@ -58,7 +70,7 @@ impl<T> CaptureAny for T {
     #[inline]
     fn __lithia_capture(&self) -> Self
     where
-        Self: Capture,
+        Self: Capture + CaptureSend,
     {
         self.clone()
     }
@@ -66,7 +78,7 @@ impl<T> CaptureAny for T {
     #[inline]
     fn __lithia_capture_ro(&self) -> Self
     where
-        Self: Capture,
+        Self: Capture + CaptureSend,
     {
         self.clone()
     }

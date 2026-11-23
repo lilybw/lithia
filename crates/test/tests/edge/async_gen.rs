@@ -247,3 +247,14 @@ async fn a_write_outlives_the_panic_of_the_block_it_stopped() {
     assert_eq!(*fed.get(), 5);
     assert!(matches!(lithia::status(&fed), Status::Ready), "{:?}", lithia::status(&fed));
 }
+
+#[lithia::test]
+async fn a_generators_return_type_is_the_type_of_its_items() {
+    let n: SourceNode<u32> = effect!(1);
+    let items: DerivedNode<_> = effect!(|n| -> u64 {
+        yield 7;
+        yield u64::from(*n.get());
+    });
+    lithia::test::settled(&n).await;
+    assert_eq!(std::any::type_name_of_val(&*items.get()), "u64");
+}

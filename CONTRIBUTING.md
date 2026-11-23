@@ -66,7 +66,9 @@ to the scheduling protocol or to lifetimes updates its TLA+ model in [`docs/tla`
 
 The compile-fail cases' expected errors depend on the compiler: CI uses the toolchain in
 `rust-toolchain.toml`, and
-`TRYBUILD=overwrite cargo test -p lithia-validation --test compile` updates them on that version.
+`TRYBUILD=overwrite cargo test -p lithia-validation --test compile` updates them on that version. A
+change to `effect!`'s expansion shows in `crates/macro/snapshots`: review the diff, then
+`LITHIA_SNAPSHOTS=overwrite cargo test -p lithia-macro` updates them.
 
 ## Conventions
 

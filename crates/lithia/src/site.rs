@@ -11,6 +11,7 @@ pub(crate) type SiteKey = usize;
 /// Where a node was created, recorded at compile time for diagnostics.
 /// `eprintln!("{}:{} in {}", site.file, site.line, (site.function)());`
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct Site {
     /// Source file of the `effect!` call.
     pub file: &'static str,
@@ -22,8 +23,23 @@ pub struct Site {
     pub module: &'static str,
     /// Path of the enclosing function, resolved on first call.
     pub function: fn() -> &'static str,
-    /// The macro input as written.
+    /// The start of the macro input, stringified; empty in builds without debug assertions.
     pub tokens: &'static str,
+}
+
+impl Site {
+    /// Builds a site; only `effect!` does, so a field can be added without breaking callers.
+    #[doc(hidden)]
+    pub const fn __new(
+        file: &'static str,
+        line: u32,
+        column: u32,
+        module: &'static str,
+        function: fn() -> &'static str,
+        tokens: &'static str,
+    ) -> Site {
+        Site { file, line, column, module, function, tokens }
+    }
 }
 
 impl fmt::Debug for Site {

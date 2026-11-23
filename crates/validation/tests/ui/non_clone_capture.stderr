@@ -16,5 +16,5 @@ note: required by a bound in `lithia::__private::CaptureAny::__lithia_capture`
    |     fn __lithia_capture(&self) -> Self
    |        ---------------- required by a bound in this associated function
    |     where
-   |         Self: Capture;
+   |         Self: Capture + CaptureSend;
    |               ^^^^^^^ required by this bound in `CaptureAny::__lithia_capture`

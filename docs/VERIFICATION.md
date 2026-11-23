@@ -9,6 +9,7 @@ commands to run them, and [`known_bugs.md`](known_bugs.md) lists what they have 
 | Check | Where | Runs |
 | --- | --- | --- |
 | Validation cases A–BW (spec §13) | `crates/validation/tests` | `ci.yml`, on every platform |
+| Compile errors (spec §4.6), one case per row; `effect!`'s expansions, one snapshot per body form | `crates/validation/tests/ui`; `crates/macro/snapshots` | `ci.yml` |
 | Edge-case tests, one module per area, and the random differential test | `crates/test/tests/edge` | `ci.yml` |
 | Loom models of the real engine, one module per area | `crates/test/tests/loom` | `ci.yml` at bound 3, `extended.yml` at bound 4 |
 | TLA+ models of scheduling and lifetimes | `docs/tla` | `ci.yml`; the two largest in `extended.yml`, `MCDiamond` for 270 minutes |

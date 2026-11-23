@@ -55,7 +55,7 @@ impl KeyArg {
                 let wrap: TokenStream = quote_spanned!(body.span()=> ::lithia::__private::NodeKey::new);
                 quote! {{
                     #(
-                        #[allow(unused_variables)]
+                        #[allow(unused_variables, clippy::shadow_reuse, clippy::shadow_same, clippy::shadow_unrelated)]
                         let #params = &#params;
                     )*
                     #wrap(#body)

@@ -1,0 +1,5 @@
+error: #[lithia::main] needs an `async fn`; the async keyword is missing
+ --> tests/ui/attr_not_async.rs:5:1
+  |
+5 | fn main() {}
+  | ^^

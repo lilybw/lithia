@@ -34,7 +34,8 @@ async fn a_site_records_where_the_node_was_created() {
     assert_eq!(site.line, line);
     assert!(site.module.ends_with("diagnostics"), "{}", site.module);
     assert!((site.function)().contains("a_site_records_where_the_node_was_created"), "{}", (site.function)());
-    assert!(site.tokens.contains("site probe"), "{}", site.tokens);
+    // A release build keeps no body source.
+    assert_eq!(site.tokens.contains("site probe"), cfg!(debug_assertions), "{}", site.tokens);
 }
 
 #[lithia::test]

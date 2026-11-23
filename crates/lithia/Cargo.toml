@@ -13,6 +13,10 @@ readme = "../../README.md"
 keywords = ["reactive", "signals", "tokio", "async", "frp"]
 categories = ["asynchronous", "concurrency"]
 
+[features]
+# Lets `#[lithia::main]` and `#[lithia::test]` take `start_paused`, through tokio's clock control.
+test-util = ["tokio/test-util"]
+
 [dependencies]
 lithia-macro = { workspace = true }
 tokio = { workspace = true }

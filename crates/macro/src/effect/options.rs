@@ -23,16 +23,22 @@ pub(super) fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Resu
     let mut shape: TokenStream = quote!(::lithia::__private::Shape::new());
     let mut equals: TokenStream = TokenStream::new();
     let mut key: Option<KeyArg> = None;
+    let mut errors: Option<syn::Error> = None;
     for option in &input.options {
         let name: String = option.name.to_string();
         if !OPTIONS.contains(&name.as_str()) {
-            return Err(syn::Error::new_spanned(
-                &option.name,
-                format!("unknown option `{name}`; expected one of init, equals, fragility, ghost, flags, key"),
-            ));
+            combine(
+                &mut errors,
+                syn::Error::new_spanned(
+                    &option.name,
+                    format!("unknown option `{name}`; expected one of init, equals, fragility, ghost, flags, key"),
+                ),
+            );
+            continue;
         }
         if !seen.insert(name.clone()) {
-            return Err(syn::Error::new_spanned(&option.name, format!("option `{name}` is given twice")));
+            combine(&mut errors, syn::Error::new_spanned(&option.name, format!("option `{name}` is given twice")));
+            continue;
         }
         let value: &Expr = &option.value;
         let consts: TokenStream = quote!(
@@ -42,10 +48,14 @@ pub(super) fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Resu
         match name.as_str() {
             "init" => {
                 if let Form::Source(_) = form {
-                    return Err(syn::Error::new_spanned(
-                        &option.name,
-                        "`init` applies to derived nodes and async source nodes; a source node starts with its value",
-                    ));
+                    combine(
+                        &mut errors,
+                        syn::Error::new_spanned(
+                            &option.name,
+                            "`init` applies to derived nodes and async source nodes; a source node starts with its value",
+                        ),
+                    );
+                    continue;
                 }
                 init = Some(value.clone());
             }
@@ -54,10 +64,14 @@ pub(super) fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Resu
             }
             "fragility" => {
                 if !matches!(form, Form::Derived(_)) {
-                    return Err(syn::Error::new_spanned(
-                        &option.name,
-                        "`fragility` applies to derived nodes only; a source node has no parents",
-                    ));
+                    combine(
+                        &mut errors,
+                        syn::Error::new_spanned(
+                            &option.name,
+                            "`fragility` applies to derived nodes only; a source node has no parents",
+                        ),
+                    );
+                    continue;
                 }
                 shape = quote!(#shape.fragility({ #consts #value }));
             }
@@ -67,11 +81,17 @@ pub(super) fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Resu
             "flags" => {
                 shape = quote!(#shape.flags({ #consts #value }));
             }
-            "key" => key = Some(KeyArg::parse(value)?),
+            "key" => match KeyArg::parse(value) {
+                Ok(parsed) => key = Some(parsed),
+                Err(error) => combine(&mut errors, error),
+            },
             _ => unreachable!(),
         }
     }
-    Ok(Resolved { init, shape, equals, key })
+    match errors {
+        Some(errors) => Err(errors),
+        None => Ok(Resolved { init, shape, equals, key }),
+    }
 }
 
 /// The options chains of a creation: `create` for a new node, `same` for a reclaimed one; a keyed

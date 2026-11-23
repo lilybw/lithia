@@ -5,6 +5,7 @@
 //! and their nodes are recorded for the writer edges of the node being created.
 
 use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -162,6 +163,19 @@ impl Drop for Captured {
     }
 }
 
+/// Marks captures read-only while it lives on this thread; see `Capturing::read_only`.
+#[doc(hidden)]
+#[must_use = "captures are read-only only while the guard lives"]
+pub struct ReadOnly(Option<bool>, PhantomData<*const ()>);
+
+impl Drop for ReadOnly {
+    fn drop(&mut self) {
+        if let Some(previous) = self.0 {
+            let _ = READ_ONLY.try_with(|flag: &Cell<bool>| flag.set(previous));
+        }
+    }
+}
+
 /// One `effect!` expansion's capture clones; ends capture mode when finished or dropped.
 #[doc(hidden)]
 pub struct Capturing {
@@ -179,9 +193,11 @@ impl Capturing {
         Capturing { outer, done: false }
     }
 
-    /// Makes one capture; `read_only` marks every node it records as read-only.
-    pub fn take<T>(&self, read_only: bool, f: impl FnOnce() -> T) -> T {
-        if read_only { crate::expand::capture::read_only(f) } else { f() }
+    /// While the guard lives and `read_only` holds, marks the nodes captures record as read-only.
+    pub fn read_only(&self, read_only: bool) -> ReadOnly {
+        let previous: Option<bool> =
+            read_only.then(|| READ_ONLY.try_with(|flag: &Cell<bool>| flag.replace(true)).unwrap_or(false));
+        ReadOnly(previous, PhantomData)
     }
 
     /// Ends capture mode and returns what was recorded.

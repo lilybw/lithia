@@ -1,0 +1,5 @@
+error: names starting with `__lithia` are effect!'s own
+ --> tests/ui/reserved_name.rs:7:42
+  |
+7 |     let _line: SourceNode<u32> = effect!(__LITHIA_SITE.line);
+  |                                          ^^^^^^^^^^^^^

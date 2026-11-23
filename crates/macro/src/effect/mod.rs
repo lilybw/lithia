@@ -71,7 +71,28 @@ pub(crate) fn expand(input: EffectInput) -> syn::Result<TokenStream> {
         (Form::AsyncSource(block), key) => expand_async_source(block, &site, &init, &chains, key)?,
         (Form::Derived(closure), key) => expand_derived(closure, &site, &init, &chains, key)?,
     };
-    Ok(expansion)
+    Ok(hygienic(expansion))
+}
+
+/// Gives the expansion's own names mixed-site hygiene where they stand: the user's code, which
+/// cannot write them, cannot reach them either, and every use the expansion makes still does.
+fn hygienic(tokens: TokenStream) -> TokenStream {
+    tokens
+        .into_iter()
+        .map(|tree: proc_macro2::TokenTree| match tree {
+            proc_macro2::TokenTree::Ident(mut ident) if is_internal(&ident) => {
+                ident.set_span(Span::mixed_site().located_at(ident.span()));
+                proc_macro2::TokenTree::Ident(ident)
+            }
+            proc_macro2::TokenTree::Group(group) => {
+                let mut rebuilt: proc_macro2::Group =
+                    proc_macro2::Group::new(group.delimiter(), hygienic(group.stream()));
+                rebuilt.set_span(group.span());
+                proc_macro2::TokenTree::Group(rebuilt)
+            }
+            other => other,
+        })
+        .collect()
 }
 
 fn expand_async_source(
@@ -180,22 +201,32 @@ fn expand_derived(
     let mut params: Vec<Ident> = Vec::new();
     let mut checks: Vec<TokenStream> = Vec::new();
     let mut names: HashSet<String> = HashSet::new();
+    let mut errors: Option<syn::Error> = None;
     for input in &closure.inputs {
-        let Some(ident) = param_ident(input) else {
-            return Err(syn::Error::new_spanned(input, "dependencies are named by plain identifiers, each once"));
+        let named: Option<&Ident> = param_ident(input).filter(|ident: &&Ident| names.insert(ident.to_string()));
+        let Some(ident) = named else {
+            combine(
+                &mut errors,
+                syn::Error::new_spanned(input, "dependencies are named by plain identifiers, each once"),
+            );
+            continue;
         };
-        if !names.insert(ident.to_string()) {
-            return Err(syn::Error::new_spanned(input, "dependencies are named by plain identifiers, each once"));
-        }
         if let Some(ty) = param_type(input) {
             checks.push(quote_spanned!(ty.span()=> let _: &#ty = &#ident;));
         }
         params.push(ident.clone());
     }
+    if let Some(errors) = errors {
+        return Err(errors);
+    }
     let count: usize = params.len();
+    // Each handle is taken at its parameter, so an error that it cannot be read points there.
+    let handles: Vec<TokenStream> = params
+        .iter()
+        .map(|param: &Ident| quote_spanned!(param.span()=> ::lithia::__private::node_ref(&#param)))
+        .collect();
     let deps: TokenStream = quote! {
-        let __lithia_deps: [::lithia::__private::NodeHandle; #count] =
-            [#(::lithia::__private::node_ref(&#params)),*];
+        let __lithia_deps: [::lithia::__private::NodeHandle; #count] = [#(#handles),*];
     };
 
     let is_async: bool = closure.asyncness.is_some();
@@ -295,13 +326,18 @@ fn expand_derived(
     }
     let unpacked: TokenStream = unpack(&bundle);
     let call: TokenStream = if generator {
+        // A generator's `-> T` is the type of its items.
+        let item: TokenStream = match &closure.output {
+            syn::ReturnType::Type(_, ty) => ty.to_token_stream(),
+            syn::ReturnType::Default => quote!(_),
+        };
         quote! {
             ::lithia::__private::derived_gen(
                 &__LITHIA_SITE,
                 &__lithia_deps,
                 &__lithia_captured,
                 #init,
-                move |__lithia_y: ::lithia::__private::Yielder<_>| {
+                move |__lithia_y: ::lithia::__private::Yielder<#item>| {
                     let __lithia_caps = ::std::sync::Arc::clone(&__lithia_caps);
                     async move {
                         #unpacked

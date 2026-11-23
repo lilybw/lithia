@@ -5,20 +5,29 @@
 
 use super::*;
 
+/// How much of the macro input a site keeps, in characters.
+const SITE_TOKENS: usize = 80;
+
+/// The expansion's static `Site`; it keeps the start of the input only in builds with debug
+/// assertions, so a release binary holds no body source.
 pub(super) fn site(tokens: &str) -> TokenStream {
+    let start: String = match tokens.char_indices().nth(SITE_TOKENS) {
+        Some((end, _)) => format!("{}…", tokens[..end].trim_end()),
+        None => tokens.to_string(),
+    };
     quote! {
         fn __lithia_scope() {}
         fn __lithia_path() -> &'static str {
             ::lithia::__private::fn_path(::core::any::type_name_of_val(&__lithia_scope))
         }
-        static __LITHIA_SITE: ::lithia::Site = ::lithia::Site {
-            file: ::core::file!(),
-            line: ::core::line!(),
-            column: ::core::column!(),
-            module: ::core::module_path!(),
-            function: __lithia_path,
-            tokens: #tokens,
-        };
+        static __LITHIA_SITE: ::lithia::Site = ::lithia::Site::__new(
+            ::core::file!(),
+            ::core::line!(),
+            ::core::column!(),
+            ::core::module_path!(),
+            __lithia_path,
+            if ::core::cfg!(debug_assertions) { #start } else { "" },
+        );
     }
 }
 
@@ -36,34 +45,25 @@ pub(super) fn capture_take(ident: &Ident, class: &Class, moved: bool, dependency
     if moved {
         // The body moves the value as written; a handle is flagged internal in place, and a
         // dependency through `Readable`, so generic code is flagged too.
-        let flag: TokenStream = match (dependency, read_only) {
-            (true, _) => quote_spanned!(ident.span()=> ::lithia::__private::move_dep(&#ident, #read_only)),
-            (false, false) => quote_spanned!(ident.span()=> (&#ident).__lithia_move()),
-            (false, true) => quote_spanned!(ident.span()=> (&#ident).__lithia_move_ro()),
-        };
-        return quote_spanned! {ident.span()=>
-            __lithia_cap.take(false, || {
-                #[allow(unused_imports)]
-                use ::lithia::__private::MoveAny as _;
-                #flag
-            });
+        return match (dependency, read_only) {
+            (true, _) => quote_spanned!(ident.span()=> ::lithia::__private::move_dep(&#ident, #read_only);),
+            (false, false) => quote_spanned!(ident.span()=> (&#ident).__lithia_move();),
+            (false, true) => quote_spanned!(ident.span()=> (&#ident).__lithia_move_ro();),
         };
     }
     // Any name other than a dependency is read-only only when its type is a handle, which
     // method dispatch decides.
-    let session_read_only: bool = read_only && dependency;
-    let call: TokenStream = if read_only && !dependency {
-        quote_spanned!(ident.span()=> (#ident).__lithia_capture_ro())
-    } else {
-        quote_spanned!(ident.span()=> (#ident).__lithia_capture())
+    let value: TokenStream = match (read_only, dependency) {
+        (true, true) => quote_spanned! {ident.span()=> {
+            let __lithia_ro: ::lithia::__private::ReadOnly = __lithia_cap.read_only(true);
+            (#ident).__lithia_capture()
+        }},
+        (true, false) => quote_spanned!(ident.span()=> (#ident).__lithia_capture_ro()),
+        (false, _) => quote_spanned!(ident.span()=> (#ident).__lithia_capture()),
     };
     quote_spanned! {ident.span()=>
-        #[allow(unused_variables)]
-        let #ident = __lithia_cap.take(#session_read_only, || {
-            #[allow(unused_imports)]
-            use ::lithia::__private::CaptureAny as _;
-            #call
-        });
+        #[allow(unused_variables, clippy::shadow_reuse, clippy::shadow_same, clippy::shadow_unrelated)]
+        let #ident = #value;
     }
 }
 
@@ -72,25 +72,21 @@ pub(super) fn capture_take(ident: &Ident, class: &Class, moved: bool, dependency
 pub(super) fn path_take(base: &TokenStream, binding: &Ident, all: &[FieldPath], written: &[FieldPath]) -> TokenStream {
     let checks: Vec<TokenStream> =
         all.iter().map(|fields: &FieldPath| quote!(&& (#base #(.#fields)*).__lithia_is_handle())).collect();
-    let edges: Vec<TokenStream> =
-        written.iter().map(|fields: &FieldPath| quote!((#base #(.#fields)*).__lithia_field();)).collect();
+    let edges: TokenStream = if written.is_empty() {
+        TokenStream::new()
+    } else {
+        let edges: Vec<TokenStream> =
+            written.iter().map(|fields: &FieldPath| quote!((#base #(.#fields)*).__lithia_field();)).collect();
+        quote!(if __lithia_paths { #(#edges)* })
+    };
     quote_spanned! {binding.span()=>
-        let __lithia_paths: bool = {
-            #[allow(unused_imports)]
-            use ::lithia::__private::FieldAny as _;
-            true #(#checks)*
-        };
-        if __lithia_paths {
-            #[allow(unused_imports)]
-            use ::lithia::__private::FieldAny as _;
-            #(#edges)*
-        }
-        #[allow(unused_variables)]
-        let #binding = __lithia_cap.take(__lithia_paths, || {
-            #[allow(unused_imports)]
-            use ::lithia::__private::CaptureAny as _;
+        let __lithia_paths: bool = true #(#checks)*;
+        #edges
+        #[allow(unused_variables, clippy::shadow_reuse, clippy::shadow_same, clippy::shadow_unrelated)]
+        let #binding = {
+            let __lithia_ro: ::lithia::__private::ReadOnly = __lithia_cap.read_only(__lithia_paths);
             (#base).__lithia_capture()
-        });
+        };
     }
 }
 
@@ -110,20 +106,11 @@ pub(super) fn moved_paths_take(ident: &Ident, all: &[FieldPath], written: &[Fiel
         })
         .collect();
     quote_spanned! {ident.span()=>
-        let __lithia_paths: bool = {
-            #[allow(unused_imports)]
-            use ::lithia::__private::FieldAny as _;
-            true #(#checks)*
-        };
-        __lithia_cap.take(false, || {
-            #[allow(unused_imports)]
-            use ::lithia::__private::MoveAny as _;
-            if __lithia_paths {
-                #(#flags)*
-            } else {
-                (&#ident).__lithia_move();
-            }
-        });
+        if true #(#checks)* {
+            #(#flags)*
+        } else {
+            (&#ident).__lithia_move();
+        }
     }
 }
 
@@ -133,18 +120,19 @@ pub(super) fn self_clone(class: &Class) -> TokenStream {
         return path_take(&quote!(self), &binding, all, written);
     }
     quote! {
-        #[allow(unused_variables)]
-        let __self = __lithia_cap.take(false, || {
-            #[allow(unused_imports)]
-            use ::lithia::__private::CaptureAny as _;
-            (self).__lithia_capture()
-        });
+        #[allow(unused_variables, clippy::shadow_reuse, clippy::shadow_same, clippy::shadow_unrelated)]
+        let __self = (self).__lithia_capture();
     }
 }
 
-/// Opens the capture session an expansion's captures are recorded in.
+/// Opens the capture session an expansion's captures are recorded in, with the traits the
+/// captures dispatch on in scope.
 pub(super) fn session_begin() -> TokenStream {
-    quote!(let __lithia_cap = ::lithia::__private::Capturing::begin();)
+    quote! {
+        #[allow(unused_imports)]
+        use ::lithia::__private::{CaptureAny as _, FieldAny as _, MoveAny as _};
+        let __lithia_cap = ::lithia::__private::Capturing::begin();
+    }
 }
 
 /// Closes the capture session; what it recorded goes to node creation.
@@ -156,7 +144,7 @@ pub(super) fn session_end() -> TokenStream {
 pub(super) fn by_reference(names: &[Ident]) -> TokenStream {
     quote! {
         #(
-            #[allow(unused_variables)]
+            #[allow(unused_variables, clippy::shadow_reuse, clippy::shadow_same, clippy::shadow_unrelated)]
             let #names = &#names;
         )*
     }
@@ -193,7 +181,7 @@ pub(super) fn unpack(names: &[Ident]) -> TokenStream {
         return quote!(let _ = &__lithia_caps;);
     }
     quote! {
-        #[allow(unused_variables)]
+        #[allow(unused_variables, clippy::shadow_reuse, clippy::shadow_same, clippy::shadow_unrelated)]
         let (#(#names,)*) = &*__lithia_caps;
     }
 }

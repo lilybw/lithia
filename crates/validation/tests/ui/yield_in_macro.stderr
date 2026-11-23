@@ -1,0 +1,5 @@
+error: effect! cannot see a `yield` inside a macro call such as `select!`; yield what the macro returns, after it
+ --> tests/ui/yield_in_macro.rs:9:22
+  |
+9 |         let _ = vec![yield *n.get()];
+  |                      ^^^^^

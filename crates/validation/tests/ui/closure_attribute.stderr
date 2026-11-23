@@ -1,0 +1,5 @@
+error: effect! does not carry attributes on its closure or block over; put them on the enclosing statement
+ --> tests/ui/closure_attribute.rs:8:46
+  |
+8 |     let _skipped: DerivedNode<u32> = effect!(#[cfg(any())] |n| *n.get());
+  |                                              ^^^^^^^^^^^^^

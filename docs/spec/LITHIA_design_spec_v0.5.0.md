@@ -315,6 +315,7 @@ pub struct Failure { pub message: String, pub site: Site, pub causes: Vec<Arc<Fa
 /// Where a node was created, recorded at compile time; displays as `file:line:column in function`.
 /// `eprintln!("{}:{} in {}", site.file, site.line, (site.function)());`
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct Site {
     pub file: &'static str, pub line: u32, pub column: u32, pub module: &'static str,
     pub function: fn() -> &'static str, pub tokens: &'static str,
@@ -375,7 +376,7 @@ pub mod test {
 
 `#[lithia::main]` and `#[lithia::test]` are optional drop-in replacements for `#[tokio::main]` and `#[tokio::test]`. They make the entry task form batches and scope `flush()` to it; both default to the multi-threaded flavour. Without them everything works, but the entry task's writes are batched one by one (6.2).
 
-Both attributes require an `async fn` and accept tokio's runtime arguments: `flavor = "multi_thread"` or `"current_thread"`, `worker_threads = N` (multi-threaded flavour only) and `start_paused = bool`. Any other argument is a compile error naming the three. `#[lithia::test]` fails a test that runs longer than `LITHIA_TEST_TIMEOUT_MS` milliseconds, panicking with the test's name; unset or 0 means no limit, and the workspace sets 20 000 in .cargo/config.toml.
+Both attributes require an `async fn` and accept tokio's runtime arguments: `flavor = "multi_thread"` or `"current_thread"`, `worker_threads = N` (multi-threaded flavour only, at least 1) and `start_paused = bool`, which needs lithia's `test-util` feature (it turns on tokio's) and the current-thread flavour. Any other argument is a compile error naming the three; every bad argument is reported, and the function is emitted beside the errors, so it still exists for the rest of the crate. A test may return what a `#[test]` may, such as `Result<(), E>`. `#[lithia::test]` fails a test that runs longer than `LITHIA_TEST_TIMEOUT_MS` milliseconds of real time, whatever its runtime's clock does, panicking with the test's name; unset or 0 means no limit, and the workspace sets 20 000 in .cargo/config.toml.
 
 `flush()` never waits for async results, but a loop that never settles, like Case S, keeps it waiting; a test that needs an async result uses `lithia::test::settled`, ideally inside `tokio::time::timeout`.
 
@@ -423,7 +424,7 @@ while let Some(f) = updates.next().await { render(&f); } // may skip values; nev
 Rule: a body, or an async source block, captures a clone of everything it references. The clones are internal handles (10.1), recorded with whether the body may write them.
 
 - The macro walks the body with a scope-aware `syn` visitor and collects free identifiers: lowercase, in expression position, not bound inside the body by a `let`, a pattern, a closure parameter or an item, a `use` included. A name is lowercase when its first character after any leading underscores is a lowercase letter or a digit, so `_LIMIT` is a constant and `_count` a variable. A macro call that stands as a statement binds for the statements after it, as `tokio::pin!` does. Each is cloned once, inside the expansion, before a `move` closure, so the outer handles stay usable; a capture of a capture, as in a nested `effect!` inside an async body, clones the value, not the reference.
-- Left alone: uppercase names (constants, statics, types, variants), path segments, method and field names, macro names, and identifiers in call position, such as `max` in `max(a, b)`: functions never need capturing, and a local closure called that way is moved instead, which fails loudly if it is used afterwards. `self` is captured as `__self`, and each use of it in the body is renamed, `{self}` in a format string included; `self::` paths, and nested items and `use` declarations, which have their own `self`, are left alone.
+- Left alone: uppercase names (constants, statics, types, variants), path segments, method and field names, macro names, and identifiers in call position, such as `max` in `max(a, b)`: functions never need capturing, and a local closure called that way is moved instead, which fails loudly if it is used afterwards. `self` is captured as `__self`, and each use of it in the body is renamed, `{self}` in a format string included; `self::` paths, and nested items and `use` declarations, which have their own `self`, are left alone. The expansion's own names start with `__lithia` and resolve at the macro's definition (mixed-site hygiene), so a body cannot see them, and an input that names one is an error; a body passed in through a `macro_rules!` macro resolves as it does written out.
 - Formatting macros (`print!`, `format!`, `write!`, `panic!`, the `assert!` family, `anyhow!`, `bail!` and their kin) get their format string, and only that, scanned for `{name}`, `{name:…}` and width and precision arguments, and their arguments count as reads; a named argument, `format!("{x}", x = 1)`, is not captured, its right-hand side is. Any other macro whose arguments are expressions gets its first string literal scanned the same way. Nested `effect!` calls are parsed: their parameters and free identifiers are captured by the outer body, and a `yield` inside one belongs to the nested node only. `matches!` and `select!` are parsed with their patterns, which bind for their guards and handlers, and `tracing`'s event and span macros with their fields, whose `%` and `?` values count as reads.
 - Inside any other macro, every identifier is a use that may write, and when its arguments parse as neither expressions nor statements, every lowercase name in its tokens that is not a field, method, path segment, label or keyword is taken for one. A wrong guess is then a capture too many, which fails to compile if no such variable exists, rather than a missed write.
 - Captured values must be `Clone + Send + Sync`, by the bounds rule below; one that is not `Clone` is a compile error (4.6). The fix is to wrap the part that is not `Clone` in an `Arc` and capture node handles beside it, or to write `move`. Handles inside an `Arc` are not cloned, so they stay outside handles and anchor their nodes for as long as the body lives (10.1, Self-support). lithia never wraps a value in `Arc` on its own.
@@ -442,7 +443,7 @@ Rule: a body, or an async source block, captures a clone of everything it refere
 
 **Field paths classify; they do not split.** A captured value is still captured whole. A field path is a captured name, or `self`, followed by named fields only, as in `self.theme` or `app.user`. When every use of a name is such a path and every path's value is a handle, each handle is classified by its own uses, and a handle no path reaches gets no edge. Any other use of the name, such as `self.notify(…)`, `&pair`, a field that is not a handle or passing it whole, makes every handle inside it a possible write. To stay precise, bind the fields the body needs before the `effect!`: `let (total, theme, tx) = (&self.total, &self.theme, &self.tx);` and then `notify(&tx, …)` in the body (Case AY).
 
-**`move`** means one thing in every form, `effect!(move |a| …)`, `effect!(async move |a| …)`, `effect!(|a| move …)` for generators and `effect!(async move { … })`: the outer values a body names are moved into it instead of cloned. It opts out of cloning, not out of the analysis:
+**`move`** means one thing in every form, `effect!(move |a| …)`, `effect!(async move |a| …)`, `effect!(move |a| { … yield … })` for generators and `effect!(async move { … })`: the outer values a body names are moved into it instead of cloned. It opts out of cloning, not out of the analysis:
 
 - A body that runs more than once still sees what it moved by reference. An async source block runs once, so a `move` block owns what it moved in and can consume it: send a `oneshot::Sender`, own a stream that is neither `Clone` nor `Sync`.
 - Each moved handle of a concrete handle type, or dependency, is flagged internal and classified as above; the value is then moved as written, so a binding keeps the `mut` it may need. The handle keeps its count until the creation has registered the node's edges, so no sweep can run between the two.
@@ -457,7 +458,7 @@ Rule: a body, or an async source block, captures a clone of everything it refere
 
 - `file!()`, `line!()` and `column!()` emitted by the proc macro report the user's `effect!` call, since they resolve to the outermost macro invocation.
 - `function` comes from the type name of a marker function declared inside the expansion, resolved when `function` is called; inside closures the path contains `{{closure}}`.
-- `tokens` is the macro input, stringified at compile time.
+- `tokens` is the start of the macro input, stringified at compile time and cut at 80 characters; it is empty in builds without debug assertions, so a release binary holds no body source. `Site` is `#[non_exhaustive]`: only `effect!` builds one.
 - `Site` implements `Debug` by hand, so the function path is printed rather than a function pointer, and `Display` as `file:line:column in function`.
 
 ### 4.4 Initial value
@@ -472,7 +473,7 @@ Rule: a body, or an async source block, captures a clone of everything it refere
 
 ### 4.6 Compile errors
 
-Each of these inputs gets a dedicated message instead of a generic parse or trait error. Every row is covered by a compile-fail test in `lithia-validation` (`tests/ui`), which also fixed which message rustc shows where the spec left it open; a pass test (`tests/pass`) checks that a bare `effect!(…);` statement compiles under `#![deny(warnings)]`.
+Each of these inputs gets a dedicated message instead of a generic parse or trait error, pointing at the token at fault, and every such error in one input is reported, not only the first. Every row is covered by a compile-fail test in `lithia-validation` (`tests/ui`), which also fixed which message rustc shows where the spec left it open; a pass test (`tests/pass`) checks that a bare `effect!(…);` statement compiles under `#![deny(warnings)]`.
 
 | Input | Message |
 | --- | --- |
@@ -497,6 +498,13 @@ Each of these inputs gets a dedicated message instead of a generic parse or trai
 | A key-closure parameter that is not a plain identifier, or one named twice | "`key` parameters name variables in scope by plain identifiers, each once" |
 | `#[lithia::main]` or `#[lithia::test]` on a non-`async` fn | "#\[lithia::main\] needs an `async fn`; the async keyword is missing" |
 | An unknown attribute argument | "unknown argument `x`; expected flavor, worker\_threads or start\_paused" |
+| `worker_threads = 0` | "worker\_threads is at least 1" |
+| `start_paused` without lithia's `test-util` feature | "`start_paused` needs lithia's `test-util` feature" |
+| A closure whose body is an async block, `effect!(\|c\| async move { … })` | "a closure that returns an async block makes a node whose value is a future; write `async \|…\| { … }` or `async move \|…\| { … }` for an async body" |
+| An attribute on the body's closure or async block | "effect! does not carry attributes on its closure or block over; put them on the enclosing statement" |
+| `yield` inside a macro call in a body, such as `select!` | "effect! cannot see a `yield` inside a macro call such as `select!`; yield what the macro returns, after it" |
+| A name starting with `__lithia` | "names starting with `__lithia` are effect!'s own" |
+| A capture that is not `Send + Sync + 'static` | "`T` is captured by an effect! body but is not `Send + Sync + 'static`", labelled "captured here", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell`. rustc shows only this message. |
 
 ### 4.7 Keyed creation
 

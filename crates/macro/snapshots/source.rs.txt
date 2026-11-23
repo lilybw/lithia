@@ -1,0 +1,13 @@
+// effect!(0)
+
+{
+    fn __lithia_scope () {
+    } fn __lithia_path () -> & 'static str {
+        :: lithia :: __private :: fn_path (:: core :: any :: type_name_of_val (& __lithia_scope ) )
+    } static __LITHIA_SITE : :: lithia :: Site = :: lithia :: Site :: __new (:: core :: file ! () , :: core :: line ! () , :: core :: column ! () , :: core :: module_path ! () , __lithia_path , if :: core :: cfg ! (debug_assertions ) {
+        "0"
+    } else {
+        ""
+    } , ) ;
+    :: lithia :: __private :: source (& __LITHIA_SITE , 0 , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () ) )
+}

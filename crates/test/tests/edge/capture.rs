@@ -209,3 +209,23 @@ async fn a_write_inside_a_match_guard_is_a_writer_edge() {
     lithia::flush().await;
     assert_eq!(*seen.get(), 20);
 }
+
+/// A body passed through a `macro_rules!` macro: its captures and `yield`s resolve as they do
+/// written out, though the macro's own tokens and the caller's have different hygiene.
+macro_rules! derived_from {
+    ($n:ident => { $($body:tt)* }) => {
+        effect!(|$n| { $($body)* })
+    };
+}
+
+#[lithia::test]
+async fn a_body_passed_through_a_macro_captures_and_yields() {
+    let n: SourceNode<u32> = effect!(2);
+    let factor: u32 = 10;
+    let items: DerivedNode<u32> = derived_from!(n => {
+        yield *n.get() * factor;
+        yield *n.get() * factor + 1;
+    });
+    lithia::test::settled(&n).await;
+    assert_eq!(*items.get(), 21);
+}

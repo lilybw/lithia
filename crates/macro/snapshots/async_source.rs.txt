@@ -1,0 +1,20 @@
+// effect!(async { lookup().await })
+
+{
+    fn __lithia_scope () {
+    } fn __lithia_path () -> & 'static str {
+        :: lithia :: __private :: fn_path (:: core :: any :: type_name_of_val (& __lithia_scope ) )
+    } static __LITHIA_SITE : :: lithia :: Site = :: lithia :: Site :: __new (:: core :: file ! () , :: core :: line ! () , :: core :: column ! () , :: core :: module_path ! () , __lithia_path , if :: core :: cfg ! (debug_assertions ) {
+        "async { lookup () . await }"
+    } else {
+        ""
+    } , ) ;
+    # [allow (unused_imports ) ] use :: lithia :: __private :: {
+        CaptureAny as _ , FieldAny as _ , MoveAny as _
+    } ;
+    let __lithia_cap = :: lithia :: __private :: Capturing :: begin () ;
+    let __lithia_captured : :: lithia :: __private :: Captured = __lithia_cap . finish () ;
+    :: lithia :: __private :: source_async (& __LITHIA_SITE , & __lithia_captured , < _ as :: lithia :: __private :: InitDefault > :: __lithia_init () , async move {
+        lookup () . await
+    } , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () ) , )
+}

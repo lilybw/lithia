@@ -1,0 +1,49 @@
+// effect!(|n| *n.get() * factor, key = id)
+
+{
+    fn __lithia_scope () {
+    } fn __lithia_path () -> & 'static str {
+        :: lithia :: __private :: fn_path (:: core :: any :: type_name_of_val (& __lithia_scope ) )
+    } static __LITHIA_SITE : :: lithia :: Site = :: lithia :: Site :: __new (:: core :: file ! () , :: core :: line ! () , :: core :: column ! () , :: core :: module_path ! () , __lithia_path , if :: core :: cfg ! (debug_assertions ) {
+        "| n | * n . get () * factor , key = id"
+    } else {
+        ""
+    } , ) ;
+    let __lithia_deps : [:: lithia :: __private :: NodeHandle ; 1usize ] = [:: lithia :: __private :: node_ref (& n ) ] ;
+    let __lithia_key = :: lithia :: __private :: NodeKey :: new (id ) ;
+    let __lithia_shape : :: lithia :: __private :: Shape = :: lithia :: __private :: Shape :: new () ;
+    let __lithia_p0 = {
+        # [allow (unused_imports ) ] use :: lithia :: __private :: {
+            CaptureAny as _ , ProbeViaArc as _ , ProbeViaEq as _ , ProbeViaHandle as _ , ProbeViaOpaque as _ ,
+        } ;
+        (&& && :: lithia :: __private :: Probed ((n ) . __lithia_capture_ref () ) ) . __lithia_probe ()
+    } ;
+    let __lithia_p1 = {
+        # [allow (unused_imports ) ] use :: lithia :: __private :: {
+            CaptureAny as _ , ProbeViaArc as _ , ProbeViaEq as _ , ProbeViaHandle as _ , ProbeViaOpaque as _ ,
+        } ;
+        (&& && :: lithia :: __private :: Probed ((factor ) . __lithia_capture_ref () ) ) . __lithia_probe ()
+    } ;
+    let __lithia_probes : [& dyn :: lithia :: __private :: Probe ; 2usize ] = [& __lithia_p0 , & __lithia_p1 ] ;
+    let __lithia_reclaim = :: lithia :: __private :: reclaim_derived (& :: lithia :: __private :: KeyRef :: new (& __LITHIA_SITE , & __lithia_key ) , & __lithia_shape , & __lithia_deps , & __lithia_probes ) ;
+    match __lithia_reclaim {
+        __lithia_reclaim @ (:: lithia :: __private :: Reclaim :: Changed (_ ) | :: lithia :: __private :: Reclaim :: Fresh ) => {
+            let __lithia_inputs : :: lithia :: __private :: Inputs = :: lithia :: __private :: Inputs :: of (& __lithia_probes ) ;
+            # [allow (unused_imports ) ] use :: lithia :: __private :: {
+                CaptureAny as _ , FieldAny as _ , MoveAny as _
+            } ;
+            let __lithia_cap = :: lithia :: __private :: Capturing :: begin () ;
+            # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let n = {
+                let __lithia_ro : :: lithia :: __private :: ReadOnly = __lithia_cap . read_only (true ) ;
+                (n ) . __lithia_capture ()
+            } ;
+            # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let factor = (factor ) . __lithia_capture () ;
+            let __lithia_captured : :: lithia :: __private :: Captured = __lithia_cap . finish () ;
+            :: lithia :: __private :: derived (& __LITHIA_SITE , & __lithia_deps , & __lithia_captured , < _ as :: lithia :: __private :: InitDefault > :: __lithia_init () , move || {
+                # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let n = & n ;
+                # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let factor = & factor ;
+                * n . get () * factor
+            } , :: lithia :: __private :: Options :: new (__lithia_shape ) . keyed (__lithia_reclaim , __lithia_key , __lithia_inputs ) )
+        } :: lithia :: __private :: Reclaim :: Same (__lithia_node ) => __lithia_node . derived (:: lithia :: __private :: Options :: new (__lithia_shape ) ) ,
+    }
+}

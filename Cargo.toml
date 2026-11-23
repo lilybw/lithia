@@ -29,7 +29,7 @@ arc-swap = "1"
 parking_lot = "0.13"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 bitflags = "2"
-syn = { version = "3", features = ["full", "visit", "visit-mut", "extra-traits"] }
+syn = { version = "3", features = ["full", "visit", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"
 trybuild = "1"

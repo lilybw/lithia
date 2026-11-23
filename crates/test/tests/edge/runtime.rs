@@ -211,3 +211,17 @@ async fn a_body_blocking_on_flush_does_not_wait_for_its_own_poll_to_end() {
     assert!(flushed.is_ok(), "the body's flush waited for a run queued behind its own poll");
     assert_eq!(*doubled.get(), 10);
 }
+
+#[lithia::test]
+async fn a_test_may_return_a_result() -> Result<(), String> {
+    let n: SourceNode<u32> = effect!(1);
+    lithia::test::settled(&n).await;
+    if *n.get() == 1 { Ok(()) } else { Err(format!("read {}", n.get())) }
+}
+
+#[lithia::test(flavor = "current_thread", start_paused = true)]
+async fn a_test_may_start_with_its_clock_paused() {
+    let before: std::time::Instant = std::time::Instant::now();
+    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    assert!(before.elapsed() < std::time::Duration::from_secs(60), "the paused clock advanced on its own");
+}
