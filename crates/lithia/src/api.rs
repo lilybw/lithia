@@ -60,7 +60,7 @@ fn served_by(run: &Arc<RunShared>) -> Option<(NodeRef, ServedEpochs)> {
 fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Tokens {
     match served_by(run) {
         Some((node, served)) => {
-            let epochs: Tokens = protocol::deliver_children(&node, &served, batch, 0);
+            let epochs: Tokens = protocol::deliver_children(&node, &served, batch, Stamp::NONE);
             drop(node);
             protocol::close_all(epochs.clone());
             epochs

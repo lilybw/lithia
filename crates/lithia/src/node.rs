@@ -10,13 +10,13 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
-use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Mutex, MutexGuard};
+use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicUsize, Mutex, MutexGuard};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
 use crate::capture::SharedLease;
 use crate::epoch::{Epoch, Epochs, Scope, Tokens};
-use crate::ids::{EpochId, NodeId, RunId, Stamp, WriterId};
+use crate::ids::{Atomic, EpochId, NodeId, RunId, Stamp, WriterId};
 use crate::keyed::{Inputs, Key, KeyedSet};
 use crate::options::{Equals, Flags, Fragility, GhostPolicy};
 use crate::run::{RunShared, Yielder};
@@ -105,11 +105,11 @@ pub(crate) struct Header {
     pub(crate) kind: Kind,
     /// Whether the value type is `()`, i.e. the node is an effect.
     pub(crate) is_unit: bool,
-    pub(crate) version: AtomicU64,
+    pub(crate) version: Atomic<Stamp>,
     pub(crate) phase: AtomicU32,
     pub(crate) failure: ArcCell<Failure>,
     /// Id of the current run; stale items are discarded.
-    pub(crate) runs: AtomicU64,
+    pub(crate) runs: Atomic<RunId>,
     /// Serializes writers; never poisons.
     pub(crate) write: Mutex<()>,
     /// The node's scheduling lock (spec §11.4 step 1).
@@ -157,7 +157,7 @@ pub(crate) struct Header {
     /// What a keyed node's body last captured, to compare a reclaiming creation against.
     pub(crate) inputs: Mutex<Option<Inputs>>,
     /// The run id an async source block may run under; a write or a new block moves `runs` past it.
-    pub(crate) block_run: AtomicU64,
+    pub(crate) block_run: Atomic<RunId>,
     /// The identity it writes under in writer sets: its id, or for a node created in a run, its
     /// lineage, which the same creation in the creator's next run shares (spec §7.4).
     pub(crate) writer: WriterId,
@@ -221,7 +221,7 @@ impl Sched {
             inherited: Vec::new(),
             queued: false,
             unseeded,
-            ran_at: 0,
+            ran_at: Stamp::NONE,
             subscribers: BTreeMap::new(),
             created: Vec::new(),
             created_floor: 0,
@@ -442,8 +442,8 @@ impl Entry {
             epoch,
             waiting: ParentMask::new(),
             writers: WriterSet::new(),
-            newest: 0,
-            carry: 0,
+            newest: Stamp::NONE,
+            carry: Stamp::NONE,
             first: false,
             reflow: false,
             force: false,

@@ -141,14 +141,15 @@ mod tests {
 
     #[test]
     fn writer_set_ops() {
+        let [one, two, three]: [WriterId; 3] = [1, 2, 3].map(WriterId::lineage);
         let mut set: WriterSet = WriterSet::new();
-        set.insert(3);
-        set.insert(1);
-        set.insert(3);
-        assert!(set.contains(1) && set.contains(3) && !set.contains(2));
-        let with: WriterSet = set.with(Some(2));
-        assert!(with.contains(2));
-        assert!(!with.without(Some(2)).contains(2));
+        set.insert(three);
+        set.insert(one);
+        set.insert(three);
+        assert!(set.contains(one) && set.contains(three) && !set.contains(two));
+        let with: WriterSet = set.with(Some(two));
+        assert!(with.contains(two));
+        assert!(!with.without(Some(two)).contains(two));
     }
 
     #[test]

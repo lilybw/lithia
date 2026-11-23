@@ -157,7 +157,7 @@ impl<K: NodeValue> Node<K> {
                 discarded = Some(next);
                 None
             } else {
-                header.runs.fetch_add(1, Ordering::SeqCst);
+                header.runs.advance(Ordering::SeqCst);
                 header.clear_pending_failed();
                 if equal {
                     discarded = Some(next);

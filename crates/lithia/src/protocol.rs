@@ -394,7 +394,7 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
             // Recovered: a status change, which reruns the node only if it never ran or a parent
             // changed since its last run; otherwise it is restored as it was (spec §9.2).
             None if sched.failed_by_fragility => {
-                if sched.ran_at == 0 || parents_changed_since(node, sched.ran_at) {
+                if !sched.ran_at.is_some() || parents_changed_since(node, sched.ran_at) {
                     force = true;
                 } else {
                     header.clear_bits(phase::FAILED);
@@ -753,14 +753,14 @@ pub(crate) fn deliver_children(
     batch: Batch,
     own_stamp: Stamp,
 ) -> Tokens {
-    if batch.is_empty() && own_stamp == 0 {
+    if batch.is_empty() && !own_stamp.is_some() {
         return Vec::new();
     }
     let children: Targets = served
         .iter()
         .map(|(epoch, writers): &(Arc<Epoch>, WriterSet)| (Epoch::child(epoch), writers.clone()))
         .collect();
-    let own: Option<OwnItem<'_>> = (own_stamp > 0).then_some(OwnItem { node, stamp: own_stamp });
+    let own: Option<OwnItem<'_>> = own_stamp.is_some().then_some(OwnItem { node, stamp: own_stamp });
     deliver_into(batch, &children, Some(node.header().writer), own);
     children.into_iter().map(|(epoch, _)| epoch).collect()
 }
@@ -971,7 +971,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Token
                 let id: RunId = if header.kind == Kind::AsyncSource {
                     shared.expected()
                 } else {
-                    header.runs.fetch_add(1, Ordering::SeqCst) + 1
+                    header.runs.advance(Ordering::SeqCst)
                 };
                 shared.set_id(id);
                 shared.set_scope(served[0].epoch.scope.clone());
@@ -1084,7 +1084,7 @@ pub(crate) fn after_poll(
     }
     let first: bool = !shared.first_done();
     // The served epochs are copied only when there is something to deliver into them.
-    let delivers: bool = !batch.is_empty() || (!first && own_stamp > 0);
+    let delivers: bool = !batch.is_empty() || (!first && own_stamp.is_some());
     let snapshot: Option<(ServedEpochs, ServedEpochs, bool)> = {
         let guard: MutexGuard<'_, Sched> = header.sched.lock();
         match &guard.run {
@@ -1095,7 +1095,7 @@ pub(crate) fn after_poll(
                     Vec::new()
                 },
                 // A first item's epochs an earlier run released already; usually none.
-                if first && own_stamp > 0 {
+                if first && own_stamp.is_some() {
                     slot.served
                         .iter()
                         .filter(|s: &&Served| s.released)
@@ -1130,7 +1130,7 @@ pub(crate) fn after_poll(
     }
     let closes_tokens: bool = !matches!(outcome, Outcome::Yielded);
     if cancelled {
-        if first && own_stamp > 0 {
+        if first && own_stamp.is_some() {
             carry_published(node, shared, own_stamp);
         }
         if !matches!(outcome, Outcome::Yielded | Outcome::Suspended) {

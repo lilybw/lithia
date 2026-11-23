@@ -209,7 +209,7 @@ pub(crate) fn ghost_read(site: &Site, policy: crate::GhostPolicy) {
 }
 
 fn superseded(site: &Site, run: RunId) {
-    emit(|| tracing::trace!(site = %site, run, "lithia: run superseded or aborted"));
+    emit(|| tracing::trace!(site = %site, run = %run, "lithia: run superseded or aborted"));
 }
 
 pub(crate) fn drop_panicked(message: &str) {

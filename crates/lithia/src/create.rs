@@ -7,14 +7,14 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Mutex, MutexGuard};
+use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicUsize, Mutex, MutexGuard};
 use tokio::runtime::Handle;
 
 use crate::capture::{Captured, SharedLease};
 use crate::context;
 use crate::epoch::Scope;
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
-use crate::ids::{self, NodeId, RunId, WriterId};
+use crate::ids::{self, Atomic, NodeId, Place, RunId, Stamp, WriterId};
 use crate::keyed::{self, Inputs, Key, Keyed};
 use crate::node::{
     Body, BodySlot, BoxFut, Header, Kind, Node, NodeRef, Parents, RateWindow, Sched, TypedNodeRef, WeakNodeRef, phase,
@@ -101,7 +101,7 @@ fn refresh<K: NodeValue>(
         Kind::Derived => {}
         Kind::AsyncSource => {
             // The running block stops, and the new one runs under the next run id.
-            let next: RunId = header.runs.fetch_add(1, Ordering::SeqCst) + 1;
+            let next: RunId = header.runs.advance(Ordering::SeqCst);
             header.block_run.store(next, Ordering::SeqCst);
         }
     }
@@ -135,19 +135,15 @@ fn refresh<K: NodeValue>(
     crate::drops::drop_owned(value, runtime.as_ref());
 }
 
-/// Where a creation sits in its creator's run: `(0, n)` for the n-th at its site, `(1, hash)`
-/// for a key.
-type Place = (u8, u64);
-
 /// A lineage's writer identity: the creator's, the site, and the key or place among the site's
-/// creations in a run; the top bit keeps it apart from node ids.
+/// creations in a run.
 fn lineage(creator: WriterId, site: &'static Site, place: Place) -> WriterId {
     use std::hash::{Hash, Hasher};
     let mut hasher: std::hash::DefaultHasher = std::hash::DefaultHasher::new();
     creator.hash(&mut hasher);
     std::ptr::from_ref(site).addr().hash(&mut hasher);
     place.hash(&mut hasher);
-    hasher.finish() | (1 << 63)
+    WriterId::lineage(hasher.finish())
 }
 
 fn new_node<K: NodeValue>(
@@ -193,7 +189,7 @@ fn new_node<K: NodeValue>(
     let parent_ids: Box<[NodeId]> = parents.iter().map(|p: &NodeRef| p.header().id).collect();
     let run: Option<Arc<RunShared>> = context::creating_run();
     let scope: Arc<Scope> = context::current_scope();
-    let creator: Option<NodeId> = run.as_ref().map(|r: &Arc<RunShared>| r.node_id);
+    let creator: Option<NodeId> = run.as_ref().and_then(|r: &Arc<RunShared>| r.node_id);
     let pending: bool = kind != Kind::Source;
     let mut targets: Vec<NodeRef> = Vec::new();
     for (node, writes) in &captured.0 {
@@ -206,12 +202,12 @@ fn new_node<K: NodeValue>(
     let writer: WriterId = match (&run, &creator_node) {
         (Some(run), Some(creator)) => {
             let place: Place = match &key {
-                Some(key) => (1, key.hash),
-                None => (0, run.place(site)),
+                Some(key) => Place::Key(key.hash),
+                None => Place::Nth(run.place(site)),
             };
             lineage(creator.header().writer, site, place)
         }
-        _ => id,
+        _ => WriterId::node(id),
     };
     let closed: bool = creator_node.as_ref().is_some_and(|c: &NodeRef| c.header().sched.lock().closed);
     let held: bool = creator_node.is_some() && !closed;
@@ -227,10 +223,10 @@ fn new_node<K: NodeValue>(
             creator,
             kind,
             is_unit: Node::<K>::is_unit(),
-            version: AtomicU64::new(0),
+            version: Atomic::new(Stamp::NONE),
             phase: AtomicU32::new(if pending { phase::PENDING } else { 0 }),
             failure: ArcCell::new(None),
-            runs: AtomicU64::new(if kind == Kind::AsyncSource { 1 } else { 0 }),
+            runs: Atomic::new(if kind == Kind::AsyncSource { RunId::FIRST } else { RunId::NONE }),
             write: Mutex::new(()),
             sched: Mutex::new(Sched::new(kind != Kind::Source)),
             parents: Mutex::new(Some(parents.clone())),
@@ -257,7 +253,7 @@ fn new_node<K: NodeValue>(
             value_type: std::any::TypeId::of::<K>(),
             key,
             inputs: Mutex::new(inputs),
-            block_run: AtomicU64::new(if kind == Kind::AsyncSource { 1 } else { 0 }),
+            block_run: Atomic::new(if kind == Kind::AsyncSource { RunId::FIRST } else { RunId::NONE }),
             supportable,
             undecided: AtomicBool::new(false),
             lease: Mutex::new(if kind == Kind::AsyncSource { captured.2.clone() } else { None }),
