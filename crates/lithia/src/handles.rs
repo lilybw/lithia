@@ -7,13 +7,13 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::capture::SharedLease;
 use crate::changes::Changes;
 use crate::context::{self, ClosureCreations, ClosureGuard};
-use crate::ids::Stamp;
-use crate::node::{Header, Kind, Node, NodeRef, TypedNodeRef};
+use crate::expand::capture::SharedLease;
+use crate::graph::ids::Stamp;
+use crate::graph::node::{Commit, Displaced, Header, Kind, Node, NodeRef, TypedNodeRef};
 use crate::sync::MutexGuard;
-use crate::{GhostPolicy, Ghosted, NodeValue, Status, diag, ids, protocol};
+use crate::{GhostPolicy, Ghosted, NodeValue, Status, diag, protocol};
 
 /// Type-erased reference to a node, used by `effect!` and the free functions.
 #[doc(hidden)]
@@ -105,10 +105,10 @@ impl<K: NodeValue> Node<K> {
     pub(crate) fn read(&self) -> Result<Arc<K>, Ghosted> {
         let header: &Header = &self.header;
         if header.is_ghost() {
-            if header.ghost == GhostPolicy::CauseFailure {
+            if header.shape.ghost == GhostPolicy::CauseFailure {
                 return Err(Ghosted);
             }
-            diag::ghost_read(header.site, header.ghost);
+            diag::ghost_read(header.site, header.shape.ghost);
         }
         self.value.load_full().ok_or(Ghosted)
     }
@@ -133,8 +133,7 @@ impl<K: NodeValue> Node<K> {
             return if header.is_ghost() { Err(Ghosted) } else { Ok(()) };
         }
         let _creations: ClosureCreations = ClosureCreations::new();
-        let mut replaced: Option<Arc<K>> = None;
-        let mut discarded: Option<K> = None;
+        let mut displaced: Displaced<K> = Displaced::default();
         let stamp: Option<Stamp> = {
             let _write: MutexGuard<'_, ()> = header.write.lock();
             if header.is_ghost() {
@@ -149,37 +148,9 @@ impl<K: NodeValue> Node<K> {
             } else {
                 compute(&current)
             };
-            let equal: bool = match self.comparator() {
-                Some(equals) => {
-                    let _guard: ClosureGuard = ClosureGuard::enter();
-                    equals(&current, &next)
-                }
-                None => false,
-            };
-            if equal && !header.flags.contains(crate::Flags::ALWAYS_PROPAGATE) {
-                discarded = Some(next);
-                None
-            } else {
-                header.runs.advance(Ordering::SeqCst);
-                header.clear_pending_failed();
-                if equal {
-                    discarded = Some(next);
-                } else {
-                    replaced = self.value.swap(Some(Arc::new(next)));
-                    header.notify_changes();
-                }
-                let stamp: Stamp = ids::stamp();
-                debug_assert!(stamp > header.version.load(Ordering::Relaxed), "lithia: a node's version went back");
-                header.version.store(stamp, Ordering::SeqCst);
-                Some(stamp)
-            }
+            self.commit(&current, next, Commit::Write, &mut displaced)
         };
-        if let Some(value) = discarded {
-            crate::drops::drop_owned(value, header.runtime.as_ref());
-        }
-        if let Some(old) = replaced {
-            crate::drops::drop_value(old, header.runtime.as_ref());
-        }
+        displaced.release(header.runtime.as_ref());
         if let Some(stamp) = stamp {
             let erased: NodeRef = self.clone();
             // A plain source node is never framed or seeded, so it never has a run to stop.
@@ -243,7 +214,7 @@ macro_rules! readable {
 
         impl<K: NodeValue> Clone for $ty<K> {
             fn clone(&self) -> Self {
-                $ty { internal: Count::new(new_ref(&self.node, $ty::<K>::writes())), node: self.node.clone() }
+                $ty { internal: HandleCount::new(new_ref(&self.node, $ty::<K>::writes())), node: self.node.clone() }
             }
         }
 
@@ -258,15 +229,15 @@ macro_rules! readable {
             #[allow(dead_code)]
             pub(crate) fn outside(node: &TypedNodeRef<K>) -> Self {
                 if $ty::<K>::anchoring(node) {
-                    crate::support::add_anchors(&node.header, 1, || node.clone());
+                    crate::lifetime::support::add_anchors(&node.header, 1, || node.clone());
                 }
-                $ty { node: node.clone(), internal: Count::new(false) }
+                $ty { node: node.clone(), internal: HandleCount::new(false) }
             }
 
             /// Clones the handle for a body, recorded as a capture its body only reads.
             #[doc(hidden)]
             pub fn __lithia_capture_ro(&self) -> Self {
-                crate::capture::read_only(|| self.clone())
+                crate::expand::capture::read_only(|| self.clone())
             }
 
             /// Flags the handle a `move` body is about to take as internal.
@@ -278,7 +249,7 @@ macro_rules! readable {
             /// Like `__lithia_move`, recorded as a capture its body only reads.
             #[doc(hidden)]
             pub fn __lithia_move_ro(&self) {
-                crate::capture::read_only(|| self.__lithia_move())
+                crate::expand::capture::read_only(|| self.__lithia_move())
             }
 
             /// A field path whose value is this handle.
@@ -311,115 +282,115 @@ macro_rules! readable {
 /// `let count: SourceNode<u32> = effect!(0); count.set(3);`
 pub struct SourceNode<K: NodeValue> {
     pub(crate) node: TypedNodeRef<K>,
-    pub(crate) internal: Count,
+    pub(crate) internal: HandleCount,
 }
 
 /// Node whose body produces its value from its dependencies; `DerivedNode<()>` is an effect.
 /// `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);`
 pub struct DerivedNode<K: NodeValue> {
     pub(crate) node: TypedNodeRef<K>,
-    pub(crate) internal: Count,
+    pub(crate) internal: HandleCount,
 }
 
 /// Read-only view of a node.
 /// `let reader: Accessor<u32> = count.accessor();`
 pub struct Accessor<K: NodeValue> {
     pub(crate) node: TypedNodeRef<K>,
-    pub(crate) internal: Count,
+    pub(crate) internal: HandleCount,
 }
 
 /// Write-only view of a source node.
 /// `let writer: Setter<u32> = count.setter();`
 pub struct Setter<K: NodeValue> {
     pub(crate) node: TypedNodeRef<K>,
-    pub(crate) internal: Count,
+    pub(crate) internal: HandleCount,
 }
 
 /// How a handle counts: as an outside handle, or as a capture; a capture a `move` block took over
 /// holds the block's lease, and counts as an outside handle once the block has ended (spec §4.2).
 // A handle's own state, read and written only by whoever owns the handle.
 #[allow(clippy::disallowed_types)]
-pub(crate) struct Count {
+pub(crate) struct HandleCount {
     internal: std::sync::atomic::AtomicBool,
     lease: std::sync::OnceLock<SharedLease>,
 }
 
-impl Count {
+impl HandleCount {
     #[allow(clippy::disallowed_types)]
-    pub(crate) fn new(internal: bool) -> Count {
-        Count { internal: std::sync::atomic::AtomicBool::new(internal), lease: std::sync::OnceLock::new() }
+    pub(crate) fn new(internal: bool) -> HandleCount {
+        HandleCount { internal: std::sync::atomic::AtomicBool::new(internal), lease: std::sync::OnceLock::new() }
     }
 }
 
 /// Records a new handle: internal in capture mode, otherwise an outside handle.
 fn new_ref<K: NodeValue>(node: &TypedNodeRef<K>, writes: bool) -> bool {
-    if crate::capture::active() {
-        node.header.captured.fetch_add(1, Ordering::SeqCst);
+    if crate::expand::capture::active() {
+        node.header.lifetime.captured.fetch_add(1, Ordering::SeqCst);
         let erased: NodeRef = node.clone();
-        crate::capture::record(erased, writes);
+        crate::expand::capture::record(erased, writes);
         return true;
     }
-    true_if_counted(node, writes)
+    anchor_outside(node, writes)
 }
 
-fn true_if_counted<K: NodeValue>(node: &TypedNodeRef<K>, writes: bool) -> bool {
+fn anchor_outside<K: NodeValue>(node: &TypedNodeRef<K>, writes: bool) -> bool {
     // `writes` is false only for `Accessor`, which anchors only a node with a body.
     if writes || node.header.kind != Kind::Source {
-        crate::support::add_anchors(&node.header, 1, || node.clone());
+        crate::lifetime::support::add_anchors(&node.header, 1, || node.clone());
     }
     false
 }
 
 /// Records a node a body reaches by a field path, without a handle of its own.
 fn record_field<K: NodeValue>(node: &TypedNodeRef<K>, writes: bool) {
-    if crate::capture::active() {
+    if crate::expand::capture::active() {
         let erased: NodeRef = node.clone();
-        crate::capture::record(erased, writes);
+        crate::expand::capture::record(erased, writes);
     }
 }
 
 /// Flags a handle a `move` body takes as internal, under the expansion's lease; its anchoring
 /// count drops after creation.
-fn take_moved<K: NodeValue>(node: &TypedNodeRef<K>, count: &Count, writes: bool, anchoring: bool) {
-    if !crate::capture::active() {
+fn take_moved<K: NodeValue>(node: &TypedNodeRef<K>, count: &HandleCount, writes: bool, anchoring: bool) {
+    if !crate::expand::capture::active() {
         return;
     }
     let erased: NodeRef = node.clone();
-    crate::capture::record(erased.clone(), writes);
+    crate::expand::capture::record(erased.clone(), writes);
     if count.internal.swap(true, Ordering::Relaxed) {
         return;
     }
-    node.header.captured.fetch_add(1, Ordering::SeqCst);
-    let lease: SharedLease = crate::capture::lease();
+    node.header.lifetime.captured.fetch_add(1, Ordering::SeqCst);
+    let lease: SharedLease = crate::expand::capture::lease();
     lease.take(erased.clone(), anchoring);
     let _ = count.lease.set(lease);
     if anchoring {
-        crate::capture::moved(erased);
+        crate::expand::capture::moved(erased);
     }
 }
 
 /// Releases a handle; dropping the last anchoring handle starts a sweep, and the last captured
 /// one may leave a memo unread (spec §12).
-fn drop_ref<K: NodeValue>(node: &TypedNodeRef<K>, count: &Count, anchoring: bool) {
+fn drop_ref<K: NodeValue>(node: &TypedNodeRef<K>, count: &HandleCount, anchoring: bool) {
     if count.internal.load(Ordering::Relaxed) {
         let ended: bool = count.lease.get().is_some_and(|lease: &SharedLease| !lease.release(node.header.id));
         if !ended {
-            let before: usize = node.header.captured.fetch_sub(1, Ordering::SeqCst);
+            let before: usize = node.header.lifetime.captured.fetch_sub(1, Ordering::SeqCst);
             debug_assert!(before > 0, "lithia: a captured handle dropped a count it did not hold");
             if before == 1 {
-                crate::support::check_unread(&node.header);
+                crate::lifetime::support::check_unread(&node.header);
             }
             return;
         }
     }
     let last: bool = anchoring && {
-        let before: usize = node.header.anchors.fetch_sub(1, Ordering::SeqCst);
+        let before: usize = node.header.lifetime.anchors.fetch_sub(1, Ordering::SeqCst);
         debug_assert!(before > 0, "lithia: a handle dropped an anchor it did not hold");
         before == 1
     };
     if last {
         let erased: NodeRef = node.clone();
-        crate::support::start(erased);
+        crate::lifetime::support::raise(erased);
     }
 }
 
@@ -443,8 +414,8 @@ kind_of!(Accessor, false);
 
 macro_rules! handle_id {
     ($ty:ident) => {
-        impl<K: NodeValue> crate::keyed::HandleId for $ty<K> {
-            fn __lithia_node_id(&self) -> crate::ids::NodeId {
+        impl<K: NodeValue> crate::expand::keyed::HandleId for $ty<K> {
+            fn __lithia_node_id(&self) -> crate::graph::ids::NodeId {
                 self.node.header.id
             }
         }
@@ -464,7 +435,7 @@ impl<K: NodeValue> sealed::Sealed for Setter<K> {}
 
 impl<K: NodeValue> Clone for Setter<K> {
     fn clone(&self) -> Self {
-        Setter { internal: Count::new(new_ref(&self.node, true)), node: self.node.clone() }
+        Setter { internal: HandleCount::new(new_ref(&self.node, true)), node: self.node.clone() }
     }
 }
 
@@ -599,8 +570,8 @@ impl<K: NodeValue> SourceNode<K> {
     /// Write-only view of this node.
     #[must_use = "a setter dropped at once anchors and lets go of the node for nothing"]
     pub fn setter(&self) -> Setter<K> {
-        crate::support::add_anchors(&self.node.header, 1, || self.node.clone());
-        Setter { node: self.node.clone(), internal: Count::new(false) }
+        crate::lifetime::support::add_anchors(&self.node.header, 1, || self.node.clone());
+        Setter { node: self.node.clone(), internal: HandleCount::new(false) }
     }
 
     /// Lets this node live by its handles alone; nodes hanging off it stop with it.
@@ -608,7 +579,7 @@ impl<K: NodeValue> SourceNode<K> {
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self {
         let erased: NodeRef = self.node.clone();
-        crate::support::scope(&erased);
+        crate::lifetime::support::scope(&erased);
         self
     }
 }
@@ -625,7 +596,7 @@ impl<K: NodeValue> DerivedNode<K> {
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self {
         let erased: NodeRef = self.node.clone();
-        crate::support::scope(&erased);
+        crate::lifetime::support::scope(&erased);
         self
     }
 }

@@ -9,8 +9,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use crate::context;
+use crate::graph::ids::NodeId;
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
-use crate::ids::NodeId;
 
 /// A key's hash, mixed with its site's address; equal keys at one site hash alike.
 pub(crate) type KeyHash = u64;
@@ -18,9 +18,9 @@ pub(crate) type KeyHash = u64;
 type Bucket = Vec<NodeRef>;
 /// A captured input kept for comparison with the next creation's, type-erased.
 type StoredInput = Box<dyn Any + Send + Sync>;
-use crate::node::{Header, Kind, Node, NodeRef, TypedNodeRef};
+use crate::graph::node::{Header, Kind, Node, NodeRef, TypedNodeRef};
 use crate::options::{Options, Shape};
-use crate::run::RunShared;
+use crate::run::RunControl;
 use crate::{NodeValue, Site};
 
 /// A value `effect!`'s `key` option accepts.
@@ -116,7 +116,7 @@ impl<'a> KeyRef<'a> {
     }
 }
 
-/// One captured value, compared against what a reused node stored (spec §4.7).
+/// One captured value, compared against what a reclaimed node stored (spec §4.7).
 #[doc(hidden)]
 pub trait Probe {
     /// Whether `stored` holds an equal input.
@@ -252,7 +252,7 @@ impl Inputs {
     /// Drops the kept copies off the protocol; with nothing kept, no user code can run and it drops here.
     pub(crate) fn release(self, runtime: Option<&tokio::runtime::Handle>) {
         if !self.0.is_empty() {
-            crate::drops::drop_later(self, runtime);
+            crate::lifetime::drops::drop_later(self, runtime);
         }
     }
 
@@ -267,9 +267,9 @@ impl Inputs {
 
 /// A node reclaimed by key, typed.
 #[doc(hidden)]
-pub struct Reused<K: NodeValue>(pub(crate) TypedNodeRef<K>);
+pub struct Reclaimed<K: NodeValue>(pub(crate) TypedNodeRef<K>);
 
-impl<K: NodeValue> Reused<K> {
+impl<K: NodeValue> Reclaimed<K> {
     /// A new outside handle to the reclaimed derived node, which takes the creation's comparator.
     pub fn derived(self, options: Options<K>) -> DerivedNode<K> {
         self.adopt(options);
@@ -284,7 +284,7 @@ impl<K: NodeValue> Reused<K> {
 
     fn adopt(&self, options: Options<K>) {
         if let Some(old) = self.0.adopt_equals(options.equals) {
-            crate::drops::drop_later(old, self.0.header.runtime.as_ref());
+            crate::lifetime::drops::drop_later(old, self.0.header.runtime.as_ref());
         }
         decided(&self.0);
     }
@@ -292,18 +292,18 @@ impl<K: NodeValue> Reused<K> {
 
 /// Its creator's run has reclaimed `node`, refreshed if need be: it may run again (spec §7.2).
 pub(crate) fn decided<K: NodeValue>(node: &TypedNodeRef<K>) {
-    node.header.undecided.store(false, std::sync::atomic::Ordering::SeqCst);
+    node.header.keyed.undecided.store(false, std::sync::atomic::Ordering::SeqCst);
     let erased: NodeRef = node.clone();
     crate::protocol::resume(&erased);
 }
 
 /// What a keyed creation found in its creator's holdover.
 #[doc(hidden)]
-pub enum Reuse<K: NodeValue> {
+pub enum Reclaim<K: NodeValue> {
     /// A node with equal inputs: used as it is.
-    Same(Reused<K>),
+    Same(Reclaimed<K>),
     /// A node whose inputs changed: it takes the new ones and reruns.
-    Changed(Reused<K>),
+    Changed(Reclaimed<K>),
     /// Nothing to reclaim: a new node is created with the key.
     Fresh,
 }
@@ -316,10 +316,10 @@ pub(crate) struct Keyed {
 }
 
 impl Keyed {
-    pub(crate) fn new<K: NodeValue, T>(reuse: Reuse<K>, key: NodeKey<T>, inputs: Inputs) -> Keyed {
-        let reclaimed: Option<NodeRef> = match reuse {
-            Reuse::Same(Reused(node)) | Reuse::Changed(Reused(node)) => Some(node),
-            Reuse::Fresh => None,
+    pub(crate) fn new<K: NodeValue, T>(reclaim_or_create: Reclaim<K>, key: NodeKey<T>, inputs: Inputs) -> Keyed {
+        let reclaimed: Option<NodeRef> = match reclaim_or_create {
+            Reclaim::Same(Reclaimed(node)) | Reclaim::Changed(Reclaimed(node)) => Some(node),
+            Reclaim::Fresh => None,
         };
         Keyed { reclaimed, value: key.into_box(), inputs }
     }
@@ -336,7 +336,7 @@ pub(crate) struct KeyedSet(BTreeMap<KeyHash, Bucket>);
 
 impl KeyedSet {
     pub(crate) fn insert(&mut self, node: NodeRef) {
-        let hash: KeyHash = node.header().key.as_ref().map_or(0, |key: &Key| key.hash);
+        let hash: KeyHash = node.header().keyed.key.as_ref().map_or(0, |key: &Key| key.hash);
         self.0.entry(hash).or_default().push(node);
     }
 
@@ -399,12 +399,12 @@ impl KeyedSet {
 
 /// Whether `node`'s key equals `key`; runs the key type's `PartialEq`, so never under a lock.
 fn has_key(node: &NodeRef, key: &KeyRef<'_>) -> bool {
-    node.header().key.as_ref().is_some_and(|own: &Key| own.matches(key))
+    node.header().keyed.key.as_ref().is_some_and(|own: &Key| own.matches(key))
 }
 
 /// The creator of keyed creations made here: the node whose run is being polled, unless disposed.
 fn creator() -> Option<NodeRef> {
-    let run: Arc<RunShared> = context::creating_run()?;
+    let run: Arc<RunControl> = context::creating_run()?;
     run.node.upgrade()
 }
 
@@ -419,15 +419,13 @@ fn reclaim(key: &KeyRef<'_>, kind: Kind, value_type: TypeId, shape: &Shape, pare
         std::ptr::eq(candidate.site, site)
             && candidate.kind == kind
             && candidate.value_type == value_type
-            && candidate.fragility == shape.fragility
-            && candidate.ghost == shape.ghost
-            && candidate.flags == shape.flags
+            && candidate.shape == *shape
             && !candidate.is_ghost()
             && *candidate.parent_ids == *parent_ids
     };
     loop {
         let (candidates, created): (Vec<NodeRef>, Vec<NodeRef>) = {
-            let guard: crate::node::SchedGuard<'_> = header.lock_sched();
+            let guard: crate::graph::node::SchedGuard<'_> = header.lock_sched();
             if guard.closed {
                 return None;
             }
@@ -438,7 +436,7 @@ fn reclaim(key: &KeyRef<'_>, kind: Kind, value_type: TypeId, shape: &Shape, pare
         let found: Option<NodeRef> = match chosen {
             None => None,
             Some(node) => {
-                let mut guard: crate::node::SchedGuard<'_> = header.lock_sched();
+                let mut guard: crate::graph::node::SchedGuard<'_> = header.lock_sched();
                 if guard.closed {
                     return None;
                 }
@@ -462,14 +460,14 @@ pub(crate) fn unclaim(node: &NodeRef) {
     let released: Option<NodeRef> =
         creator.as_ref().and_then(|creator: &NodeRef| creator.header().lock_sched().keyed.remove(node.header().id));
     if let Some(released) = released {
-        crate::support::release_generation(vec![released]);
+        crate::lifetime::support::release_generation(vec![released]);
     }
 }
 
 /// Adds a fresh keyed node to its creator's set; returns the nodes there already whose key hashes
 /// alike, for [`is_duplicate`] once the lock is released.
-pub(crate) fn note_fresh(creator: &mut crate::node::Sched, node: &NodeRef) -> Vec<NodeRef> {
-    let hash: KeyHash = node.header().key.as_ref().map_or(0, |key: &Key| key.hash);
+pub(crate) fn note_fresh(creator: &mut crate::graph::node::Sched, node: &NodeRef) -> Vec<NodeRef> {
+    let hash: KeyHash = node.header().keyed.key.as_ref().map_or(0, |key: &Key| key.hash);
     let alike: Vec<NodeRef> = creator.keyed.bucket(hash, |_: &Header| true);
     creator.keyed.insert(node.clone());
     alike
@@ -478,7 +476,7 @@ pub(crate) fn note_fresh(creator: &mut crate::node::Sched, node: &NodeRef) -> Ve
 /// Whether one of `alike` has `node`'s key: a run created it twice; reported, never refused.
 pub(crate) fn is_duplicate(node: &NodeRef, alike: &[NodeRef]) -> bool {
     let header: &Header = node.header();
-    let Some(key) = header.key.as_ref() else {
+    let Some(key) = header.keyed.key.as_ref() else {
         return false;
     };
     let probe: KeyRef<'_> = KeyRef { site: header.site, hash: key.hash, value: &*key.value };
@@ -492,15 +490,15 @@ pub(crate) fn typed<K: NodeValue>(node: NodeRef) -> TypedNodeRef<K> {
     }
 }
 
-fn reuse<K: NodeValue>(
+fn reclaim_or_create<K: NodeValue>(
     key: &KeyRef<'_>,
     kind: Kind,
     shape: &Shape,
     parent_ids: &[NodeId],
     probes: &[&dyn Probe],
-) -> Reuse<K> {
+) -> Reclaim<K> {
     let Some(node) = reclaim(key, kind, TypeId::of::<K>(), shape, parent_ids) else {
-        return Reuse::Fresh;
+        return Reclaim::Fresh;
     };
     let node: TypedNodeRef<K> = typed(node);
     let same: bool = if kind == Kind::Source {
@@ -508,33 +506,33 @@ fn reuse<K: NodeValue>(
             .load_full()
             .is_some_and(|current: Arc<K>| probes.iter().all(|probe: &&dyn Probe| probe.matches(&*current)))
     } else {
-        node.header.inputs.lock().as_ref().is_some_and(|inputs: &Inputs| inputs.matches(probes))
+        node.header.keyed.inputs.lock().as_ref().is_some_and(|inputs: &Inputs| inputs.matches(probes))
     };
-    if same { Reuse::Same(Reused(node)) } else { Reuse::Changed(Reused(node)) }
+    if same { Reclaim::Same(Reclaimed(node)) } else { Reclaim::Changed(Reclaimed(node)) }
 }
 
 /// Looks up a keyed derived node; `probes` are its captures. Called by `effect!`.
 #[doc(hidden)]
-pub fn reuse_derived<K: NodeValue>(
+pub fn reclaim_derived<K: NodeValue>(
     key: &KeyRef<'_>,
     shape: &Shape,
     deps: &[NodeHandle],
     probes: &[&dyn Probe],
-) -> Reuse<K> {
+) -> Reclaim<K> {
     let mut parent_ids: Vec<NodeId> = deps.iter().map(|dep: &NodeHandle| dep.0.header().id).collect();
     parent_ids.sort_unstable();
     parent_ids.dedup();
-    reuse(key, Kind::Derived, shape, &parent_ids, probes)
+    reclaim_or_create(key, Kind::Derived, shape, &parent_ids, probes)
 }
 
 /// Looks up a keyed async source block; `probes` are its captures. Called by `effect!`.
 #[doc(hidden)]
-pub fn reuse_source_async<K: NodeValue>(key: &KeyRef<'_>, shape: &Shape, probes: &[&dyn Probe]) -> Reuse<K> {
-    reuse(key, Kind::AsyncSource, shape, &[], probes)
+pub fn reclaim_source_async<K: NodeValue>(key: &KeyRef<'_>, shape: &Shape, probes: &[&dyn Probe]) -> Reclaim<K> {
+    reclaim_or_create(key, Kind::AsyncSource, shape, &[], probes)
 }
 
 /// Looks up a keyed source node; `probe` is its new value. Called by `effect!`.
 #[doc(hidden)]
-pub fn reuse_source<K: NodeValue>(key: &KeyRef<'_>, shape: &Shape, probe: &dyn Probe) -> Reuse<K> {
-    reuse(key, Kind::Source, shape, &[], &[probe])
+pub fn reclaim_source<K: NodeValue>(key: &KeyRef<'_>, shape: &Shape, probe: &dyn Probe) -> Reclaim<K> {
+    reclaim_or_create(key, Kind::Source, shape, &[], &[probe])
 }

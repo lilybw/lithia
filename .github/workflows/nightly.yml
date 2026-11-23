@@ -30,17 +30,15 @@ jobs:
     outputs:
       tag: ${{ steps.assets.outputs.tag }}
     env:
-      RUST_TOOLCHAIN: "1.97.0"
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
+      # The toolchain and its components are rust-toolchain.toml's.
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
 

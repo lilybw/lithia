@@ -10,19 +10,20 @@ use std::sync::atomic::Ordering;
 use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicUsize, Mutex};
 use tokio::runtime::Handle;
 
-use crate::capture::{Captured, SharedLease};
 use crate::context;
-use crate::epoch::Scope;
-use crate::handles::{DerivedNode, NodeHandle, SourceNode};
-use crate::ids::{self, Atomic, NodeId, Place, RunId, Stamp, WriterId};
-use crate::keyed::{self, Inputs, Key, Keyed};
-use crate::node::{
-    Body, BodySlot, BoxFut, Header, Kind, Node, NodeRef, Parents, RateWindow, Sched, SchedGuard, TypedNodeRef,
-    WeakNodeRef, phase,
+use crate::diag::DiagState;
+use crate::expand::capture::{Captured, SharedLease};
+use crate::expand::keyed::{self, Inputs, Key, Keyed};
+use crate::graph::epoch::Scope;
+use crate::graph::ids::{self, Atomic, NodeId, Place, RunId, Stamp, WriterId};
+use crate::graph::node::{
+    Body, BodySlot, BoxFut, Header, KeyedState, Kind, Lifetime, Node, NodeRef, Parents, Sched, SchedGuard,
+    TypedNodeRef, WeakNodeRef, phase,
 };
+use crate::handles::{DerivedNode, NodeHandle, SourceNode};
 use crate::options::{Equals, Options};
-use crate::run::{RunShared, Yielder};
-use crate::{NodeValue, Readable, Site, protocol, settle_wait};
+use crate::run::{RunControl, Yielder};
+use crate::{NodeValue, Readable, Site, protocol, testing::progress};
 
 /// Type-erased dependency of a derived node; requires `Readable`.
 /// `let deps: [NodeHandle; 1] = [node_ref(&count)];`
@@ -87,10 +88,10 @@ fn refresh<K: NodeValue>(
     lease: Option<SharedLease>,
 ) {
     let header: &Header = &node.header;
-    crate::support::add_anchors(header, 1, || node.clone());
+    crate::lifetime::support::add_anchors(header, 1, || node.clone());
     let runtime: Option<Handle> = header.runtime.clone();
     if let Some(old) = node.adopt_equals(equals) {
-        crate::drops::drop_later(old, runtime.as_ref());
+        crate::lifetime::drops::drop_later(old, runtime.as_ref());
     }
     match header.kind {
         Kind::Source => {
@@ -107,32 +108,29 @@ fn refresh<K: NodeValue>(
         }
     }
     let old: BodySlot<K> = std::mem::replace(&mut *node.body.lock(), body);
-    let old_inputs: Option<Inputs> = header.inputs.lock().replace(inputs);
+    let old_inputs: Option<Inputs> = header.keyed.inputs.lock().replace(inputs);
     let erased: NodeRef = node.clone();
     if header.kind == Kind::AsyncSource {
         protocol::kill_run(&erased);
         // The old block stops: what it moved out counts from now on.
-        let old: Option<SharedLease> = std::mem::replace(&mut *header.lease.lock(), lease);
+        let old: Option<SharedLease> = std::mem::replace(&mut *header.lifetime.lease.lock(), lease);
         if let Some(old) = old {
             old.end();
         }
     }
     // A run the node owes already, gated until now, runs the new body: no rerun is needed for it.
-    let owed: bool = header.kind == Kind::Derived && {
-        let guard: SchedGuard<'_> = header.lock_sched();
-        guard.run.is_none() && guard.entries.values().any(|entry: &crate::node::Entry| entry.is_ready())
-    };
+    let owed: bool = header.kind == Kind::Derived && header.lock_sched().owes_a_run();
     if !owed {
         context::record_refresh(&erased);
     }
     if let Some(old) = old {
-        crate::drops::drop_later(old, runtime.as_ref());
+        crate::lifetime::drops::drop_later(old, runtime.as_ref());
     }
     if let Some(old) = old_inputs {
         old.release(runtime.as_ref());
     }
     // The unused initial value; only one whose drop can run user code leaves this thread.
-    crate::drops::drop_owned(value, runtime.as_ref());
+    crate::lifetime::drops::drop_owned(value, runtime.as_ref());
 }
 
 /// A lineage's writer identity: the creator's, the site, and the key or place among the site's
@@ -165,7 +163,7 @@ fn new_node<K: NodeValue>(
                     refresh(&node, value, body, inputs, options.equals, captured.2.clone());
                     keyed::decided(&node);
                     // The node keeps the key it was created with; this copy may carry user drop glue.
-                    crate::drops::drop_later(key, node.header.runtime.as_ref());
+                    crate::lifetime::drops::drop_later(key, node.header.runtime.as_ref());
                     return node;
                 }
                 // Its body would write other nodes now: a new node takes the key instead.
@@ -187,9 +185,9 @@ fn new_node<K: NodeValue>(
     }
     parents.sort_by_key(|p: &NodeRef| p.header().id);
     let parent_ids: Box<[NodeId]> = parents.iter().map(|p: &NodeRef| p.header().id).collect();
-    let run: Option<Arc<RunShared>> = context::creating_run();
+    let run: Option<Arc<RunControl>> = context::creating_run();
     let scope: Arc<Scope> = context::current_scope();
-    let creator: Option<NodeId> = run.as_ref().and_then(|r: &Arc<RunShared>| r.node_id);
+    let creator: Option<NodeId> = run.as_ref().and_then(|r: &Arc<RunControl>| r.node_id);
     let pending: bool = kind != Kind::Source;
     let mut targets: Vec<NodeRef> = Vec::new();
     for (node, writes) in &captured.0 {
@@ -197,7 +195,7 @@ fn new_node<K: NodeValue>(
             targets.push(node.clone());
         }
     }
-    let creator_node: Option<NodeRef> = run.as_ref().and_then(|r: &Arc<RunShared>| r.node.upgrade());
+    let creator_node: Option<NodeRef> = run.as_ref().and_then(|r: &Arc<RunControl>| r.node.upgrade());
     let id: NodeId = ids::next_node_id();
     let writer: WriterId = match (&run, &creator_node) {
         (Some(run), Some(creator)) => {
@@ -218,45 +216,41 @@ fn new_node<K: NodeValue>(
     let node: TypedNodeRef<K> = Arc::new(Node {
         header: Header {
             id,
-            writer,
             site,
             creator,
             kind,
             is_unit: Node::<K>::is_unit(),
+            value_type: std::any::TypeId::of::<K>(),
+            shape: options.shape,
             version: Atomic::new(Stamp::NONE),
             phase: AtomicU32::new(if pending { phase::PENDING } else { 0 }),
             failure: ArcCell::new(None),
             runs: Atomic::new(if kind == Kind::AsyncSource { RunId::FIRST } else { RunId::NONE }),
+            block_run: Atomic::new(if kind == Kind::AsyncSource { RunId::FIRST } else { RunId::NONE }),
             write: Mutex::new(()),
             sched: Mutex::new(Sched::new(kind != Kind::Source)),
             parents: Mutex::new(Some(parents.clone())),
             parent_ids,
-            fragility: options.shape.fragility,
-            ghost: options.shape.ghost,
-            flags: options.shape.flags,
+            targets: targets.iter().map(Arc::downgrade).collect(),
+            writer,
             runtime,
             sync_body,
             scope,
-            counted: AtomicBool::new(true),
             changes: Mutex::new(None),
-            rate: Mutex::new(RateWindow { start_ms: 0, count: 0, warned: false }),
-            anchors: AtomicUsize::new(1),
-            captured: AtomicUsize::new(0),
-            support: Mutex::new(None),
-            let_go: AtomicBool::new(false),
-            scoped: AtomicBool::new(false),
-            held_by: Mutex::new(None),
-            targets: targets.iter().map(Arc::downgrade).collect(),
-            writers: Mutex::new(Vec::new()),
-            warn_first_run,
-            under_way: AtomicBool::new(false),
-            value_type: std::any::TypeId::of::<K>(),
-            key,
-            inputs: Mutex::new(inputs),
-            block_run: Atomic::new(if kind == Kind::AsyncSource { RunId::FIRST } else { RunId::NONE }),
-            supportable,
-            undecided: AtomicBool::new(false),
-            lease: Mutex::new(if kind == Kind::AsyncSource { captured.2.clone() } else { None }),
+            lifetime: Lifetime {
+                counted: AtomicBool::new(true),
+                anchors: AtomicUsize::new(1),
+                captured: AtomicUsize::new(0),
+                support: Mutex::new(None),
+                let_go: AtomicBool::new(false),
+                scoped: AtomicBool::new(false),
+                supportable,
+                held_by: Mutex::new(None),
+                writers: Mutex::new(Vec::new()),
+                lease: Mutex::new(if kind == Kind::AsyncSource { captured.2.clone() } else { None }),
+            },
+            keyed: KeyedState { key, inputs: Mutex::new(inputs), undecided: AtomicBool::new(false) },
+            diag: DiagState::new(warn_first_run),
         },
         value: ArcCell::new(Some(Arc::new(value))),
         body: Mutex::new(body),
@@ -267,60 +261,49 @@ fn new_node<K: NodeValue>(
     // parents, it is disposed as disposal would have (spec §10.5).
     let orphan: bool = !parents.is_empty() && protocol::link(&erased, &parents);
     drop(parents);
-    let keyed: bool = erased.header().key.is_some();
+    let keyed: bool = erased.header().keyed.key.is_some();
     if keyed && top_level {
         crate::diag::key_outside_run(site);
     }
     if let Some(creator) = creator_node.as_ref() {
         let mut guard: SchedGuard<'_> = creator.header().lock_sched();
-        // Pruned once doubled since the last prune, so a run creating many nodes stays linear.
-        if guard.created.len() >= 2 * guard.created_floor.max(8) {
-            guard.created.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
-            guard.created_floor = guard.created.len();
-        }
-        guard.created.push(Arc::downgrade(&erased));
-        let mut alike: Vec<NodeRef> = Vec::new();
         if !guard.closed {
-            *erased.header().held_by.lock() = Some(Arc::downgrade(creator));
-            if keyed {
-                alike = keyed::note_fresh(&mut guard, &erased);
-            } else {
-                guard.generation.push(erased.clone());
-            }
+            *erased.header().lifetime.held_by.lock() = Some(Arc::downgrade(creator));
         }
+        let alike: Vec<NodeRef> = guard.note_created(&erased, keyed);
         drop(guard);
         if keyed::is_duplicate(&erased, &alike) {
             crate::diag::duplicate_key(site);
         }
         drop(alike);
-        settle_wait::bump();
+        progress::bump();
     }
     drop(creator_node);
     if supportable {
-        *erased.header().support.lock() = Some(erased.clone());
+        *erased.header().lifetime.support.lock() = Some(erased.clone());
         crate::diag::support_held(site);
     }
     // Once the node is held, so that its writer edges find it supported.
     if !targets.is_empty() {
-        crate::support::add_writer(&erased, &targets);
+        crate::lifetime::support::add_writer(&erased, &targets);
     }
     drop(targets);
     if kind != Kind::Source {
         context::record_creation(&erased);
     }
     if orphan {
-        crate::dispose::dispose_unchecked(&erased);
+        crate::lifetime::dispose::dispose_unchecked(&erased);
     }
     node
 }
 
 /// A one-shot block that ends its lease once it is dropped, with what it still owns (spec §4.2).
-struct Leased<T> {
+struct LeasedBlock<T> {
     block: Option<BoxFut<T>>,
     lease: SharedLease,
 }
 
-impl<T> Future for Leased<T> {
+impl<T> Future for LeasedBlock<T> {
     type Output = T;
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<T> {
@@ -331,7 +314,7 @@ impl<T> Future for Leased<T> {
     }
 }
 
-impl<T> Drop for Leased<T> {
+impl<T> Drop for LeasedBlock<T> {
     fn drop(&mut self) {
         drop(self.block.take());
         self.lease.end();
@@ -343,7 +326,7 @@ impl<T> Drop for Leased<T> {
 pub fn source<K: NodeValue>(site: &'static Site, value: K, options: Options<K>) -> SourceNode<K> {
     SourceNode {
         node: new_node(site, Kind::Source, &[], &Captured::default(), value, None, options),
-        internal: crate::handles::Count::new(false),
+        internal: crate::handles::HandleCount::new(false),
     }
 }
 
@@ -362,12 +345,12 @@ where
 {
     let block: BoxFut<K> = Box::pin(block);
     let body: Body<K> = Body::Once(match captured.2.clone() {
-        Some(lease) => Box::pin(Leased { block: Some(block), lease }),
+        Some(lease) => Box::pin(LeasedBlock { block: Some(block), lease }),
         None => block,
     });
     SourceNode {
         node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options),
-        internal: crate::handles::Count::new(false),
+        internal: crate::handles::HandleCount::new(false),
     }
 }
 
@@ -389,14 +372,14 @@ where
     let start: Box<dyn FnOnce(Yielder<K>) -> BoxFut<()> + Send> = Box::new(move |yielder: Yielder<K>| -> BoxFut<()> {
         let block: BoxFut<()> = Box::pin(block(yielder));
         match lease {
-            Some(lease) => Box::pin(Leased { block: Some(block), lease }),
+            Some(lease) => Box::pin(LeasedBlock { block: Some(block), lease }),
             None => block,
         }
     });
     let body: Body<K> = Body::OnceGen(start);
     SourceNode {
         node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options),
-        internal: crate::handles::Count::new(false),
+        internal: crate::handles::HandleCount::new(false),
     }
 }
 
@@ -417,7 +400,7 @@ where
     let body: Body<K> = Body::Sync(Arc::new(body));
     DerivedNode {
         node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
-        internal: crate::handles::Count::new(false),
+        internal: crate::handles::HandleCount::new(false),
     }
 }
 
@@ -439,7 +422,7 @@ where
     let body: Body<K> = Body::Async(Arc::new(move || -> BoxFut<K> { Box::pin(body()) }));
     DerivedNode {
         node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
-        internal: crate::handles::Count::new(false),
+        internal: crate::handles::HandleCount::new(false),
     }
 }
 
@@ -461,6 +444,6 @@ where
     let body: Body<K> = Body::Gen(Arc::new(move |yielder: Yielder<K>| -> BoxFut<()> { Box::pin(body(yielder)) }));
     DerivedNode {
         node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
-        internal: crate::handles::Count::new(false),
+        internal: crate::handles::HandleCount::new(false),
     }
 }

@@ -22,11 +22,25 @@ Changes reach `nightly` and `release` through pull requests; the maintainer may 
 | `crates/lithia` | `lithia` | The engine and its public API |
 | `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
 | `crates/validation` | `lithia-validation` | The spec's validation cases (§13), verbatim, and the compile-fail cases |
-| `crates/test` | `lithia-test` | Edge-case tests (`tests/edge/`, one module per area, built as one binary), the deep-chain test and the loom models |
+| `crates/test` | `lithia-test` | The helpers the test crates share (`src/`), the edge-case tests (`tests/edge/`, one module per area, built as one binary), the deep-chain test and the loom models (`tests/loom/`, likewise) |
 | `crates/bench` | `lithia-bench` | The spec's benchmarks (§15) |
 | `docs/spec` | | The design spec, one file per version |
 | `docs/tla` | | The TLA+ models of the scheduling protocol and of node lifetimes, and their TLC models |
 | `docs/site`, `.github/scripts` | | The docs site's styling, scripts and build |
+
+Inside `crates/lithia/src`:
+
+| Module | Holds |
+|---|---|
+| `api.rs`, `handles.rs`, `changes.rs`, `status.rs`, `site.rs`, `options.rs`, `value.rs` | The public API |
+| `expand/` | What the macro's expansions call: creation, keyed reclaim, captures, the hidden traits, the entry points |
+| `graph/` | The node record: ids and the clock, header, scheduler state, sets, epochs |
+| `protocol/` | The scheduling protocol (§7, §11.4): work done after unlocking, propagation, delivery, the run lifecycle, linking, defers |
+| `run/` | A run's future and control block, the yielder, tasks |
+| `lifetime/` | Operations, support and sweeps, disposal, teardown, deferred drops (§10) |
+| `exec/` | Spawning, the fast path, and the loom executor |
+| `testing/` | What `lithia::test` reads: settledness, its trace of created and written nodes, progress |
+| `context.rs`, `diag.rs`, `sync.rs` | The run context, diagnostics, and the lock and atomic types every module uses |
 
 ## Commands
 
@@ -50,7 +64,8 @@ every ready run a task of its own; CI runs the models both ways. `.cargo/config.
 `#[lithia::test]` under a timeout, so a `flush` or `settled` that never returns fails its test. A change
 to the scheduling protocol or to lifetimes updates its TLA+ model in [`docs/tla`](docs/tla) too.
 
-The compile-fail cases' expected errors depend on the compiler: CI uses rustc 1.97.0, and
+The compile-fail cases' expected errors depend on the compiler: CI uses the toolchain in
+`rust-toolchain.toml`, and
 `TRYBUILD=overwrite cargo test -p lithia-validation --test compile` updates them on that version.
 
 ## Conventions

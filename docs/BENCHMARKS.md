@@ -133,7 +133,7 @@ named rows.
 
 ### v0.4.0 fast path (2026-11-20)
 
-`crates/lithia/src/inline.rs`, spec §11.4 step 4. A run or runner task keeps the ready synchronous runs
+`crates/lithia/src/exec/fast_path.rs`, spec §11.4 step 4. A run or runner task keeps the ready synchronous runs
 of its own runtime that its steps hand on (up to 16 queued) and polls each as its own `RunFuture` in a
 loop, up to 32 runs or 50 µs; then cheap leftovers go on in one runner task and, after a heavy run, each
 gets its own task. A step readying several synchronous runs of one runtime packs them into runner tasks,

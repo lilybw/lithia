@@ -8,8 +8,8 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::ids::NodeId;
-use crate::node::NodeRef;
+use crate::graph::ids::NodeId;
+use crate::graph::node::NodeRef;
 use crate::sync::{Mutex, MutexGuard};
 
 /// A lease shared by the handles one `move` block took over.
@@ -26,9 +26,9 @@ crate::sync::thread_local! {
 
 /// The handles one `move` body took over, by node. A one-shot block ends its lease when it is
 /// dropped: the handles it moved out and that live on count as outside handles from then on.
-pub(crate) struct Lease(Mutex<Leased>);
+pub(crate) struct Lease(Mutex<LeaseState>);
 
-struct Leased {
+struct LeaseState {
     ended: bool,
     /// Live handles per node, and whether they anchor.
     held: Vec<(NodeRef, bool, usize)>,
@@ -37,7 +37,7 @@ struct Leased {
 impl Lease {
     /// Counts one more handle of `node` under the lease.
     pub(crate) fn take(&self, node: NodeRef, anchoring: bool) {
-        let mut guard: MutexGuard<'_, Leased> = self.0.lock();
+        let mut guard: MutexGuard<'_, LeaseState> = self.0.lock();
         let id: NodeId = node.header().id;
         match guard.held.iter_mut().find(|(held, _, _): &&mut (NodeRef, bool, usize)| held.header().id == id) {
             Some((_, _, count)) => *count += 1,
@@ -49,7 +49,7 @@ impl Lease {
     pub(crate) fn release(&self, node: NodeId) -> bool {
         let mut gone: Option<(NodeRef, bool, usize)> = None;
         let running: bool = {
-            let mut guard: MutexGuard<'_, Leased> = self.0.lock();
+            let mut guard: MutexGuard<'_, LeaseState> = self.0.lock();
             if !guard.ended
                 && let Some(at) =
                     guard.held.iter().position(|(held, _, _): &(NodeRef, bool, usize)| held.header().id == node)
@@ -67,25 +67,25 @@ impl Lease {
 
     /// Ends the lease: each handle still alive starts counting as an outside handle.
     pub(crate) fn end(&self) {
-        let _op: crate::support::OpGuard = crate::support::enter();
+        let _op: crate::lifetime::op::Operation = crate::lifetime::op::enter();
         let held: Vec<(NodeRef, bool, usize)> = {
-            let mut guard: MutexGuard<'_, Leased> = self.0.lock();
+            let mut guard: MutexGuard<'_, LeaseState> = self.0.lock();
             // Counted before the lease ends, so a leased handle another thread drops as an outside
             // handle afterwards takes off an anchor that is there.
             for (node, anchoring, count) in &guard.held {
                 if *anchoring {
-                    crate::support::add_anchors(node.header(), *count, || node.clone());
+                    crate::lifetime::support::add_anchors(node.header(), *count, || node.clone());
                 }
             }
             guard.ended = true;
             std::mem::take(&mut guard.held)
         };
         for (node, _, count) in held {
-            let header: &crate::node::Header = node.header();
-            let before: usize = header.captured.fetch_sub(count, Ordering::SeqCst);
+            let header: &crate::graph::node::Header = node.header();
+            let before: usize = header.lifetime.captured.fetch_sub(count, Ordering::SeqCst);
             debug_assert!(before >= count, "lithia: a lease uncounted {count} of {before} captures");
             if before == count {
-                crate::support::check_unread(header);
+                crate::lifetime::support::check_unread(header);
             }
         }
     }
@@ -97,10 +97,10 @@ pub(crate) fn lease() -> SharedLease {
         .try_with(|lease: &RefCell<Option<SharedLease>>| {
             lease
                 .borrow_mut()
-                .get_or_insert_with(|| Arc::new(Lease(Mutex::new(Leased { ended: false, held: Vec::new() }))))
+                .get_or_insert_with(|| Arc::new(Lease(Mutex::new(LeaseState { ended: false, held: Vec::new() }))))
                 .clone()
         })
-        .unwrap_or_else(|_| Arc::new(Lease(Mutex::new(Leased { ended: false, held: Vec::new() }))))
+        .unwrap_or_else(|_| Arc::new(Lease(Mutex::new(LeaseState { ended: false, held: Vec::new() }))))
 }
 
 fn take_lease() -> Option<SharedLease> {
@@ -151,12 +151,12 @@ pub struct Captured(pub(crate) Recorded, Vec<NodeRef>, pub(crate) Option<SharedL
 impl Drop for Captured {
     fn drop(&mut self) {
         // Handles moved into the body stop counting only now, after creation registered its edges.
-        let _op: crate::support::OpGuard = crate::support::enter();
+        let _op: crate::lifetime::op::Operation = crate::lifetime::op::enter();
         for node in std::mem::take(&mut self.1) {
-            let before: usize = node.header().anchors.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            let before: usize = node.header().lifetime.anchors.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             debug_assert!(before > 0, "lithia: a moved handle dropped an anchor it did not hold");
             if before == 1 {
-                crate::support::start(node);
+                crate::lifetime::support::raise(node);
             }
         }
     }
@@ -181,7 +181,7 @@ impl Capturing {
 
     /// Makes one capture; `read_only` marks every node it records as read-only.
     pub fn take<T>(&self, read_only: bool, f: impl FnOnce() -> T) -> T {
-        if read_only { crate::capture::read_only(f) } else { f() }
+        if read_only { crate::expand::capture::read_only(f) } else { f() }
     }
 
     /// Ends capture mode and returns what was recorded.

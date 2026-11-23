@@ -10,7 +10,7 @@ use crate::sync::{AtomicUsize, Mutex, MutexGuard};
 use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
 
-use crate::ids::{EpochId, NodeId, ScopeId, WriterId, next_epoch_id, next_scope_id};
+use crate::graph::ids::{EpochId, NodeId, ScopeId, WriterId, next_epoch_id, next_scope_id};
 
 /// Root of a subtree of epochs: a lithia task, or any other task or thread.
 pub(crate) struct Scope {
@@ -156,7 +156,7 @@ impl Tokens {
             }
             epoch.close_tokens(count as usize);
         }
-        crate::settle_wait::bump();
+        crate::testing::progress::bump();
     }
 }
 
@@ -219,7 +219,7 @@ impl Epoch {
     }
 
     /// Records that `writer`'s run wrote `written` in this epoch.
-    pub(crate) fn record_write(&self, writer: WriterId, written: NodeId) {
+    pub(crate) fn log_write(&self, writer: WriterId, written: NodeId) {
         let mut guard: MutexGuard<'_, Vec<(WriterId, NodeId)>> = self.writes.lock();
         if !guard.contains(&(writer, written)) {
             guard.push((writer, written));

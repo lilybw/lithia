@@ -9,25 +9,7 @@ use std::time::Duration;
 use lithia::{Changes, DerivedNode, Site, SourceNode, Status, effect};
 use tracing::Level;
 
-use crate::events::{Captured, events};
-
-/// Waits up to `limit` for an event at `level` whose text contains every needle.
-async fn find(level: Level, needles: &[&str], limit: Duration) -> Option<Captured> {
-    let events: Arc<Mutex<Vec<Captured>>> = events();
-    let deadline: tokio::time::Instant = tokio::time::Instant::now() + limit;
-    loop {
-        let found: Option<Captured> = events
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|e: &&Captured| e.level == level && needles.iter().all(|n: &&str| e.text.contains(n)))
-            .cloned();
-        if found.is_some() || tokio::time::Instant::now() >= deadline {
-            return found;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-}
+use lithia_test::{Captured, events, find};
 
 fn site_of(status: Status) -> Option<Site> {
     match status {

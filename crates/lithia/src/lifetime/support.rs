@@ -3,12 +3,12 @@
 
 //! Support: what keeps top-level nodes alive without a handle, and the sweeps that let go of them.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::Ordering;
 
-use crate::ids::NodeId;
-use crate::node::{ChangeSender, Header, NodeRef, Parents, WeakNodeRef};
+use crate::graph::ids::NodeId;
+use crate::graph::node::{ChangeSender, Header, NodeRef, Parents, WeakNodeRef};
+use crate::lifetime::op::Operation;
 use crate::sync::{Mutex, MutexGuard};
 
 #[cfg(not(lithia_loom))]
@@ -26,24 +26,6 @@ const START_BUDGET: usize = 64;
 static ANY_SCOPED: crate::sync::Padded<std::sync::atomic::AtomicBool> =
     crate::sync::Padded(std::sync::atomic::AtomicBool::new(false));
 
-/// Starting points raised on this thread, and references to drop, handled when the outermost
-/// operation ends.
-struct Op {
-    depth: u32,
-    running: bool,
-    starts: Vec<NodeRef>,
-    /// References a walk took, dropped once the caller's locks are released.
-    keep: Vec<NodeRef>,
-    /// Nodes no creator holds any more, started again once released references are dropped.
-    resumes: Vec<WeakNodeRef>,
-}
-
-crate::sync::thread_local! {
-    static OP: RefCell<Op> = const {
-        RefCell::new(Op { depth: 0, running: false, starts: Vec::new(), keep: Vec::new(), resumes: Vec::new() })
-    };
-}
-
 /// Nodes support let go of that still live. A walk can hold something again only while there are some.
 #[allow(clippy::disallowed_types)] // a hint that skips work; loom models always do the work
 static LET_GO: crate::sync::Padded<std::sync::atomic::AtomicUsize> =
@@ -55,49 +37,17 @@ fn any_let_go() -> bool {
     cfg!(lithia_loom) || LET_GO.load(Ordering::SeqCst) != 0
 }
 
-/// An operation that drops references; its sweeps run when the outermost one ends, and the
-/// payloads they free are queued together once they have run.
-pub(crate) struct OpGuard {
-    _drops: crate::drops::Batch,
-}
-
-/// Enters an operation on this thread.
-pub(crate) fn enter() -> OpGuard {
-    #[cfg(lithia_loom)]
-    crate::model::busy();
-    let drops: crate::drops::Batch = crate::drops::batch();
-    let _ = OP.try_with(|op: &RefCell<Op>| op.borrow_mut().depth += 1);
-    OpGuard { _drops: drops }
-}
-
-impl Drop for OpGuard {
-    fn drop(&mut self) {
-        let outermost: bool = OP
-            .try_with(|op: &RefCell<Op>| {
-                let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
-                op.depth -= 1;
-                op.depth == 0 && !op.running
-            })
-            .unwrap_or(false);
-        if outermost {
-            run();
-        }
-        #[cfg(lithia_loom)]
-        crate::model::idle();
-    }
-}
-
 /// Whether `header`'s node is an anchor: not a ghost, with an anchoring outside handle.
 pub(crate) fn is_anchor(header: &Header) -> bool {
-    !header.is_ghost() && header.anchors.load(Ordering::SeqCst) > 0
+    !header.is_ghost() && header.lifetime.anchors.load(Ordering::SeqCst) > 0
 }
 
 /// Counts `count` more anchors on `node`. A count rises from zero only under the sweep lock, so a
 /// sweep never sees one rise in its midst, and the rise holds again what support let go of (spec §10.1).
 pub(crate) fn add_anchors(header: &Header, count: usize, node: impl FnOnce() -> NodeRef) {
-    let mut seen: usize = header.anchors.load(Ordering::SeqCst);
+    let mut seen: usize = header.lifetime.anchors.load(Ordering::SeqCst);
     while seen != 0 {
-        match header.anchors.compare_exchange_weak(seen, seen + count, Ordering::SeqCst, Ordering::SeqCst) {
+        match header.lifetime.anchors.compare_exchange_weak(seen, seen + count, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(_) => return,
             Err(now) => seen = now,
         }
@@ -106,11 +56,11 @@ pub(crate) fn add_anchors(header: &Header, count: usize, node: impl FnOnce() -> 
     let mut held: Vec<&'static crate::Site> = Vec::new();
     {
         let _lock: MutexGuard<'_, ()> = SWEEP.lock();
-        if header.anchors.fetch_add(count, Ordering::SeqCst) == 0 && !header.is_ghost() && any_let_go() {
+        if header.lifetime.anchors.fetch_add(count, Ordering::SeqCst) == 0 && !header.is_ghost() && any_let_go() {
             rehold(node(), &mut keep, &mut held);
         }
     }
-    finish(keep, held);
+    release_walk(keep, held);
 }
 
 /// Adds `node` to the writer lists of `targets` under the sweep lock; a supported writer then holds
@@ -121,13 +71,13 @@ pub(crate) fn add_writer(node: &NodeRef, targets: &[NodeRef]) {
     {
         let _lock: MutexGuard<'_, ()> = SWEEP.lock();
         for target in targets {
-            target.header().writers.lock().push(std::sync::Arc::downgrade(node));
+            target.header().lifetime.writers.lock().push(std::sync::Arc::downgrade(node));
         }
         if any_let_go() && !node.header().is_ghost() && Search::default().supported(node, &mut keep) {
             rehold(node.clone(), &mut keep, &mut held);
         }
     }
-    finish(keep, held);
+    release_walk(keep, held);
 }
 
 /// Under the sweep lock, holds again `from` and what support let go of downstream of it, stopping
@@ -144,10 +94,11 @@ fn rehold(from: NodeRef, keep: &mut Vec<NodeRef>, held: &mut Vec<&'static crate:
             continue;
         }
         // A node support holds holds what hangs off it already, unless a scoped node blocks that.
-        let stop: bool = header.scoped.load(Ordering::SeqCst) || is_held(header) || search.blocked(&current, keep);
-        if !stop && header.supportable {
-            *header.support.lock() = Some(current.clone());
-            if header.let_go.swap(false, Ordering::SeqCst) {
+        let stop: bool =
+            header.lifetime.scoped.load(Ordering::SeqCst) || is_held(header) || search.blocked(&current, keep);
+        if !stop && header.lifetime.supportable {
+            *header.lifetime.support.lock() = Some(current.clone());
+            if header.lifetime.let_go.swap(false, Ordering::SeqCst) {
                 let before: usize = LET_GO.fetch_sub(1, Ordering::SeqCst);
                 debug_assert!(before > 0, "lithia: more let-go nodes held again than let go");
             }
@@ -162,28 +113,19 @@ fn rehold(from: NodeRef, keep: &mut Vec<NodeRef>, held: &mut Vec<&'static crate:
 
 /// Reports what a walk held again and drops its references, at the end of the operation if one is
 /// under way, so never under a caller's lock.
-fn finish(keep: Vec<NodeRef>, held: Vec<&'static crate::Site>) {
+fn release_walk(keep: Vec<NodeRef>, held: Vec<&'static crate::Site>) {
     for site in held {
         crate::diag::support_held(site);
     }
     if keep.is_empty() {
         return;
     }
-    let mut keep: Option<Vec<NodeRef>> = Some(keep);
-    let _ = OP.try_with(|op: &RefCell<Op>| {
-        let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
-        if (op.depth > 0 || op.running)
-            && let Some(keep) = keep.take()
-        {
-            op.keep.extend(keep);
-        }
-    });
-    drop(keep);
+    drop(crate::lifetime::op::keep_to_end(keep));
 }
 
 /// Forgets a freed node that support had let go of.
 pub(crate) fn freed(header: &Header) {
-    if header.let_go.swap(false, Ordering::SeqCst) {
+    if header.lifetime.let_go.swap(false, Ordering::SeqCst) {
         let before: usize = LET_GO.fetch_sub(1, Ordering::SeqCst);
         debug_assert!(before > 0, "lithia: more let-go nodes freed than let go");
     }
@@ -191,33 +133,17 @@ pub(crate) fn freed(header: &Header) {
 
 /// Whether support currently holds the node.
 pub(crate) fn is_held(header: &Header) -> bool {
-    header.support.lock().is_some()
+    header.lifetime.support.lock().is_some()
 }
 
 /// Records that `node` may have lost support; sweeps at once unless an operation is under way.
-pub(crate) fn start(node: NodeRef) {
+pub(crate) fn raise(node: NodeRef) {
     if !needs_sweep(&node) {
         return;
     }
-    let mut node: Option<NodeRef> = Some(node);
-    let now: Option<bool> = OP
-        .try_with(|op: &RefCell<Op>| {
-            let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
-            if let Some(node) = node.take() {
-                op.starts.push(node);
-            }
-            op.depth == 0 && !op.running
-        })
-        .ok();
-    match now {
-        Some(true) => run(),
-        Some(false) => {}
-        None => {
-            // This thread is shutting down: sweep inline.
-            if let Some(node) = node.take() {
-                drop(sweep(vec![node]));
-            }
-        }
+    if let Some(node) = crate::lifetime::op::raise(node) {
+        // This thread is shutting down: sweep inline.
+        drop(sweep(vec![node]));
     }
 }
 
@@ -227,59 +153,13 @@ fn needs_sweep(node: &NodeRef) -> bool {
     if is_held(header) || !header.targets.is_empty() {
         return true;
     }
-    let guard: crate::node::SchedGuard<'_> = header.lock_sched();
-    !guard.subscribers.is_empty() || guard.holds_creations()
-}
-
-/// Sweeps until no starting point is left; references are dropped outside the sweep lock.
-fn run() {
-    let entered: bool = OP
-        .try_with(|op: &RefCell<Op>| {
-            let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
-            if op.running {
-                false
-            } else {
-                op.running = true;
-                true
-            }
-        })
-        .unwrap_or(false);
-    if !entered {
-        return;
-    }
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            let _ = OP.try_with(|op: &RefCell<Op>| op.borrow_mut().running = false);
-        }
-    }
-    let _reset: Reset = Reset;
-    loop {
-        let (keep, starts, resumes): (Vec<NodeRef>, Vec<NodeRef>, Vec<WeakNodeRef>) = OP
-            .try_with(|op: &RefCell<Op>| {
-                let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
-                (std::mem::take(&mut op.keep), std::mem::take(&mut op.starts), std::mem::take(&mut op.resumes))
-            })
-            .unwrap_or_default();
-        if keep.is_empty() && starts.is_empty() && resumes.is_empty() {
-            break;
-        }
-        drop(keep);
-        if !starts.is_empty() {
-            drop(sweep(starts));
-        }
-        // Last, so that a node the sweeps freed gets no task.
-        for weak in resumes {
-            if let Some(node) = weak.upgrade() {
-                crate::protocol::resume(&node);
-            }
-        }
-    }
+    let guard: crate::graph::node::SchedGuard<'_> = header.lock_sched();
+    guard.has_subscribers() || guard.holds_creations()
 }
 
 /// Lets go of every node held by support that no anchor reaches any more; returns the
 /// references taken, for the caller to drop after the sweep lock is released.
-fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
+pub(crate) fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     let mut keep: Vec<NodeRef> = Vec::new();
     let raised: usize = starts.len();
     let lock: MutexGuard<'_, ()> = SWEEP.lock();
@@ -322,9 +202,9 @@ fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
         let header: &Header = node.header();
         if is_held(header)
             && !search.supported(node, &mut keep)
-            && let Some(me) = header.support.lock().take()
+            && let Some(me) = header.lifetime.support.lock().take()
         {
-            if !header.let_go.swap(true, Ordering::SeqCst) {
+            if !header.lifetime.let_go.swap(true, Ordering::SeqCst) {
                 LET_GO.fetch_add(1, Ordering::SeqCst);
             }
             crate::diag::support_released(header.site);
@@ -357,13 +237,13 @@ fn unread(header: &Header) -> Option<&'static crate::Site> {
     if header.is_unit
         || !is_held(header)
         || !header.targets.is_empty()
-        || header.anchors.load(Ordering::SeqCst) > 0
-        || header.captured.load(Ordering::SeqCst) > 0
+        || header.lifetime.anchors.load(Ordering::SeqCst) > 0
+        || header.lifetime.captured.load(Ordering::SeqCst) > 0
     {
         return None;
     }
     let readers: bool = header.changes.lock().as_ref().is_some_and(|sender: &ChangeSender| sender.receiver_count() > 0);
-    (!readers && header.lock_sched().subscribers.is_empty()).then_some(header.site)
+    (!readers && !header.lock_sched().has_subscribers()).then_some(header.site)
 }
 
 /// Nodes support flows to from `node`: children, its generation, and the nodes it may write.
@@ -381,7 +261,7 @@ fn predecessors(node: &NodeRef, keep: &mut Vec<NodeRef>) -> Vec<NodeRef> {
     let header: &Header = node.header();
     let mut out: Vec<NodeRef> = parents(node);
     {
-        let mut writers: MutexGuard<'_, Vec<WeakNodeRef>> = header.writers.lock();
+        let mut writers: MutexGuard<'_, Vec<WeakNodeRef>> = header.lifetime.writers.lock();
         writers.retain(|weak: &WeakNodeRef| match weak.upgrade() {
             Some(writer) => {
                 out.push(writer);
@@ -390,7 +270,7 @@ fn predecessors(node: &NodeRef, keep: &mut Vec<NodeRef>) -> Vec<NodeRef> {
             None => false,
         });
     }
-    if let Some(creator) = header.held_by.lock().as_ref().and_then(WeakNodeRef::upgrade) {
+    if let Some(creator) = header.lifetime.held_by.lock().as_ref().and_then(WeakNodeRef::upgrade) {
         out.push(creator);
     }
     keep.extend(out.iter().cloned());
@@ -439,7 +319,7 @@ impl Search {
             let trusted: bool = self.trust && !self.region.contains_key(&header.id) && is_held(header);
             if is_anchor(header) || (trusted && current.header().id != id) {
                 found = true;
-            } else if !header.scoped.load(Ordering::SeqCst) && !self.blocked(&current, keep) {
+            } else if !header.lifetime.scoped.load(Ordering::SeqCst) && !self.blocked(&current, keep) {
                 for before in predecessors(&current, keep) {
                     match self.supported.get(&before.header().id) {
                         Some(true) => found = true,
@@ -500,7 +380,7 @@ impl Search {
             let list: Parents = parents(&top);
             let direct: bool = list.iter().any(|parent: &NodeRef| {
                 let parent: &Header = parent.header();
-                (parent.scoped.load(Ordering::SeqCst) && !is_anchor(parent))
+                (parent.lifetime.scoped.load(Ordering::SeqCst) && !is_anchor(parent))
                     || self.blocked.get(&parent.id).copied().unwrap_or(false)
             });
             let unresolved: Vec<NodeRef> = list
@@ -526,19 +406,19 @@ impl Search {
 /// Marks `node` scoped: support and its run's generation let go of it, and only its own
 /// handles support it from now on.
 pub(crate) fn scope(node: &NodeRef) {
-    let _op: OpGuard = enter();
+    let _op: Operation = crate::lifetime::op::enter();
     let header: &Header = node.header();
     ANY_SCOPED.store(true, Ordering::SeqCst);
-    header.scoped.store(true, Ordering::SeqCst);
-    let me: Option<NodeRef> = header.support.lock().take();
+    header.lifetime.scoped.store(true, Ordering::SeqCst);
+    let me: Option<NodeRef> = header.lifetime.support.lock().take();
     if me.is_some() {
         crate::diag::support_released(header.site);
     }
-    let creator: Option<NodeRef> = header.held_by.lock().take().and_then(|weak: WeakNodeRef| weak.upgrade());
+    let creator: Option<NodeRef> = header.lifetime.held_by.lock().take().and_then(|weak: WeakNodeRef| weak.upgrade());
     let released: Option<NodeRef> =
         creator.as_ref().and_then(|creator: &NodeRef| creator.header().lock_sched().remove_creation(header.id));
-    defer_resume(node);
-    start(node.clone());
+    crate::lifetime::op::defer_resume(node);
+    raise(node.clone());
     drop(released);
     drop(creator);
     drop(me);
@@ -549,26 +429,10 @@ pub(crate) fn release_generation(members: Vec<NodeRef>) {
     if members.is_empty() {
         return;
     }
-    let _op: OpGuard = enter();
+    let _op: Operation = crate::lifetime::op::enter();
     for member in members {
-        *member.header().held_by.lock() = None;
-        defer_resume(&member);
-        start(member);
-    }
-}
-
-/// Starts `node` again once the current operation has dropped what it released: no creator gates
-/// it now (spec §7.2, Creator order).
-pub(crate) fn defer_resume(node: &NodeRef) {
-    let weak: WeakNodeRef = std::sync::Arc::downgrade(node);
-    let queued: bool = OP
-        .try_with(|op: &RefCell<Op>| {
-            let mut op: std::cell::RefMut<'_, Op> = op.borrow_mut();
-            op.resumes.push(weak);
-            op.depth == 0 && !op.running
-        })
-        .unwrap_or(false);
-    if queued {
-        run();
+        *member.header().lifetime.held_by.lock() = None;
+        crate::lifetime::op::defer_resume(&member);
+        raise(member);
     }
 }

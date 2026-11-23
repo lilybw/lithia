@@ -71,7 +71,7 @@ warning catch the leaks.
 - The TLA+ models (`docs/tla`) leave out creator order, fragility, reflow, generators,
   `WHOLE_EPOCHS`, keyed nodes, disposal and ghosts, and check small graphs only. `MCDiamond` has
   finished once in CI (26 147 949 states, depth 109, 3 h 57 min, no error); runners differ in speed,
-  so CI stops it after 270 minutes and passes it if it found no error by then. The loom models (`crates/test/tests/loom.rs`) run with at
+  so CI stops it after 270 minutes and passes it if it found no error by then. The loom models (`crates/test/tests/loom/`) run with at
   most three preemptions on each push and four on nightly.
 - cargo-mutants has run over the engine only as a local sample (29 mutants of `support.rs`); it
   runs over all of it weekly from v0.5.0.

@@ -11,7 +11,7 @@ help: the trait `lithia::__private::Capture` is not implemented for `Token`
    | ^^^^^^^^^^^^
    = note: wrap the part that is not `Clone` in `Arc` and capture node handles beside it, or write `move` and manage the capture yourself
 note: required by a bound in `lithia::__private::CaptureAny::__lithia_capture`
-  --> $WORKSPACE/crates/lithia/src/value.rs
+  --> $WORKSPACE/crates/lithia/src/expand/traits.rs
    |
    |     fn __lithia_capture(&self) -> Self
    |        ---------------- required by a bound in this associated function

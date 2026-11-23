@@ -3,7 +3,7 @@
 
 //! Small sets used by the scheduler: writer sets and parent masks (spec §5, §7.4).
 
-use crate::ids::WriterId;
+use crate::graph::ids::WriterId;
 
 /// The writers on the chains that reached an entry or run; sorted and unique.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

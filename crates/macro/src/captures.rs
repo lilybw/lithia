@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use proc_macro2::{Ident, Spacing, TokenStream, TokenTree};
 use syn::parse::{ParseStream, Parser};
 use syn::punctuated::Punctuated;
+use syn::visit_mut::VisitMut;
 use syn::{Block, Expr, Macro, Pat, Stmt, Token};
 
 /// Macros that format their arguments, by the position of their format string; `{count}` inside
@@ -890,15 +891,49 @@ pub(crate) fn inline_args(text: &str) -> Vec<String> {
 fn push_name(out: &mut Vec<String>, name: &str) {
     let valid: bool = name.chars().next().is_some_and(|c: char| c.is_ascii_alphabetic() || c == '_')
         && name.chars().all(|c: char| c.is_ascii_alphanumeric() || c == '_');
-    if valid && is_lowercase(name) && !out.iter().any(|existing: &String| existing == name) {
+    // `{self}` names the receiver, which a body captures as a clone.
+    if valid && (is_lowercase(name) || name == "self") && !out.iter().any(|existing: &String| existing == name) {
         out.push(name.to_string());
     }
 }
 
-/// Replaces `self` with `__self` in a token stream, leaving `self::` paths alone.
-pub(crate) fn rewrite_self(tokens: TokenStream) -> TokenStream {
+/// Renames a body's `self` to `__self`, the clone it captures; nested items keep their own `self`,
+/// and `self::` paths are left alone.
+pub(crate) struct RewriteSelf;
+
+impl VisitMut for RewriteSelf {
+    fn visit_expr_path_mut(&mut self, node: &mut syn::ExprPath) {
+        let path: &mut syn::Path = &mut node.path;
+        if node.qself.is_none() && path.leading_colon.is_none() && path.segments.len() == 1 {
+            let segment: &mut syn::PathSegment = &mut path.segments[0];
+            if segment.ident == "self" && segment.arguments.is_none() {
+                segment.ident = Ident::new("__self", segment.ident.span());
+            }
+        }
+    }
+
+    fn visit_item_mut(&mut self, _: &mut syn::Item) {}
+
+    fn visit_macro_mut(&mut self, node: &mut Macro) {
+        let name: String =
+            node.path.segments.last().map(|segment: &syn::PathSegment| segment.ident.to_string()).unwrap_or_default();
+        // A formatting macro's format string, or a tracing macro's message, may name `self` inline.
+        let format: Option<Option<usize>> =
+            match FORMAT_MACROS.iter().find(|(known, _): &&(&str, usize)| *known == name) {
+                Some((_, at)) => Some(Some(*at)),
+                None => TRACING_MACROS.contains(&name.as_str()).then_some(None),
+            };
+        node.tokens = rename_self_tokens(std::mem::take(&mut node.tokens), format);
+    }
+}
+
+/// A macro's tokens with `self` renamed as plain tokens, since they need not parse; `format` names the
+/// argument holding the format string, or, as `Some(None)`, the first lone string literal.
+fn rename_self_tokens(tokens: TokenStream, format: Option<Option<usize>>) -> TokenStream {
     let trees: Vec<TokenTree> = tokens.into_iter().collect();
     let mut out: Vec<TokenTree> = Vec::with_capacity(trees.len());
+    let mut argument: usize = 0;
+    let mut renamed_format: bool = false;
     for (index, tree) in trees.iter().enumerate() {
         match tree {
             TokenTree::Ident(ident) if ident == "self" => {
@@ -906,28 +941,77 @@ pub(crate) fn rewrite_self(tokens: TokenStream) -> TokenStream {
                     (trees.get(index + 1), trees.get(index + 2)),
                     (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b))) if a.as_char() == ':' && b.as_char() == ':'
                 );
-                if path_follows {
-                    out.push(tree.clone());
+                out.push(if path_follows {
+                    tree.clone()
                 } else {
-                    out.push(TokenTree::Ident(Ident::new("__self", ident.span())));
-                }
+                    TokenTree::Ident(Ident::new("__self", ident.span()))
+                });
             }
             TokenTree::Group(group) => {
                 let mut rebuilt: proc_macro2::Group =
-                    proc_macro2::Group::new(group.delimiter(), rewrite_self(group.stream()));
+                    proc_macro2::Group::new(group.delimiter(), rename_self_tokens(group.stream(), None));
                 rebuilt.set_span(group.span());
                 out.push(TokenTree::Group(rebuilt));
             }
+            TokenTree::Literal(literal) if !renamed_format => {
+                let alone: bool = (index == 0 || punct(&trees[index - 1]) == Some(','))
+                    && trees.get(index + 1).is_none_or(|next: &TokenTree| punct(next) == Some(','));
+                let at_format: bool = match format {
+                    Some(Some(at)) => argument == at && alone,
+                    Some(None) => alone && syn::parse2::<syn::LitStr>(tree.clone().into()).is_ok(),
+                    None => false,
+                };
+                renamed_format |= at_format;
+                let renamed: Option<proc_macro2::Literal> = at_format
+                    .then(|| rename_inline_self(&literal.to_string()))
+                    .flatten()
+                    .and_then(|text: String| text.parse::<proc_macro2::Literal>().ok());
+                out.push(match renamed {
+                    Some(mut renamed) => {
+                        renamed.set_span(literal.span());
+                        TokenTree::Literal(renamed)
+                    }
+                    None => tree.clone(),
+                });
+            }
             other => out.push(other.clone()),
+        }
+        if punct(tree) == Some(',') {
+            argument += 1;
         }
     }
     out.into_iter().collect()
+}
+
+/// A string literal's source with each inline `{self}` or `{self:…}` argument renamed `__self`.
+fn rename_inline_self(text: &str) -> Option<String> {
+    let mut out: String = String::with_capacity(text.len() + 8);
+    let mut changed: bool = false;
+    let mut rest: &str = text;
+    while let Some(at) = rest.find('{') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if rest.starts_with("{{") {
+            out.push_str("{{");
+            rest = &rest[2..];
+        } else if rest.starts_with("{self") && matches!(rest.as_bytes().get(5), Some(b'}' | b':')) {
+            out.push_str("{__self");
+            rest = &rest[5..];
+            changed = true;
+        } else {
+            out.push('{');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    changed.then_some(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proc_macro2::Span;
+    use quote::ToTokens;
 
     fn captured(src: &str) -> Vec<String> {
         let expr: Expr = syn::parse_str(src).expect("parses");
@@ -1099,5 +1183,42 @@ mod tests {
     fn inline_arg_parsing() {
         assert_eq!(inline_args("{a} {b:>4} {} {0} {{c}} {Upper}"), vec!["a", "b"]);
         assert_eq!(inline_args("{:>width$} {v:.prec$} {0:1$}"), vec!["width", "v", "prec"]);
+    }
+
+    fn rewritten(src: &str) -> String {
+        let mut expr: Expr = syn::parse_str(src).expect("parses");
+        RewriteSelf.visit_expr_mut(&mut expr);
+        expr.to_token_stream().to_string()
+    }
+
+    #[test]
+    fn self_inline_in_a_format_string_is_a_use_of_self() {
+        let expr: Expr = syn::parse_str(r#"format!("{self:?} {{self}}")"#).expect("parses");
+        let mut captures: Captures = Captures::new();
+        captures.expr(&expr);
+        assert!(captures.uses_self);
+        let nested: Expr =
+            syn::parse_str("{ struct T(u8); impl T { fn f(&self) -> u8 { self.0 } } 1 }").expect("parses");
+        let mut captures: Captures = Captures::new();
+        captures.expr(&nested);
+        assert!(!captures.uses_self, "a nested item's `self` is its own");
+    }
+
+    #[test]
+    fn rewriting_self_leaves_nested_items_and_self_paths_alone() {
+        let out: String = rewritten(
+            r#"{ use std::fmt::{self}; impl T { fn f(&self) {} } let a = self.a; self::g(); format!("{self:?} {{self}}") }"#,
+        );
+        assert!(out.contains("use std :: fmt :: { self }"), "{out}");
+        assert!(out.contains("fn f (& self)"), "{out}");
+        assert!(out.contains("let a = __self . a"), "{out}");
+        assert!(out.contains("self :: g ()"), "{out}");
+        assert!(out.contains(r#""{__self:?} {{self}}""#), "{out}");
+    }
+
+    #[test]
+    fn rewriting_self_renames_only_the_format_string() {
+        let out: String = rewritten(r#"assert_eq!(self.a, "{self}", "{self}")"#);
+        assert!(out.contains(r#"__self . a , "{self}" , "{__self}""#), "{out}");
     }
 }

@@ -23,7 +23,7 @@ help: the following other types implement trait `Readable`
   | readable!(Accessor);
   | ------------------- in this macro invocation
 note: required by a bound in `lithia::__private::node_ref`
- --> $WORKSPACE/crates/lithia/src/create.rs
+ --> $WORKSPACE/crates/lithia/src/expand/create.rs
   |
   | pub fn node_ref<R: Readable>(handle: &R) -> NodeHandle {
   |                    ^^^^^^^^ required by this bound in `node_ref`

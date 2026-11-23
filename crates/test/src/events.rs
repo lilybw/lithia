@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! Every tracing event emitted in this binary, collected by its one global subscriber.
+//! Every tracing event emitted in a test binary, collected by its one global subscriber.
 
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
@@ -51,4 +52,33 @@ pub fn events() -> Arc<Mutex<Vec<Captured>>> {
             events
         })
         .clone()
+}
+
+/// Whether an event at `level` whose text contains every needle has arrived.
+pub fn reported(level: Level, needles: &[&str]) -> bool {
+    events().lock().unwrap().iter().any(|event: &Captured| matches(event, level, needles))
+}
+
+/// Waits up to `limit` for an event at `level` whose text contains every needle.
+pub async fn find(level: Level, needles: &[&str], limit: Duration) -> Option<Captured> {
+    let events: Arc<Mutex<Vec<Captured>>> = events();
+    let deadline: tokio::time::Instant = tokio::time::Instant::now() + limit;
+    loop {
+        let found: Option<Captured> =
+            events.lock().unwrap().iter().find(|event: &&Captured| matches(event, level, needles)).cloned();
+        if found.is_some() || tokio::time::Instant::now() >= deadline {
+            return found;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Whether a warning containing `text` and naming line `line` of `file` arrives within `limit`.
+pub async fn warned(file: &str, text: &str, line: u32, limit: Duration) -> bool {
+    let at: String = format!("{file}:{line}:");
+    find(Level::WARN, &[text, &at], limit).await.is_some()
+}
+
+fn matches(event: &Captured, level: Level, needles: &[&str]) -> bool {
+    event.level == level && needles.iter().all(|needle: &&str| event.text.contains(needle))
 }

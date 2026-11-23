@@ -9,7 +9,7 @@
 (*                                                                         *)
 (* Processes are outside writers (one batch each), run tasks (Slots per    *)
 (* node) and cut reruns. Each step below is one lock section or one atomic *)
-(* operation of crates/lithia/src/protocol.rs, run.rs and epoch.rs; a      *)
+(* operation of crates/lithia/src/protocol/, run/ and graph/epoch.rs; a    *)
 (* process's pending frames and releases are sets, so they are handled in  *)
 (* every order, a superset of the engine's.                                *)
 (*                                                                         *)
@@ -94,7 +94,7 @@ RelTo(n, e, ca, wr) == {[f |-> n, t |-> c, e |-> e, ca |-> ca, wr |-> wr] : c \i
 RunOwes(s, e) == s.run.on /\ e \in DOMAIN s.run.sv /\ ~s.run.sv[e].rel
 InhOwes(s, e) == e \in DOMAIN s.inh /\ ~s.inh[e].rel
 
-\* settle (protocol.rs): close the entry; release the children unless a run still owes them.
+\* settle (protocol/propagate.rs): close the entry; release the children unless a run still owes them.
 Settle(n, e, s, w) ==
     LET en == s.ent[e]
         Merge(r) == [r EXCEPT !.ca = Max(@, en.ca), !.wr = @ \cup en.wr]
@@ -106,7 +106,7 @@ Settle(n, e, s, w) ==
               ELSE [w EXCEPT !.rl = @ \cup RelTo(n, e, en.ca, en.wr)]
     IN <<s2, [w1 EXCEPT !.cl[e] = @ + 1]>>
 
-\* join_run (protocol.rs): the entry's epoch joins the run in flight, which releases it with its
+\* join_run (protocol/propagate.rs): the entry's epoch joins the run in flight, which releases it with its
 \* first item or when it ends; the entry's token goes with it.
 Join(n, e, s, w) ==
     LET en == s.ent[e]
@@ -119,7 +119,7 @@ Join(n, e, s, w) ==
 \* A run in flight that has not released yet: its first poll is still to be marked.
 Unreleased(s) == s.run.on /\ \E f \in DOMAIN s.run.sv : ~s.run.sv[f].rel
 
-\* decide (protocol.rs): a ready entry is cut, settles unchanged, starts a run or supersedes one. An
+\* decide (protocol/propagate.rs): a ready entry is cut, settles unchanged, starts a run or supersedes one. An
 \* unchanged entry that carries a change absorbed by a run started after it joins that run; once the
 \* run has released, the entry settles with the node's version, so its children test the change.
 Decide(n, e, s, w) ==
@@ -147,8 +147,9 @@ DecideAll(n, es, s, w) ==
          IN DecideAll(n, Tail(es), r[1], r[2])
 
 -----------------------------------------------------------------------------
-(* The epoch tree (epoch.rs): own counts open entries, sub adds child      *)
-(* epochs with open work, and the scope counts root epochs with open work. *)
+(* The epoch tree (graph/epoch.rs): own counts open entries, sub adds      *)
+(* child epochs with open work, and the scope counts root epochs with open *)
+(* work.                                                                   *)
 
 RECURSIVE SubInc(_, _, _, _)
 SubInc(s, sc, e, par) ==
@@ -178,7 +179,7 @@ FramePC == {"w_frame", "t_frame", "h_frame"}
 DrainPC == {"w_drain", "t_drain", "t_mdrain", "t_fdrain", "h_drain"}
 ClosePC == {"w_close", "t_close", "t_end", "h_close"}
 
-\* frame (protocol.rs), one child under its lock.
+\* frame (protocol/propagate.rs), one child under its lock.
 FrameStep(p) ==
     /\ pc[p] \in FramePC
     /\ \E x \in fr[p] :
@@ -206,7 +207,7 @@ FrameEnd(p) ==
                                  [] OTHER -> "h_eval"]
     /\ UNCHANGED <<timeV, nodeV, epV, fr, sp, hk, cl, cd, miscV, loc>>
 
-\* release_children (protocol.rs), one child under its lock.
+\* release_children (protocol/propagate.rs), one child under its lock.
 ReleaseStep(p) ==
     /\ pc[p] \in DrainPC
     /\ \E m \in rl[p] :
@@ -245,7 +246,7 @@ Pending(p, e) ==
       [] pc[p] = "t_close" -> cl[p][e]
       [] OTHER -> cl[p][e] + cd[p][e]
 
-\* close_tokens (epoch.rs): the last open entry settles the epoch, which starts its cut reruns,
+\* close_tokens (graph/epoch.rs): the last open entry settles the epoch, which starts its cut reruns,
 \* each in a new child epoch, before the epoch's own count leaves the tree.
 CloseStep(p) ==
     /\ pc[p] \in ClosePC
@@ -327,7 +328,8 @@ W_Deliver(p) ==
             /\ UNCHANGED <<spawned, suppIn, hookFree, anomaly, glitch, loc>>
 
 -----------------------------------------------------------------------------
-(* Run tasks (run.rs RunFuture, protocol.rs start_run, after_poll, finalize). *)
+(* Run tasks (run/future.rs RunFuture; protocol/lifecycle.rs start_run,    *)
+(* after_poll, finalize).                                                  *)
 
 \* q still owes c a release in e: an entry, a run or handover holding e, or one under way.
 OwesTo(q, c, e) ==
@@ -368,7 +370,7 @@ T_Start(p) ==
     /\ UNCHANGED <<clock, version, relAt, epV, workV, spawned, undelivered, hookFree, anomaly>>
 
 \* One poll of the body: it may write its targets and, when it ends, publish a changed value,
-\* which is discarded if the run was superseded by then (run.rs Node::publish). A node without
+\* which is discarded if the run was superseded by then (run/future.rs publish). A node without
 \* children never changes: nothing could observe it, so the model saves those states; nor does a
 \* node outside Changing.
 T_Poll(p) ==
@@ -529,7 +531,7 @@ T_Resume(p) ==
     /\ UNCHANGED <<timeV, nodeV, epV, workV, miscV>>
 
 -----------------------------------------------------------------------------
-(* Cut reruns (protocol.rs rerun_cut), started when their epoch settles.   *)
+(* Cut reruns (protocol/propagate.rs rerun_cut), when their epoch settles. *)
 
 H_Supp(p) ==
     /\ pc[p] = "h_supp"

@@ -6,7 +6,6 @@
 mod async_gen;
 mod capture;
 mod diagnostics;
-mod events;
 mod keyed;
 mod lifetime;
 mod propagation;

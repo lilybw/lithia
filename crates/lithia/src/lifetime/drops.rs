@@ -12,7 +12,7 @@ use std::sync::mpsc;
 
 use tokio::runtime::Handle;
 
-use crate::node::{NodeRef, Parents};
+use crate::graph::node::{NodeRef, Parents};
 use crate::run::PanicPayload;
 
 crate::sync::thread_local! {
@@ -84,7 +84,7 @@ type Pending = (Option<Handle>, Payload);
 /// A value or body on its way to be dropped, type-erased.
 type Payload = Box<dyn Any + Send>;
 
-/// Deferred drops gathered on this thread while a batch is open.
+/// Deferred drops gathered on this thread while a gather is open.
 #[cfg(not(lithia_loom))]
 struct Bag {
     depth: u32,
@@ -96,30 +96,30 @@ std::thread_local! {
     static BAG: RefCell<Bag> = const { RefCell::new(Bag { depth: 0, pending: Vec::new() }) };
 }
 
-/// Most payloads a batch holds before handing them on, so a long step keeps its garbage bounded.
+/// Most payloads a gather holds before handing them on, so a long step keeps its garbage bounded.
 #[cfg(not(lithia_loom))]
 const BAG_LIMIT: usize = 64;
 
 /// Gathers this thread's deferred drops while alive, then queues them as one task per runtime;
 /// counts on this thread, so it is not `Send`.
-pub(crate) struct Batch {
+pub(crate) struct DropBatch {
     #[cfg(not(lithia_loom))]
     counted: bool,
     _thread: std::marker::PhantomData<*const ()>,
 }
 
-/// Opens a drop batch on this thread; batches nest, and the outermost one hands the drops on.
-pub(crate) fn batch() -> Batch {
+/// Opens a drop gather on this thread; batches nest, and the outermost one hands the drops on.
+pub(crate) fn gather() -> DropBatch {
     #[cfg(not(lithia_loom))]
-    return Batch {
+    return DropBatch {
         counted: BAG.try_with(|bag: &RefCell<Bag>| bag.borrow_mut().depth += 1).is_ok(),
         _thread: std::marker::PhantomData,
     };
     #[cfg(lithia_loom)]
-    return Batch { _thread: std::marker::PhantomData };
+    return DropBatch { _thread: std::marker::PhantomData };
 }
 
-impl Drop for Batch {
+impl Drop for DropBatch {
     fn drop(&mut self) {
         #[cfg(not(lithia_loom))]
         if self.counted {
@@ -152,7 +152,7 @@ fn drop_on_pool<T: Send + 'static>(payload: T, runtime: Option<&Handle>) {
         .ok()
         .flatten();
     if let Some(payload) = loose {
-        dispatch(runtime.cloned(), Parcel { payloads: vec![payload] });
+        post(runtime.cloned(), Parcel { payloads: vec![payload] });
     }
     if let Some(full) = full {
         send(full);
@@ -176,12 +176,12 @@ fn send(pending: Vec<Pending>) {
         }
     }
     for (runtime, parcel) in parcels {
-        dispatch(runtime, parcel);
+        post(runtime, parcel);
     }
 }
 
 #[cfg(not(lithia_loom))]
-fn dispatch(runtime: Option<Handle>, parcel: Parcel) {
+fn post(runtime: Option<Handle>, parcel: Parcel) {
     match runtime {
         Some(handle) => {
             drop(handle.spawn_blocking(move || parcel.run()));
@@ -201,7 +201,7 @@ struct Parcel {
 impl Parcel {
     fn run(mut self) {
         // What these drops free in turn, such as nodes whose last handle a value held, goes together.
-        let _drops: Batch = batch();
+        let _drops: DropBatch = gather();
         for payload in std::mem::take(&mut self.payloads) {
             run_drop(Some(payload));
             let before: usize = QUEUED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);

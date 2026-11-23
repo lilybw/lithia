@@ -8,10 +8,11 @@
 (* writer edges, scoping, freeing, and sweeps under the sweep lock.        *)
 (*                                                                         *)
 (* Each step is one atomic operation or one lock section of                *)
-(* crates/lithia/src/support.rs, capture.rs, handles.rs, create.rs or      *)
-(* node.rs. A sweep reads anchor counts while other threads drop handles,  *)
-(* so it may see any anchor that fell during it. Freeing is a step of its  *)
-(* own, taken by any thread once nothing holds the node.                   *)
+(* crates/lithia/src/lifetime/support.rs, handles.rs, expand/capture.rs,   *)
+(* expand/create.rs or graph/node.rs. A sweep reads anchor counts while    *)
+(* other threads drop handles, so it may see any anchor that fell during   *)
+(* it. Freeing is a step of its own, taken by any thread once nothing      *)
+(* holds the node.                                                         *)
 (*                                                                         *)
 (* Left out: values, scheduling, keyed nodes and holdovers (which support  *)
 (* treats like a generation), disposal and ghosts.                         *)
@@ -194,7 +195,7 @@ LeaseEnd(t) ==
     /\ ended' = TRUE
     /\ UNCHANGED <<made, live, heldBy, gen, reg, scoped, bodies, creating, queue, taken, keep, lock, snap>>
 
-\* support.rs scope: support and the creator let go of the node, which is a starting point.
+\* lifetime/support.rs scope: support and the creator let go of the node, which is a starting point.
 Scope(t, n) ==
     /\ Outside(t)
     /\ n \in Scopable /\ n \notin scoped /\ hold[t][n] > 0
@@ -219,7 +220,7 @@ CreatorRun(t, c) ==
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, reg, scoped, bodies,
                    creating, taken, keep, lock, snap>>
 
-\* create.rs: the node, linked to its parents, with its handle; its creator's run, or the creating
+\* expand/create.rs: the node, linked to its parents, with its handle; its creator's run, or the creating
 \* code, holds what its body captures and the creator while it is created.
 CreateAlloc(t, n) ==
     /\ Outside(t)
@@ -264,7 +265,7 @@ CreateRegister(t) ==
 -----------------------------------------------------------------------------
 (* lithia's own steps. *)
 
-\* node.rs Drop on the thread that let go of the last reference: it leaves its parents, its body
+\* graph/node.rs Drop on the thread that let go of the last reference: it leaves its parents, its body
 \* is queued to drop, its targets are starting points, and its generation is released.
 Free(t, n) ==
     /\ n \in live /\ Refs(n) = 0
@@ -297,7 +298,7 @@ SweepBegin(t) ==
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, heldBy, gen, reg,
                    scoped, bodies, creating, keep, budget>>
 
-\* support.rs sweep. Counts only fall while the lock is held, so it reads every anchor it had at
+\* lifetime/support.rs sweep. Counts only fall while the lock is held, so it reads every anchor it had at
 \* some point: any of those that fell may still count. A start's exact check may give up.
 SweepEnd(t) ==
     /\ lock = t

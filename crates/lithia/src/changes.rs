@@ -12,7 +12,7 @@ use futures_core::Stream;
 use tokio_stream::wrappers::WatchStream;
 
 use crate::NodeValue;
-use crate::node::{ChangeSender, ChangeSeq, TypedNodeRef, WeakTypedNodeRef};
+use crate::graph::node::{ChangeSender, ChangeSeq, TypedNodeRef, WeakTypedNodeRef};
 
 /// `Unpin` `Stream<Item = Arc<K>>` of a node's values, current value first; holds the node weakly.
 /// `while let Some(v) = changes.next().await { println!("{v}"); }`
@@ -78,7 +78,7 @@ impl<K: NodeValue> Drop for Changes<K> {
         if self.inner.take().is_some()
             && let Some(node) = self.node.upgrade()
         {
-            crate::support::check_unread(&node.header);
+            crate::lifetime::support::check_unread(&node.header);
         }
     }
 }

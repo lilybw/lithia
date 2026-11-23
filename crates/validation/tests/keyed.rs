@@ -4,15 +4,12 @@
 //! Validation cases BD–BK: keyed nodes reclaimed across a creator's runs (spec §10.1, §13).
 //! Every case runs under the workspace's test timeout (`.cargo/config.toml`).
 
-use std::fmt::Write as _;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use lithia::{DerivedNode, SourceNode, effect};
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing::Level;
 
 #[derive(Clone, PartialEq, Debug)]
 struct Row {
@@ -24,47 +21,9 @@ fn row(id: u32, title: &str) -> Row {
     Row { id, title: title.to_string() }
 }
 
-/// The level and text of every event emitted in this binary.
-type Events = Arc<Mutex<Vec<(Level, String)>>>;
-
-/// The events collected so far, collecting from the first call on.
-fn events() -> Events {
-    struct Fields(String);
-    impl Visit for Fields {
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            let _ = write!(self.0, "{}={:?} ", field.name(), value);
-        }
-        fn record_str(&mut self, field: &Field, value: &str) {
-            let _ = write!(self.0, "{}={} ", field.name(), value);
-        }
-    }
-    struct Collector(Events);
-    impl<S: Subscriber> Layer<S> for Collector {
-        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-            let mut fields: Fields = Fields(String::new());
-            event.record(&mut fields);
-            self.0.lock().unwrap().push((*event.metadata().level(), fields.0));
-        }
-    }
-    static EVENTS: OnceLock<Events> = OnceLock::new();
-    EVENTS
-        .get_or_init(|| {
-            let events: Events = Arc::new(Mutex::new(Vec::new()));
-            let subscriber: tracing_subscriber::layer::Layered<Collector, tracing_subscriber::Registry> =
-                tracing_subscriber::registry().with(Collector(events.clone()));
-            tracing::subscriber::set_global_default(subscriber).expect("one global subscriber");
-            events
-        })
-        .clone()
-}
-
 /// Whether an event at `level` containing `text` and naming a site in this file has arrived.
 fn reported(level: Level, text: &str) -> bool {
-    events()
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(at, event): &(Level, String)| *at == level && event.contains(text) && event.contains("keyed.rs:"))
+    lithia_test::reported(level, &[text, "keyed.rs:"])
 }
 
 fn texts(list: &DerivedNode<Vec<DerivedNode<String>>>) -> Vec<String> {
@@ -197,7 +156,7 @@ async fn case_bf_new_parents_make_a_new_node() {
 // Case BG: duplicate keys are matched in creation order and warned about.
 #[lithia::test]
 async fn case_bg_duplicate_keys_match_in_order() {
-    let _events: Events = events();
+    let _ = lithia_test::events();
     let rows: SourceNode<Vec<Row>> = effect!(vec![row(1, "a"), row(1, "b")]);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let list: DerivedNode<Vec<DerivedNode<String>>> = effect!(|rows| {
@@ -335,7 +294,7 @@ async fn case_bi_a_superseded_run_hands_its_keyed_nodes_on() {
 // Case BJ: a key outside any body has nothing to reclaim; the node is created as usual.
 #[lithia::test]
 async fn case_bj_a_key_outside_a_body() {
-    let _events: Events = events();
+    let _ = lithia_test::events();
     let base: usize = lithia::test::live_nodes().await;
     let made: Vec<SourceNode<u32>> = (0..2).map(|_| effect!(7u32, key = 1u8)).collect();
     made[0].set(8);

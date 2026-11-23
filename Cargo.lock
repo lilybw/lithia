@@ -175,9 +175,9 @@ name = "lithia-validation"
 version = "0.5.0"
 dependencies = [
  "lithia",
+ "lithia-test",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "trybuild",
 ]
 

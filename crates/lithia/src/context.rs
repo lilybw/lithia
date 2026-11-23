@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, Weak};
 
-use crate::epoch::{Epoch, Scope, ScopeToken};
-use crate::ids::{NodeId, Stamp};
-use crate::node::{NodeRef, WeakNodeRef};
-use crate::run::RunShared;
+use crate::graph::epoch::{Epoch, Scope, ScopeToken};
+use crate::graph::ids::{NodeId, Stamp};
+use crate::graph::node::{NodeRef, WeakNodeRef};
+use crate::run::RunControl;
 
 /// A function deferred until an epoch settles.
 pub(crate) struct Deferred {
@@ -54,7 +54,7 @@ pub(crate) enum Target {
     /// An outside batch in this scope: a lithia task, or blocking work it started.
     Scope(Arc<Scope>),
     /// A node's run, polled or doing blocking work: child epochs while in flight, an outside batch after.
-    Run(Arc<RunShared>),
+    Run(Arc<RunControl>),
 }
 
 /// One batch being collected.
@@ -129,7 +129,7 @@ pub(crate) fn with_frame<R>(f: impl FnOnce(Option<&Frame>) -> R) -> R {
 }
 
 /// The run that creates here: the one being polled, or the one whose blocking work this is.
-pub(crate) fn creating_run() -> Option<Arc<RunShared>> {
+pub(crate) fn creating_run() -> Option<Arc<RunControl>> {
     with_frame(|frame: Option<&Frame>| match frame.map(|f: &Frame| &f.target) {
         Some(Target::Run(run)) => Some(run.clone()),
         _ => None,
@@ -263,18 +263,14 @@ fn note_written(node: &NodeRef) {
     let Some(writer) = writer else {
         return;
     };
-    let header: &crate::node::Header = writer.header();
+    let header: &crate::graph::node::Header = writer.header();
     let target: *const () = Arc::as_ptr(node).cast::<()>();
     let edge: bool = std::ptr::eq(Arc::as_ptr(&writer).cast::<()>(), target)
         || header.targets.iter().any(|weak: &WeakNodeRef| std::ptr::eq(weak.as_ptr().cast::<()>(), target));
     if edge {
         return;
     }
-    let mut guard: crate::node::SchedGuard<'_> = header.lock_sched();
-    guard.wrote.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
-    if !guard.wrote.iter().any(|weak: &WeakNodeRef| std::ptr::eq(weak.as_ptr().cast::<()>(), target)) {
-        guard.wrote.push(Arc::downgrade(node));
-    }
+    crate::testing::trace::note_wrote(&mut header.lock_sched().trace, node);
 }
 
 /// Whether the running body's writes to `node` are left alone: a cut writer's rerun (spec §7.4).

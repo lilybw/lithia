@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use lithia::{DerivedNode, NodeValue, SourceNode, effect};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Scaler {
     factor: u32,
 }
@@ -18,6 +18,23 @@ impl Scaler {
         effect!(|n| *n.get() * self.factor)
     }
 
+    /// `self` inline in a format string, beside a nested item and a `use` that have their own `self`.
+    fn describe(&self, n: &SourceNode<u32>) -> DerivedNode<String> {
+        let n: SourceNode<u32> = n.clone();
+        effect!(|n| {
+            use std::fmt::{self, Write as _};
+            struct Twice(u32);
+            impl fmt::Display for Twice {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    write!(f, "{}", self.0 * 2)
+                }
+            }
+            let mut out: String = format!("{self:?}");
+            let _ = write!(out, " {}", Twice(*n.get()));
+            out
+        })
+    }
+
     fn scale_later(&self, n: &SourceNode<u32>) -> DerivedNode<u32> {
         let n: SourceNode<u32> = n.clone();
         effect!(async |n| {
@@ -25,6 +42,14 @@ impl Scaler {
             *n.get() * self.factor
         })
     }
+}
+
+#[lithia::test]
+async fn self_in_a_format_string_is_the_clone_and_nested_items_keep_theirs() {
+    let n: SourceNode<u32> = effect!(2);
+    let described: DerivedNode<String> = Scaler { factor: 10 }.describe(&n);
+    lithia::test::settled(&n).await;
+    assert_eq!(*described.get(), "Scaler { factor: 10 } 4");
 }
 
 #[lithia::test]

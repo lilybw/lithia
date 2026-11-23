@@ -5,12 +5,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
-use crate::capture::SharedLease;
 use crate::context;
-use crate::ids::NodeId;
-use crate::node::{ChangeSender, Header, NodeRef, Parents, WeakNodeRef, phase};
+use crate::graph::ids::NodeId;
+use crate::graph::node::{ChangeSender, Header, NodeRef, Parents, WeakNodeRef, phase};
+use crate::lifetime::teardown::detach;
 use crate::protocol;
 use crate::sync::MutexGuard;
 
@@ -26,7 +25,7 @@ pub(crate) fn dispose_unchecked(root: &NodeRef) {
     if root.header().is_ghost() {
         return;
     }
-    let _op: crate::support::OpGuard = crate::support::enter();
+    let _op: crate::lifetime::op::Operation = crate::lifetime::op::enter();
 
     // Every descendant, in NodeId order, which is topological.
     let mut closure: BTreeMap<NodeId, NodeRef> = BTreeMap::new();
@@ -86,11 +85,11 @@ pub(crate) fn dispose_unchecked(root: &NodeRef) {
     // Support may be lost downstream: by the freed nodes' targets, generations and surviving children.
     for node in &freed {
         for target in node.header().targets.iter().filter_map(WeakNodeRef::upgrade) {
-            crate::support::start(target);
+            crate::lifetime::support::raise(target);
         }
     }
     for node in &survivors {
-        crate::support::start(node.clone());
+        crate::lifetime::support::raise(node.clone());
     }
     let reruns: Vec<WeakNodeRef> = survivors
         .iter()
@@ -127,38 +126,15 @@ fn teardown(node: &NodeRef) -> Vec<NodeRef> {
     protocol::retire(node);
     // The children linked by the time it closes, under the lock `link` takes: a child linked later
     // finds the node closed.
-    let (generation, linked): (Vec<NodeRef>, Vec<NodeRef>) = {
-        let mut guard: crate::node::SchedGuard<'_> = header.lock_sched();
-        guard.closed = true;
-        let linked: Vec<NodeRef> = guard.subscribers.values().filter_map(WeakNodeRef::upgrade).collect();
-        (guard.release_all(), linked)
-    };
-    let me: Option<NodeRef> = header.support.lock().take();
+    let (generation, linked): (Vec<NodeRef>, Vec<NodeRef>) = header.lock_sched().close();
+    let me: Option<NodeRef> = header.lifetime.support.lock().take();
     if me.is_some() {
         crate::diag::support_released(header.site);
     }
-    let parents: Option<Parents> = header.parents.lock().take();
-    if let Some(list) = parents.as_ref() {
-        for parent in list {
-            parent.header().unsubscribe(header.id);
-        }
-    }
     let sender: Option<ChangeSender> = header.changes.lock().take();
     drop(sender);
-    if header.counted.swap(false, Ordering::SeqCst) {
-        let before: usize = header.scope.live.fetch_sub(1, Ordering::SeqCst);
-        debug_assert!(before > 0, "lithia: scope {} counted fewer live nodes than it holds", header.scope.id);
-    }
     node.release_payload();
-    // Handles its block moved out count before disposal recomputes support.
-    let lease: Option<SharedLease> = header.lease.lock().take();
-    if let Some(lease) = lease {
-        lease.end();
-    }
-    crate::support::release_generation(generation);
-    if let Some(list) = parents {
-        crate::drops::release_parents(list);
-    }
+    detach(header).release(generation);
     drop(me);
     linked
 }

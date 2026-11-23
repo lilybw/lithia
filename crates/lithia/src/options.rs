@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::NodeValue;
-use crate::keyed::{Inputs, Keyed, NodeKey, Reuse};
+use crate::expand::keyed::{Inputs, Keyed, NodeKey, Reclaim};
 
 /// How a derived node reacts to failed parents (spec §9.2); not set means never.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -58,6 +58,14 @@ bitflags::bitflags! {
 pub const ALWAYS_PROPAGATE: Flags = Flags::ALWAYS_PROPAGATE;
 /// Runs only once every epoch that has reached the node is ready at it (spec §8).
 pub const WHOLE_EPOCHS: Flags = Flags::WHOLE_EPOCHS;
+
+/// The option constants, re-exported at the crate root and glob-imported around option values.
+pub mod consts {
+    pub use super::{
+        ALWAYS_PROPAGATE, FRAGILE, ON_GHOST_CAUSE_FAILURE, ON_GHOST_EMIT_LATEST, ON_GHOST_SET_AS_PENDING, SEMI_FRAGILE,
+        WHOLE_EPOCHS,
+    };
+}
 
 /// Comparator for the `equals` option, where `true` means equal.
 pub(crate) type Equals<K> = Arc<dyn Fn(&K, &K) -> bool + Send + Sync>;
@@ -117,11 +125,11 @@ impl<K> Options<K> {
     }
 
     /// Sets the key, with what the lookup by key found and the captures to keep (spec §4.7).
-    pub fn keyed<T>(mut self, reuse: Reuse<K>, key: NodeKey<T>, inputs: Inputs) -> Self
+    pub fn keyed<T>(mut self, reclaim: Reclaim<K>, key: NodeKey<T>, inputs: Inputs) -> Self
     where
         K: NodeValue,
     {
-        self.keyed = Some(Keyed::new(reuse, key, inputs));
+        self.keyed = Some(Keyed::new(reclaim, key, inputs));
         self
     }
 }

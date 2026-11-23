@@ -11,8 +11,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use crate::epoch::Tokens;
-use crate::node::{NodeRef, WeakNodeRef};
+use crate::graph::epoch::Tokens;
+use crate::graph::node::{NodeRef, WeakNodeRef};
 
 /// Ready synchronous runs grouped by runtime, to pack into runner tasks.
 type Packs = Vec<(RuntimeKey, Vec<NodeRef>)>;
@@ -298,7 +298,7 @@ impl Future for Runner {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this: &mut Runner = self.get_mut();
         // Its runs' deferred drops are queued together when the poll ends (spec §10.3).
-        let _drops: crate::drops::Batch = crate::drops::batch();
+        let _drops: crate::lifetime::drops::DropBatch = crate::lifetime::drops::gather();
         match open(this.runtime) {
             Some(open) => open.run(cx, &mut this.queue),
             None => {
@@ -326,16 +326,7 @@ impl Drop for Runner {
 }
 
 fn spawn_task(runtime: Option<tokio::runtime::Handle>, task: RunTask) {
-    #[cfg(lithia_loom)]
-    {
-        let _ = runtime;
-        crate::model::spawn(task);
-    }
-    #[cfg(not(lithia_loom))]
-    match runtime {
-        Some(handle) => drop(handle.spawn(task)),
-        None => drop(task),
-    }
+    crate::exec::spawn::spawn(runtime.as_ref(), task, crate::exec::spawn::Orphan::Drop);
 }
 
 /// Loom models take the fast path unless `LITHIA_LOOM_FAST_PATH=off`, so CI checks both paths.

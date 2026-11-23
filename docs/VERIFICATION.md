@@ -10,7 +10,7 @@ commands to run them, and [`known_bugs.md`](known_bugs.md) lists what they have 
 | --- | --- | --- |
 | Validation cases A–BW (spec §13) | `crates/validation/tests` | `ci.yml`, on every platform |
 | Edge-case tests, one module per area, and the random differential test | `crates/test/tests/edge` | `ci.yml` |
-| Loom models of the real engine | `crates/test/tests/loom.rs` | `ci.yml` at bound 3, `extended.yml` at bound 4 |
+| Loom models of the real engine, one module per area | `crates/test/tests/loom` | `ci.yml` at bound 3, `extended.yml` at bound 4 |
 | TLA+ models of scheduling and lifetimes | `docs/tla` | `ci.yml`; the two largest in `extended.yml`, `MCDiamond` for 270 minutes |
 | Kept mutations, cargo-mutants | `.github/scripts/mutations.py` | `extended.yml`; cargo-mutants weekly |
 | Stress runs of every test binary | `.github/scripts/stress.sh` | `extended.yml`, on Linux x86-64 and ARM and macOS |
@@ -40,7 +40,7 @@ runs the real engine: the main thread delivers batches and polls runs, worker th
 it, and the model checks the final values once everything settles. Lifetime models also check each
 scope's live count.
 
-- Models: 51, in `crates/test/tests/loom.rs`. Each one's doc comment says what it races and which case
+- Models: 51, in `crates/test/tests/loom/`. Each one's doc comment says what it races and which case
   it covers.
 - Paths: every model runs with the fast path and again with `LITHIA_LOOM_FAST_PATH=off`, which gives
   every ready run a task of its own.
@@ -165,7 +165,7 @@ failed run. A failure in a test listed in `.github/scripts/known-flaky.txt`, eac
 ## Miri
 
 `extended.yml` runs the unit tests and validation cases, and the edge-case tests in three shards by
-module, under Miri, with isolation and leak checks off for tokio's threads. Several tests stage races
+module (`.github/scripts/miri-shards.py` lists them from the test files), under Miri, with isolation and leak checks off for tokio's threads. Several tests stage races
 with sleeps, which Miri's slowness can reorder, so the job fails only on undefined behaviour or on an
 operation Miri cannot run. In the last full run (27ba2d1) every shard finished within two hours, with
 no undefined behaviour. Only the rerun-rate test failed: Miri cannot run a node 50 000 times a second.

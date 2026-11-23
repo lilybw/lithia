@@ -4,73 +4,21 @@
 //! Validation cases AI–BC: how long nodes live without handles (spec §10, §13).
 //! Every case runs under the workspace's test timeout (`.cargo/config.toml`).
 
-use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lithia::{Accessor, DerivedNode, SourceNode, Status, effect};
+use lithia_test::until;
 use tokio::sync::mpsc;
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
-
-/// The text of every warning emitted in this binary.
-fn warnings() -> Arc<Mutex<Vec<String>>> {
-    struct Fields(String);
-    impl Visit for Fields {
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            let _ = write!(self.0, "{}={:?} ", field.name(), value);
-        }
-        fn record_str(&mut self, field: &Field, value: &str) {
-            let _ = write!(self.0, "{}={} ", field.name(), value);
-        }
-    }
-    struct Collector(Arc<Mutex<Vec<String>>>);
-    impl<S: Subscriber> Layer<S> for Collector {
-        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-            if *event.metadata().level() == Level::WARN {
-                let mut fields: Fields = Fields(String::new());
-                event.record(&mut fields);
-                self.0.lock().unwrap().push(fields.0);
-            }
-        }
-    }
-    static WARNINGS: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
-    WARNINGS
-        .get_or_init(|| {
-            let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-            let subscriber: tracing_subscriber::layer::Layered<Collector, tracing_subscriber::Registry> =
-                tracing_subscriber::registry().with(Collector(warnings.clone()));
-            tracing::subscriber::set_global_default(subscriber).expect("one global subscriber");
-            warnings
-        })
-        .clone()
-}
 
 /// Whether a warning containing `text` and naming `line` of this file arrives within `limit`.
 async fn warned(text: &str, line: u32, limit: Duration) -> bool {
-    let at: String = format!("support.rs:{line}:");
-    let deadline: tokio::time::Instant = tokio::time::Instant::now() + limit;
-    loop {
-        let found: bool =
-            warnings().lock().unwrap().iter().any(|warning: &String| warning.contains(text) && warning.contains(&at));
-        if found || tokio::time::Instant::now() >= deadline {
-            return found;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    lithia_test::warned("support.rs", text, line, limit).await
 }
 
 const FIRST_RUN: &str = "freed before its first run";
 const UNREAD: &str = "nothing reads it";
-
-/// Waits until `done` holds, polling every millisecond.
-async fn until(mut done: impl FnMut() -> bool) {
-    while !done() {
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-}
 
 fn bump(n: &u32) -> u32 {
     n + 1
@@ -206,7 +154,7 @@ async fn case_am_a_stored_child_outlives_the_rerun() {
 // Case AN: an async source block lives by its handles. A discarded one is freed before it runs, with the warning.
 #[lithia::test]
 async fn case_an_a_discarded_async_block_never_runs() {
-    let _ = warnings(); // collect from the start
+    let _ = lithia_test::events(); // collect from the start
     let ran: SourceNode<bool> = effect!(false);
     let base: usize = lithia::test::live_nodes().await;
     let line: u32 = line!() + 1;
@@ -220,7 +168,7 @@ async fn case_an_a_discarded_async_block_never_runs() {
 // Case AN, under a runtime lithia did not start: one aborted after its first poll warns too.
 #[tokio::test]
 async fn case_an_an_aborted_async_block_warns() {
-    let _ = warnings(); // collect from the start
+    let _ = lithia_test::events(); // collect from the start
     let started: SourceNode<bool> = effect!(false);
     let line: u32 = line!() + 1;
     let block: SourceNode<u32> = effect!(async {
@@ -257,7 +205,7 @@ async fn case_an_a_bound_feeder_keeps_the_watcher_alive() {
 // Case AN: `effect!(async |cfg| loop { … })` runs while `cfg` is held and restarts when it changes.
 #[lithia::test]
 async fn case_an_a_loop_takes_the_state_it_serves_as_a_parent() {
-    let _ = warnings(); // collect from the start
+    let _ = lithia_test::events(); // collect from the start
     let ticks: SourceNode<u32> = effect!(0);
     let starts: SourceNode<u32> = effect!(0);
     let base: usize = lithia::test::live_nodes().await;
@@ -374,7 +322,7 @@ async fn case_aq_a_superseding_write_releases_the_blocks_creations() {
 // Case AR: a node disposed while its body runs.
 #[lithia::test(flavor = "multi_thread", worker_threads = 2)]
 async fn case_ar_creations_under_a_disposed_body() {
-    let _ = warnings(); // collect from the start
+    let _ = lithia_test::events(); // collect from the start
     let (go_tx, go_rx): (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) = std::sync::mpsc::channel();
     let (in_tx, in_rx): (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) = std::sync::mpsc::channel();
     let go_rx: Arc<Mutex<std::sync::mpsc::Receiver<()>>> = Arc::new(Mutex::new(go_rx));
@@ -473,7 +421,7 @@ async fn handler(rates: &SourceNode<f64>, metrics: &SourceNode<u32>, hang: bool)
 
 #[lithia::test]
 async fn case_at_per_request_memos() {
-    let _ = warnings(); // collect from the start
+    let _ = lithia_test::events(); // collect from the start
     let metrics: SourceNode<u32> = effect!(0);
     let hits: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let base: usize = lithia::test::live_nodes().await;
@@ -534,7 +482,7 @@ fn apply_once(cfg: u32, applied: &SourceNode<u32>) -> u32 {
 
 #[lithia::test]
 async fn case_au_an_effect_on_nothing_held_never_runs() {
-    let _ = warnings(); // collect from the start
+    let _ = lithia_test::events(); // collect from the start
     let applied: SourceNode<u32> = effect!(0);
     let base: usize = lithia::test::live_nodes().await;
     let line: u32 = apply_once(7, &applied);

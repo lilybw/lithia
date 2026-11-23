@@ -13,27 +13,11 @@ use lithia::{DerivedNode, Readable, SourceNode, effect};
 use tokio::sync::oneshot;
 use tracing::Level;
 
-use crate::events::{Captured, events};
+use lithia_test::{Captured, events, until};
 
 /// Whether a warning containing `text` and naming `line` of this file arrives within `limit`.
 async fn warned(text: &str, line: u32, limit: Duration) -> bool {
-    let at: String = format!("support.rs:{line}:");
-    let deadline: tokio::time::Instant = tokio::time::Instant::now() + limit;
-    loop {
-        let found: bool = events().lock().unwrap().iter().any(|event: &Captured| {
-            event.level == Level::WARN && event.text.contains(text) && event.text.contains(&at)
-        });
-        if found || tokio::time::Instant::now() >= deadline {
-            return found;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-}
-
-async fn until(mut done: impl FnMut() -> bool) {
-    while !done() {
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    lithia_test::warned("support.rs", text, line, limit).await
 }
 
 fn bump(n: &u32) -> u32 {

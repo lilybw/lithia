@@ -24,35 +24,31 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUST_TOOLCHAIN: "1.97.0"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
 
 jobs:
+  miri-shards:
+    name: miri shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: list
+        run: echo "matrix=$(python3 .github/scripts/miri-shards.py)" >> "$GITHUB_OUTPUT"
+
   miri:
     name: miri (${{ matrix.shard.name }})
+    needs: miri-shards
     strategy:
       fail-fast: false
       matrix:
-        # The edge-case tests in three shards by module, so that no job runs for hours.
-        shard:
-          - name: unit tests and validation cases
-            run: >-
-              cargo miri test --locked --no-fail-fast -p lithia --lib &&
-              cargo miri test --locked --no-fail-fast -p lithia-validation
-              --test cases --test consistency --test support --test keyed
-          - name: edge tests 1
-            run: >-
-              cargo miri test --locked --no-fail-fast -p lithia-test --test edge --
-              async_gen:: capture:: diagnostics:: keyed::
-          - name: edge tests 2
-            run: >-
-              cargo miri test --locked --no-fail-fast -p lithia-test --test edge --
-              lifetime:: propagation:: random::
-          - name: edge tests 3
-            run: >-
-              cargo miri test --locked --no-fail-fast -p lithia-test --test edge --
-              runtime:: support:: values::
+        # The unit tests and validation cases, then the edge tests in shards by module, so that no job
+        # runs for hours; listed from the test files, so a new module or file is never left out.
+        shard: ${{ fromJSON(needs.miri-shards.outputs.matrix) }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
@@ -60,6 +56,8 @@ jobs:
       # starts for detached work outlive a test, so Miri's check for leaks and live threads is off.
       MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
       LITHIA_TEST_TIMEOUT_MS: "3600000"
+      # Overrides rust-toolchain.toml.
+      RUSTUP_TOOLCHAIN: nightly
       LITHIA_RANDOM_SEEDS: "2"
       RUST_TEST_THREADS: "2"
     steps:
@@ -68,7 +66,6 @@ jobs:
       - name: Install Rust nightly with Miri
         run: |
           rustup toolchain install nightly --profile minimal --component miri,rust-src --allow-downgrade
-          rustup default nightly
           cargo miri setup
 
       - uses: Swatinem/rust-cache@v2
@@ -103,10 +100,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The toolchain and its components are rust-toolchain.toml's.
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -128,10 +124,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The toolchain and its components are rust-toolchain.toml's.
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -191,10 +186,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The toolchain and its components are rust-toolchain.toml's.
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -217,10 +211,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The toolchain and its components are rust-toolchain.toml's.
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
         with:

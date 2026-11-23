@@ -3,84 +3,31 @@
 
 //! Free functions of the public API (spec §3.5).
 
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use tokio::runtime::Handle;
-use tokio::sync::futures::Notified;
 use tokio::task::JoinHandle;
 
 use crate::context::{self, Batch, Deferred, Frame, Target};
-use crate::epoch::{Epochs, Scope, ScopeToken, Tokens};
+use crate::graph::epoch::{Epochs, Scope, ScopeToken};
+use crate::graph::ids::{self, Stamp};
+use crate::graph::node::Header;
 use crate::handles::NodeHandle;
-use crate::ids::{self, NodeId, Stamp};
-use crate::node::{Header, NodeRef, SchedGuard, Served, WeakNodeRef};
-use crate::protocol::ServedEpochs;
-use crate::run::{self, RunShared};
-use crate::settle_wait::SettleSeq;
+use crate::run::{self};
 use crate::sync::MutexGuard;
-use crate::{Dispose, Ghosted, Readable, Reflow, Status, dispose as disposal, protocol, settle_wait};
-
-/// Takes the current frame's pending batch and target; outside lithia tasks, there is neither.
-fn take_pending() -> Option<(Batch, Target)> {
-    context::with_frame(|frame: Option<&Frame>| frame.map(|frame: &Frame| (frame.take_batch(), frame.target.clone())))
-}
-
-/// Delivers `batch` for `target`, returning the child epochs it opened for a run in flight.
-fn deliver(target: &Target, batch: Batch) -> Epochs {
-    match target {
-        Target::Scope(scope) => {
-            protocol::deliver_outside(batch, scope);
-            Epochs::new()
-        }
-        Target::Run(run) => deliver_for_run(run, batch),
-    }
-}
-
-/// The epochs a run serves, with their writer sets, if `run` is still in flight.
-fn served_by(run: &Arc<RunShared>) -> Option<(NodeRef, ServedEpochs)> {
-    let node: NodeRef = run.node.upgrade()?;
-    let served: Option<ServedEpochs> = {
-        let guard: SchedGuard<'_> = node.header().lock_sched();
-        match &guard.run {
-            Some(slot) if slot.id == run.id() && !run.is_cancelled() => {
-                Some(slot.served.iter().map(|s: &Served| (s.epoch.clone(), s.writers.clone())).collect())
-            }
-            _ => None,
-        }
-    };
-    served.map(|served: ServedEpochs| (node, served))
-}
-
-/// Delivers a run's batch as child epochs while it is in flight, else as an outside batch.
-fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Epochs {
-    match served_by(run) {
-        Some((node, served)) => {
-            let tokens: Tokens = protocol::deliver_children(&node, &served, batch, Stamp::NONE);
-            drop(node);
-            let epochs: Epochs = tokens.epochs();
-            tokens.close();
-            epochs
-        }
-        None => {
-            protocol::deliver_outside(batch, &run.scope());
-            Epochs::new()
-        }
-    }
-}
+use crate::{Dispose, Ghosted, Readable, Reflow, Status, lifetime::dispose as disposal, protocol};
 
 /// Delivers the pending batch, then waits until every run in the caller's scope has ended or suspended.
 /// `lithia::flush().await;` never waits for async results; tests use `lithia::test::settled`.
 pub async fn flush() {
-    let pending: Option<(Batch, Target)> = take_pending();
+    let pending: Option<(Batch, Target)> = protocol::take_pending();
     let (scope, epochs): (Option<Arc<Scope>>, Epochs) = match pending {
         None => (Some(context::detached_scope()), Epochs::new()),
         Some((batch, target)) => {
-            let epochs: Epochs = deliver(&target, batch);
+            let epochs: Epochs = protocol::deliver(&target, batch);
             match target {
                 Target::Scope(scope) => (Some(scope), epochs),
                 Target::Run(_) => (None, epochs),
@@ -175,122 +122,10 @@ pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static)
         let result: std::thread::Result<R> = context::entered(&frame, || catch_unwind(AssertUnwindSafe(f)));
         let batch: Batch = frame.take_batch();
         drop(frame);
-        deliver(&target, batch);
+        protocol::deliver(&target, batch);
         match result {
             Ok(value) => value,
             Err(panic) => resume_unwind(panic),
         }
     })
-}
-
-/// Test utilities; unstable, and exempt from stability guarantees.
-pub mod test_utils {
-    use super::*;
-
-    /// Delivers the pending batch, then waits until every run in the node's subtree, which follows
-    /// its runs' creations and writes, has ended. Unstable. `lithia::test::settled(&user).await;`
-    pub async fn settled<N: Readable>(node: &N) {
-        if let Some((batch, target)) = take_pending() {
-            deliver(&target, batch);
-        }
-        let root: NodeRef = node.__lithia_node().0;
-        let waiter: settle_wait::Waiter = settle_wait::Waiter::new();
-        loop {
-            let notified: Notified<'_> = waiter.notify().notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            let before: SettleSeq = waiter.seq();
-            let quiet: bool = subtree_quiet(&root);
-            let after: SettleSeq = waiter.seq();
-            if quiet && before == after {
-                return;
-            }
-            if before != after {
-                continue;
-            }
-            tokio::select! {
-                _ = &mut notified => {}
-                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
-            }
-        }
-    }
-
-    /// Number of live nodes created in the caller's scope, once pending payload drops have run.
-    /// Exact once the scope has settled. `assert_eq!(lithia::test::live_nodes().await, before);`
-    pub async fn live_nodes() -> usize {
-        let scope: Arc<Scope> = context::current_scope();
-        let mut quiet: u32 = 0;
-        for _ in 0..10_000 {
-            if crate::drops::queued() == 0 {
-                quiet += 1;
-                if quiet >= 3 {
-                    break;
-                }
-            } else {
-                quiet = 0;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        scope.live.load(Ordering::SeqCst)
-    }
-
-    /// Whether `root`, its descendants and the nodes their runs created or wrote have no work left,
-    /// checked parents first so an idle parent has already delivered to its children.
-    fn subtree_quiet(root: &NodeRef) -> bool {
-        let mut closure: BTreeMap<NodeId, NodeRef> = BTreeMap::new();
-        let mut stack: Vec<NodeRef> = vec![root.clone()];
-        while let Some(node) = stack.pop() {
-            let header: &Header = node.header();
-            if closure.contains_key(&header.id) {
-                continue;
-            }
-            let reached: Vec<NodeRef> = {
-                let guard: SchedGuard<'_> = header.lock_sched();
-                guard.created.iter().chain(&guard.wrote).filter_map(|weak: &WeakNodeRef| weak.upgrade()).collect()
-            };
-            stack.extend(header.subscribers());
-            stack.extend(reached);
-            stack.extend(header.targets.iter().filter_map(WeakNodeRef::upgrade));
-            closure.insert(header.id, node);
-        }
-        closure.values().all(|node: &NodeRef| {
-            let guard: SchedGuard<'_> = node.header().lock_sched();
-            !(guard.busy() || guard.unseeded || !guard.entries.is_empty())
-        })
-    }
-}
-
-/// Reads the test timeout the workspace harness sets, if any.
-fn test_timeout() -> Option<Duration> {
-    std::env::var("LITHIA_TEST_TIMEOUT_MS")
-        .ok()
-        .and_then(|raw: String| raw.trim().parse::<u64>().ok())
-        .filter(|ms: &u64| *ms > 0)
-        .map(Duration::from_millis)
-}
-
-/// Runs an entry future as a lithia task on a fresh runtime; used by `#[lithia::main]`.
-#[doc(hidden)]
-pub fn block_on_main<F: Future>(mut builder: tokio::runtime::Builder, future: F) -> F::Output {
-    let runtime: tokio::runtime::Runtime =
-        builder.enable_all().build().expect("lithia: cannot build the tokio runtime");
-    runtime.block_on(run::scoped(future))
-}
-
-/// Runs a test body as a lithia task on a fresh runtime, under the harness timeout if set; used by `#[lithia::test]`.
-#[doc(hidden)]
-pub fn block_on_test<F: Future<Output = ()>>(mut builder: tokio::runtime::Builder, name: &str, future: F) {
-    let runtime: tokio::runtime::Runtime =
-        builder.enable_all().build().expect("lithia: cannot build the tokio runtime");
-    let timeout: Option<Duration> = test_timeout();
-    runtime.block_on(async move {
-        match timeout {
-            Some(limit) => {
-                if tokio::time::timeout(limit, run::scoped(future)).await.is_err() {
-                    panic!("lithia: test `{name}` timed out after {limit:?}");
-                }
-            }
-            None => run::scoped(future).await,
-        }
-    });
 }

@@ -8,10 +8,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
 
 use crate::Site;
-use crate::ids::RunId;
-use crate::node::{Header, RateWindow};
+use crate::graph::ids::RunId;
+use crate::graph::node::Header;
 use crate::site::SiteKey;
-use crate::sync::MutexGuard;
+use crate::sync::{AtomicBool, Mutex, MutexGuard};
 
 /// Default rerun-rate threshold in runs per second; override with `LITHIA_RERUN_RATE`.
 /// Milliseconds since the first diagnostic that needed the time.
@@ -42,6 +42,32 @@ static HELD: parking_lot::Mutex<BTreeMap<SiteKey, usize>> = parking_lot::Mutex::
 #[allow(clippy::disallowed_types)]
 static UNREAD_WARNED: parking_lot::Mutex<BTreeSet<SiteKey>> = parking_lot::Mutex::new(BTreeSet::new());
 
+/// Rerun counting for the rerun-rate warning (spec §12).
+pub(crate) struct RateWindow {
+    pub(crate) start_ms: Millis,
+    pub(crate) count: u64,
+    pub(crate) warned: bool,
+}
+
+/// What a node's diagnostics track.
+pub(crate) struct DiagState {
+    pub(crate) rate: Mutex<RateWindow>,
+    /// Warn if freed before its first run got under way.
+    pub(crate) warn_first_run: bool,
+    /// The first run finished, yielded an item or was polled a second time.
+    pub(crate) under_way: AtomicBool,
+}
+
+impl DiagState {
+    pub(crate) fn new(warn_first_run: bool) -> DiagState {
+        DiagState {
+            rate: Mutex::new(RateWindow { start_ms: 0, count: 0, warned: false }),
+            warn_first_run,
+            under_way: AtomicBool::new(false),
+        }
+    }
+}
+
 /// Runs one `tracing` emission; diagnostics run inside protocol steps, so a panicking subscriber is contained.
 fn emit(event: impl FnOnce()) {
     if let Err(panic) = catch_unwind(AssertUnwindSafe(event)) {
@@ -66,7 +92,7 @@ pub(crate) fn count_run(header: &Header) {
     let threshold: u64 = *RERUN_THRESHOLD;
     let now: Millis = millis();
     let observed: Option<u64> = {
-        let mut guard: MutexGuard<'_, RateWindow> = header.rate.lock();
+        let mut guard: MutexGuard<'_, RateWindow> = header.diag.rate.lock();
         let window: &mut RateWindow = &mut guard;
         if now.saturating_sub(window.start_ms) >= 1000 {
             window.start_ms = now;

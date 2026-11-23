@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::task::{Context, Wake, Waker};
 
 use crate::context::{self, Frame, Target};
-use crate::epoch::Scope;
-use crate::ids::NodeId;
-use crate::node::{NodeRef, SchedGuard};
+use crate::graph::epoch::Scope;
+use crate::graph::ids::NodeId;
+use crate::graph::node::NodeRef;
 use crate::{Readable, protocol};
 
 type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -229,10 +229,7 @@ pub fn quiet<N: Readable>(node: &N) -> bool {
         stack.extend(node.header().subscribers());
         closure.insert(id, node);
     }
-    closure.values().all(|node: &NodeRef| {
-        let guard: SchedGuard<'_> = node.header().lock_sched();
-        !(guard.busy() || guard.unseeded || !guard.entries.is_empty())
-    })
+    closure.values().all(|node: &NodeRef| node.header().lock_sched().is_quiet())
 }
 
 impl ModelScope {
