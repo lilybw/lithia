@@ -51,11 +51,14 @@ impl<T> Mutex<T> {
 #[cfg(not(lithia_loom))]
 pub(crate) struct ArcCell<T>(arc_swap::ArcSwapOption<T>);
 
+/// What an `ArcCell` holds: a shared value, or none.
+type Slot<T> = Option<std::sync::Arc<T>>;
+
 #[cfg(lithia_loom)]
-pub(crate) struct ArcCell<T>(Mutex<Option<std::sync::Arc<T>>>);
+pub(crate) struct ArcCell<T>(Mutex<Slot<T>>);
 
 impl<T> ArcCell<T> {
-    pub(crate) fn new(value: Option<std::sync::Arc<T>>) -> ArcCell<T> {
+    pub(crate) fn new(value: Slot<T>) -> ArcCell<T> {
         #[cfg(not(lithia_loom))]
         return ArcCell(arc_swap::ArcSwapOption::new(value));
         #[cfg(lithia_loom)]
@@ -63,7 +66,7 @@ impl<T> ArcCell<T> {
     }
 
     /// The current value, as a new reference.
-    pub(crate) fn load_full(&self) -> Option<std::sync::Arc<T>> {
+    pub(crate) fn load_full(&self) -> Slot<T> {
         #[cfg(not(lithia_loom))]
         return self.0.load_full();
         #[cfg(lithia_loom)]
@@ -71,7 +74,7 @@ impl<T> ArcCell<T> {
     }
 
     /// Replaces the value, returning the previous one.
-    pub(crate) fn swap(&self, value: Option<std::sync::Arc<T>>) -> Option<std::sync::Arc<T>> {
+    pub(crate) fn swap(&self, value: Slot<T>) -> Slot<T> {
         #[cfg(not(lithia_loom))]
         return self.0.swap(value);
         #[cfg(lithia_loom)]
@@ -79,7 +82,7 @@ impl<T> ArcCell<T> {
     }
 
     /// Replaces the value; the previous one drops here.
-    pub(crate) fn store(&self, value: Option<std::sync::Arc<T>>) {
+    pub(crate) fn store(&self, value: Slot<T>) {
         drop(self.swap(value));
     }
 }

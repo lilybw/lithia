@@ -189,12 +189,17 @@ fn defer_outside_lithia_tasks_follows_the_latest_write() {
 }
 
 #[lithia::test]
-#[ignore = "known bug: a deferred function that panics leaks its scope's token (docs/known_bugs.md)"]
 async fn flush_returns_after_a_deferred_function_panics() {
-    lithia::defer(|| panic!("deferred function panics"));
+    let written: SourceNode<bool> = effect!(false);
+    let writer: SourceNode<bool> = written.clone();
+    lithia::defer(move || {
+        writer.set(true);
+        panic!("deferred function panics");
+    });
     let done: Result<(), tokio::time::error::Elapsed> =
         tokio::time::timeout(Duration::from_secs(2), lithia::flush()).await;
     assert!(done.is_ok(), "flush hung after a deferred function panicked");
+    assert!(*written.get(), "a write made before the panic lands");
 }
 
 #[lithia::test(flavor = "multi_thread", worker_threads = 4)]

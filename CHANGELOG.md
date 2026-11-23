@@ -25,6 +25,11 @@ with the validation cases, verification details, benchmark history and this chan
 | 7.4 | Lineages stay 63-bit hashes rather than interned identities; the collision risk is documented. | review |
 | 11.4 | A TLA+ model of node lifetimes beside the scheduling model, both checked with TLC in CI; TLC gates a release. A random differential test, 48 loom models, three more kept mutations. | review |
 | 1 | lithia is licensed under the Mozilla Public License 2.0; up to v0.4.0 it was GPL-2.0-or-later. | review |
+| 6.3 | A deferred function that panics is caught and logged, and returns its scope's token however it ends; `flush` waited forever after one. | review |
+| 9.1 | A run that panics after it was superseded, or after a write stopped its block, no longer fails its node; a write's value stayed `Failed` until the next write. | review |
+| 10.3 | Comparators, keys and kept inputs are dropped off the protocol, as values and bodies are, so their `Drop` cannot panic through a teardown or a refresh. | review |
+| 12 | A panicking `tracing` subscriber is caught where lithia emits, so it cannot interrupt a protocol step; the rerun-rate warning is emitted after the node's rate lock is released. | review |
+| — | Ids and dense generic types are named by documented aliases, and debug builds check token, anchor and live counts and version order with assertions. | review |
 | all | About 24 000 words instead of 41 000: the validation cases live in `crates/validation`, the verification details in `docs/VERIFICATION.md`, the benchmark history in `docs/BENCHMARKS.md` and the changes in this file. | review |
 
 ## 0.4.0

@@ -10,13 +10,15 @@ use std::sync::atomic::Ordering;
 use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Mutex, MutexGuard};
 use tokio::runtime::Handle;
 
-use crate::capture::{Captured, Lease};
+use crate::capture::{Captured, SharedLease};
 use crate::context;
 use crate::epoch::Scope;
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
-use crate::ids::{self, NodeId};
+use crate::ids::{self, NodeId, RunId, WriterId};
 use crate::keyed::{self, Inputs, Key, Keyed};
-use crate::node::{Body, BoxFut, Header, Kind, Node, NodeRef, RateWindow, Sched, WeakNodeRef, phase};
+use crate::node::{
+    Body, BodySlot, BoxFut, Header, Kind, Node, NodeRef, Parents, RateWindow, Sched, TypedNodeRef, WeakNodeRef, phase,
+};
 use crate::options::{Equals, Options};
 use crate::run::{RunShared, Yielder};
 use crate::{NodeValue, Readable, Site, protocol, settle_wait};
@@ -76,12 +78,12 @@ fn same_targets(header: &Header, captured: &Captured) -> bool {
 /// Hands a reclaimed node what the new creation brought: its comparator, a source node its value,
 /// a body its captures, then a rerun (spec §10.1, Keyed nodes). Counts the returned handle as an anchor.
 fn refresh<K: NodeValue>(
-    node: &Arc<Node<K>>,
+    node: &TypedNodeRef<K>,
     value: K,
-    body: Option<Body<K>>,
+    body: BodySlot<K>,
     inputs: Inputs,
     equals: Option<Equals<K>>,
-    lease: Option<Arc<Lease>>,
+    lease: Option<SharedLease>,
 ) {
     let header: &Header = &node.header;
     crate::support::add_anchors(header, 1, || node.clone());
@@ -93,22 +95,23 @@ fn refresh<K: NodeValue>(
         Kind::Source => {
             // A write the node's `equals` may still find equal; a ghost is left alone.
             let _ = node.write(false, move |_: &K| value);
+            inputs.release(runtime.as_ref());
             return;
         }
         Kind::Derived => {}
         Kind::AsyncSource => {
             // The running block stops, and the new one runs under the next run id.
-            let next: u64 = header.runs.fetch_add(1, Ordering::SeqCst) + 1;
+            let next: RunId = header.runs.fetch_add(1, Ordering::SeqCst) + 1;
             header.block_run.store(next, Ordering::SeqCst);
         }
     }
-    let old: Option<Body<K>> = std::mem::replace(&mut *node.body.lock(), body);
-    *header.inputs.lock() = Some(inputs);
+    let old: BodySlot<K> = std::mem::replace(&mut *node.body.lock(), body);
+    let old_inputs: Option<Inputs> = header.inputs.lock().replace(inputs);
     let erased: NodeRef = node.clone();
     if header.kind == Kind::AsyncSource {
         protocol::kill_run(&erased);
         // The old block stops: what it moved out counts from now on.
-        let old: Option<Arc<Lease>> = std::mem::replace(&mut *header.lease.lock(), lease);
+        let old: Option<SharedLease> = std::mem::replace(&mut *header.lease.lock(), lease);
         if let Some(old) = old {
             old.end();
         }
@@ -125,13 +128,20 @@ fn refresh<K: NodeValue>(
     if let Some(old) = old {
         crate::drops::drop_later(old, runtime.as_ref());
     }
+    if let Some(old) = old_inputs {
+        old.release(runtime.as_ref());
+    }
     // The unused initial value; only one whose drop can run user code leaves this thread.
     crate::drops::drop_owned(value, runtime.as_ref());
 }
 
+/// Where a creation sits in its creator's run: `(0, n)` for the n-th at its site, `(1, hash)`
+/// for a key.
+type Place = (u8, u64);
+
 /// A lineage's writer identity: the creator's, the site, and the key or place among the site's
 /// creations in a run; the top bit keeps it apart from node ids.
-fn lineage(creator: NodeId, site: &'static Site, place: (u8, u64)) -> NodeId {
+fn lineage(creator: WriterId, site: &'static Site, place: Place) -> WriterId {
     use std::hash::{Hash, Hasher};
     let mut hasher: std::hash::DefaultHasher = std::hash::DefaultHasher::new();
     creator.hash(&mut hasher);
@@ -146,18 +156,20 @@ fn new_node<K: NodeValue>(
     deps: &[NodeHandle],
     captured: &Captured,
     value: K,
-    body: Option<Body<K>>,
+    body: BodySlot<K>,
     mut options: Options<K>,
-) -> Arc<Node<K>> {
+) -> TypedNodeRef<K> {
     let (key, inputs): (Option<Key>, Option<Inputs>) = match options.keyed.take() {
         None => (None, None),
         Some(mut keyed) => {
             if let Some(reclaimed) = keyed.reclaimed.take() {
-                let node: Arc<Node<K>> = keyed::typed(reclaimed);
+                let node: TypedNodeRef<K> = keyed::typed(reclaimed);
                 if same_targets(&node.header, captured) {
-                    let (_, inputs): (Key, Inputs) = keyed.key(site);
+                    let (key, inputs): (Key, Inputs) = keyed.key(site);
                     refresh(&node, value, body, inputs, options.equals, captured.2.clone());
                     keyed::decided(&node);
+                    // The node keeps the key it was created with; this copy may carry user drop glue.
+                    crate::drops::drop_later(key, node.header.runtime.as_ref());
                     return node;
                 }
                 // Its body would write other nodes now: a new node takes the key instead.
@@ -170,7 +182,7 @@ fn new_node<K: NodeValue>(
     };
     let runtime: Option<Handle> = runtime_for(kind, site);
     let sync_body: bool = matches!(body, Some(Body::Sync(_)));
-    let mut parents: Vec<NodeRef> = Vec::with_capacity(deps.len());
+    let mut parents: Parents = Vec::with_capacity(deps.len());
     for dep in deps {
         let header: &Header = dep.0.header();
         if !parents.iter().any(|p: &NodeRef| p.header().id == header.id) {
@@ -191,9 +203,9 @@ fn new_node<K: NodeValue>(
     }
     let creator_node: Option<NodeRef> = run.as_ref().and_then(|r: &Arc<RunShared>| r.node.upgrade());
     let id: NodeId = ids::next_node_id();
-    let writer: NodeId = match (&run, &creator_node) {
+    let writer: WriterId = match (&run, &creator_node) {
         (Some(run), Some(creator)) => {
-            let place: (u8, u64) = match &key {
+            let place: Place = match &key {
                 Some(key) => (1, key.hash),
                 None => (0, run.place(site)),
             };
@@ -207,7 +219,7 @@ fn new_node<K: NodeValue>(
     let supportable: bool = top_level && !parents.is_empty() && kind != Kind::Source;
     let warn_first_run: bool = kind != Kind::Source && (top_level || (!held && !closed));
     scope.live.fetch_add(1, Ordering::SeqCst);
-    let node: Arc<Node<K>> = Arc::new(Node {
+    let node: TypedNodeRef<K> = Arc::new(Node {
         header: Header {
             id,
             writer,
@@ -308,7 +320,7 @@ fn new_node<K: NodeValue>(
 /// A one-shot block that ends its lease once it is dropped, with what it still owns (spec §4.2).
 struct Leased<T> {
     block: Option<BoxFut<T>>,
-    lease: Arc<Lease>,
+    lease: SharedLease,
 }
 
 impl<T> Future for Leased<T> {
@@ -376,7 +388,7 @@ where
     G: FnOnce(Yielder<K>) -> F + Send + 'static,
     F: Future<Output = ()> + Send + 'static,
 {
-    let lease: Option<Arc<Lease>> = captured.2.clone();
+    let lease: Option<SharedLease> = captured.2.clone();
     let start: Box<dyn FnOnce(Yielder<K>) -> BoxFut<()> + Send> = Box::new(move |yielder: Yielder<K>| -> BoxFut<()> {
         let block: BoxFut<()> = Box::pin(block(yielder));
         match lease {

@@ -578,7 +578,7 @@ Tasks that lithia did not start, such as a plain `tokio::spawn` or a `#[tokio::m
 `lithia::defer(f)` runs `f` once the current batch's epoch has settled. Called from a body serving several epochs, it waits for all of them. Child epochs started by later polls are not waited for, so it never waits on async work. It needs no engine support of its own: it is a thin helper over the epoch tree (7.1).
 
 - `f` runs as a lithia task on the caller's runtime, or on a fresh single-threaded runtime of its own when there is none, and starts a fresh epoch with an empty writer set (7.4). It is therefore also the way to feed a value back into a cycle on purpose; a loop through it is unattributed and triggers the rerun-rate warning (12).
-- A pending `defer` holds a token on the caller's scope until its task has delivered, so `flush()` in that scope also waits for deferred work (Case X).
+- A pending `defer` holds a token on the caller's scope until its task has delivered, so `flush()` in that scope also waits for deferred work (Case X). The token is returned however `f` ends: a panic is caught and logged at warn (12), and the writes made before it still land, as in a body (9.1); a function whose runtime shut down before it ran returns its token unrun.
 - In a task lithia did not start, each write is its own batch, so `defer` attaches to the scope's most recent epoch and fires after it settles, or at once when the scope has no open epoch.
 
 Use it when a write must deliberately happen after the current propagation, instead of being visible to it.
@@ -725,6 +725,7 @@ A panicking body puts its node into `Failed`, which behaves like `Pending`: the 
 
 - Every run is polled through a wrapper that catches panics (`catch_unwind`). The wrapper catches the panic and marks the node `Failed`, with the panic message and the node's site.
 - A warning is emitted through `tracing`, with the site and the panic message (12).
+- Only the current run fails its node, as only it publishes (6.4): a run that panics after it was superseded, or after a write stopped its block (7.3), leaves the node as its successor or the write left it.
 - A failed node reruns when a dependency changes or on `lithia::reflow`. A new run clears the failure: the node is `Pending` until the run produces an item, and its children rerun only if that item changed (7.2).
 - No rollback. Writes the body made before panicking stay applied and still propagate, because the batch is delivered after the panic is caught (6.2, Case AE). Nodes it created follow the normal lifetime rules.
 - Panics inside `update` or `modify` happen on the caller's thread and propagate to the caller. The value is unchanged: `update` only reads the old value, and `modify` works on a copy that is discarded. Inside a body, the panic fails that body's node as usual. The write lock does not poison itself (`parking_lot`).
@@ -932,8 +933,8 @@ Overlapping generations. Effects held in a replaced value live exactly as long a
 
 ### 10.3 RAII cleanup
 
-- When a new item replaces a node's value, the previous value is dropped. When a node is freed, its value and body are dropped.
-- Drops never run inside the scheduling protocol (11.4). Replaced values, values discarded by `equals` or by a superseded run, and the values and bodies of freed or disposed nodes, are dropped on the node's runtime, through `spawn_blocking` under `catch_unwind`, so a `Drop` may spawn tasks, block or write nodes. Its writes are detached work: an outside batch with an empty writer set (7.4). A panicking `Drop` is logged at warn (12).
+- When a new item replaces a node's value, the previous value is dropped. When a node is freed, its value, body, comparator, key and kept inputs are dropped.
+- Drops never run inside the scheduling protocol (11.4). Replaced values, values discarded by `equals` or by a superseded run, the values, bodies, comparators, keys and kept inputs of freed or disposed nodes, and the inputs a reclaimed keyed node replaces, are dropped on the node's runtime, through `spawn_blocking` under `catch_unwind`, so a `Drop` may spawn tasks, block or write nodes. Its writes are detached work: an outside batch with an empty writer set (7.4). A panicking `Drop` is logged at warn (12).
 - A value whose type has no drop glue (`!needs_drop::<K>()`) is dropped inline, since dropping it can run no user code; so are strings and byte buffers (`String`, `Box<str>`, `Arc<str>`, `Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>`). This keeps plain numbers and strings off the blocking pool, whether they are replaced or discarded.
 - The drops one protocol step or one run poll causes are gathered and queued when it ends, as one blocking task per runtime, at most 64 to a task; each still runs under its own `catch_unwind`. The drops those drops cause in turn, such as nodes whose last handle a dropped value held, are gathered the same way. A `Drop` that blocks therefore delays the others in its task, and one `Drop` must not wait for another to run. Drops outside a step, such as a value replaced by a write from a task, are queued one by one.
 - If the node's runtime has shut down, or the node has none, tokio would drop the payload on the spawning thread, which may be a worker in the middle of scheduling. Such drops go to a lithia-owned drop thread instead, also under `catch_unwind`.
@@ -1042,7 +1043,7 @@ Unlike in MV-RP, concurrent outside batches are not ordered as if they ran one a
 
 ## 12. Diagnostics
 
-Every node carries its `Site` (4.3): file, line, column, module, function and the macro's tokens as written. Every event below includes the site of the node concerned, except a panicking drop, whose node may be gone; ghost panics include it in their message. Events are emitted outside every scheduling lock and outside the sweep lock (11.4, step 1).
+Every node carries its `Site` (4.3): file, line, column, module, function and the macro's tokens as written. Every event below includes the site of the node concerned, except a panicking drop, whose node may be gone; ghost panics include it in their message. Events are emitted outside every scheduling lock and outside the sweep lock (11.4, step 1). A subscriber that panics is caught where the event is emitted, so it cannot interrupt the protocol; that event is lost.
 
 | Event | `tracing` level | Also includes |
 | --- | --- | --- |
@@ -1053,6 +1054,7 @@ Every node carries its `Site` (4.3): file, line, column, module, function and th
 | Unread memo: a memo support keeps running though nothing reads it | warn | `.scoped()` or `dispose` as the fix |
 | A cycle cut a writer that holds a value | warn | the writer's site and the written node's, at the head of the chain |
 | A dropped value or body panicked | warn | panic message |
+| A deferred function panicked | warn | panic message |
 | A run created a key twice at one site | warn | the site; the nodes are matched in creation order (10.1) |
 | Child failed through fragility | debug | the first parent failure |
 | A key outside any body, which has nothing to reclaim | debug | the site; the node is created as usual (3.2) |

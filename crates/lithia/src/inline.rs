@@ -11,8 +11,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use crate::epoch::Epoch;
+use crate::epoch::Tokens;
 use crate::node::{NodeRef, WeakNodeRef};
+
+/// Ready synchronous runs grouped by runtime, to pack into runner tasks.
+type Packs = Vec<(RuntimeKey, Vec<NodeRef>)>;
 
 /// One run, type-erased, to poll here or to spawn.
 pub(crate) type RunTask = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -44,7 +47,7 @@ struct Inline {
     /// Ready synchronous runs of this runtime its steps handed it, to run next here.
     next: VecDeque<WeakNodeRef>,
     /// Token closes of the runs run here, closed together when the task's poll ends.
-    closes: Vec<Arc<Epoch>>,
+    closes: Tokens,
 }
 
 crate::sync::thread_local! {
@@ -106,7 +109,7 @@ impl Open {
 
 impl Drop for Open {
     fn drop(&mut self) {
-        let (next, closes): (VecDeque<WeakNodeRef>, Vec<Arc<Epoch>>) = INLINE
+        let (next, closes): (VecDeque<WeakNodeRef>, Tokens) = INLINE
             .try_with(|cell: &RefCell<Inline>| {
                 let mut inline: std::cell::RefMut<'_, Inline> = cell.borrow_mut();
                 inline.open = false;
@@ -125,8 +128,8 @@ impl Drop for Open {
 
 /// Closes a run's tokens when the task's poll ends if it runs on the fast path, else now; its
 /// node's references are gone either way (spec §10.1).
-pub(crate) fn close_later(closes: Vec<Arc<Epoch>>) {
-    let mut closes: Option<Vec<Arc<Epoch>>> = Some(closes);
+pub(crate) fn close_later(closes: Tokens) {
+    let mut closes: Option<Tokens> = Some(closes);
     let _ = INLINE.try_with(|cell: &RefCell<Inline>| {
         let mut inline: std::cell::RefMut<'_, Inline> = cell.borrow_mut();
         if inline.open
@@ -150,7 +153,7 @@ pub(crate) fn dispatch(mut spawns: Vec<NodeRef>) {
         }
         return;
     }
-    let mut packs: Vec<(RuntimeKey, Vec<NodeRef>)> = Vec::new();
+    let mut packs: Packs = Vec::new();
     for node in spawns {
         if !node.header().sync_body {
             node.spawn_run();

@@ -8,15 +8,16 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, Weak};
 
-use crate::epoch::{Epoch, Scope};
-use crate::ids::NodeId;
+use crate::epoch::{Epoch, Scope, ScopeToken};
+use crate::ids::{NodeId, Stamp};
 use crate::node::{NodeRef, WeakNodeRef};
 use crate::run::RunShared;
 
 /// A function deferred until an epoch settles.
 pub(crate) struct Deferred {
     pub(crate) f: Box<dyn FnOnce() + Send>,
-    pub(crate) scope: Arc<Scope>,
+    /// Held until the function has run, or until it is dropped unrun.
+    pub(crate) token: ScopeToken,
     pub(crate) runtime: Option<tokio::runtime::Handle>,
 }
 
@@ -24,9 +25,9 @@ pub(crate) struct Deferred {
 #[derive(Default)]
 pub(crate) struct Batch {
     /// Written source nodes and the stamp each write took.
-    pub(crate) writes: Vec<(WeakNodeRef, NodeId, u64)>,
+    pub(crate) writes: Vec<(WeakNodeRef, NodeId, Stamp)>,
     /// Reflow targets and the stamp each reflow took.
-    pub(crate) reflows: Vec<(WeakNodeRef, NodeId, u64)>,
+    pub(crate) reflows: Vec<(WeakNodeRef, NodeId, Stamp)>,
     /// New derived and async source nodes.
     pub(crate) creations: Vec<WeakNodeRef>,
     /// Surviving children of a disposed node, which rerun.
@@ -79,30 +80,41 @@ impl Frame {
     }
 }
 
+/// A plain tokio task and the scope its writes go to.
+type TaskScope = (tokio::task::Id, Weak<Scope>);
+/// The scope of each plain task that wrote, by task.
+type TaskScopes = BTreeMap<tokio::task::Id, Weak<Scope>>;
+/// The scope this thread's writes go to outside any task.
+type ThreadScope = Option<Arc<Scope>>;
+
 crate::sync::thread_local! {
     static CURRENT: Cell<*const Frame> = Cell::new(std::ptr::null());
     static CLOSURE_DEPTH: Cell<u32> = Cell::new(0);
     static CLOSURE_CREATIONS: RefCell<Vec<WeakNodeRef>> = RefCell::new(Vec::new());
-    static THREAD_SCOPE: RefCell<Option<Arc<Scope>>> = RefCell::new(None);
+    static THREAD_SCOPE: RefCell<ThreadScope> = RefCell::new(None);
     /// The task whose scope this thread looked up last, so its repeated writes skip `TASK_SCOPES`.
-    static LAST_TASK: RefCell<Option<(tokio::task::Id, Weak<Scope>)>> = RefCell::new(None);
+    static LAST_TASK: RefCell<Option<TaskScope>> = RefCell::new(None);
 }
 
 /// Restores the previous frame when dropped.
 pub(crate) struct FrameGuard<'a> {
     previous: *const Frame,
+    entered: *const Frame,
     _frame: PhantomData<&'a Frame>,
 }
 
 /// Makes `frame` current on this thread until the guard drops.
 pub(crate) fn enter(frame: &Frame) -> FrameGuard<'_> {
     let previous: *const Frame = CURRENT.with(|current: &Cell<*const Frame>| current.replace(frame));
-    FrameGuard { previous, _frame: PhantomData }
+    FrameGuard { previous, entered: frame, _frame: PhantomData }
 }
 
 impl Drop for FrameGuard<'_> {
     fn drop(&mut self) {
-        CURRENT.with(|current: &Cell<*const Frame>| current.set(self.previous));
+        CURRENT.with(|current: &Cell<*const Frame>| {
+            debug_assert!(std::ptr::eq(current.get(), self.entered), "lithia: frames left out of order");
+            current.set(self.previous);
+        });
     }
 }
 
@@ -137,18 +149,17 @@ pub(crate) fn detached_scope() -> Arc<Scope> {
         return task_scope(id);
     }
     THREAD_SCOPE
-        .try_with(|slot: &RefCell<Option<Arc<Scope>>>| slot.borrow_mut().get_or_insert_with(Scope::new).clone())
+        .try_with(|slot: &RefCell<ThreadScope>| slot.borrow_mut().get_or_insert_with(Scope::new).clone())
         .unwrap_or_else(|_| Scope::new())
 }
 
 /// Scopes of tasks lithia did not start, by task id.
-static TASK_SCOPES: parking_lot::Mutex<BTreeMap<tokio::task::Id, Weak<Scope>>> =
-    parking_lot::Mutex::new(BTreeMap::new());
+static TASK_SCOPES: parking_lot::Mutex<TaskScopes> = parking_lot::Mutex::new(BTreeMap::new());
 
 fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
     // A live cached scope is the one the map holds: an entry is replaced only once its scope is gone.
     let cached: Option<Arc<Scope>> = LAST_TASK
-        .try_with(|last: &RefCell<Option<(tokio::task::Id, Weak<Scope>)>>| {
+        .try_with(|last: &RefCell<Option<TaskScope>>| {
             last.borrow()
                 .as_ref()
                 .filter(|(known, _): &&(tokio::task::Id, Weak<Scope>)| *known == id)
@@ -160,7 +171,7 @@ fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
         return scope;
     }
     let scope: Arc<Scope> = {
-        let mut map: parking_lot::MutexGuard<'_, BTreeMap<tokio::task::Id, Weak<Scope>>> = TASK_SCOPES.lock();
+        let mut map: parking_lot::MutexGuard<'_, TaskScopes> = TASK_SCOPES.lock();
         match map.get(&id).and_then(Weak::upgrade) {
             Some(scope) => scope,
             None => {
@@ -175,7 +186,7 @@ fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
             }
         }
     };
-    let _ = LAST_TASK.try_with(|last: &RefCell<Option<(tokio::task::Id, Weak<Scope>)>>| {
+    let _ = LAST_TASK.try_with(|last: &RefCell<Option<TaskScope>>| {
         *last.borrow_mut() = Some((id, Arc::downgrade(&scope)));
     });
     scope
@@ -233,7 +244,7 @@ impl Drop for ClosureCreations {
 }
 
 /// Records a change to a source node in the current batch, or delivers it at once.
-pub(crate) fn record_write(node: &NodeRef, stamp: u64) {
+pub(crate) fn record_write(node: &NodeRef, stamp: Stamp) {
     note_written(node);
     record(|batch: &mut Batch| batch.writes.push((Arc::downgrade(node), node.header().id, stamp)));
 }
@@ -277,7 +288,7 @@ pub(crate) fn record_refresh(node: &NodeRef) {
 }
 
 /// Records a reflow in the current batch, or delivers it at once.
-pub(crate) fn record_reflow(node: &NodeRef, stamp: u64) {
+pub(crate) fn record_reflow(node: &NodeRef, stamp: Stamp) {
     note_written(node);
     record(|batch: &mut Batch| batch.reflows.push((Arc::downgrade(node), node.header().id, stamp)));
 }
@@ -312,7 +323,7 @@ pub(crate) fn record_defer(deferred: Deferred) {
         None => Some(deferred),
     });
     if let Some(deferred) = pending {
-        let epoch: Option<Arc<Epoch>> = deferred.scope.last();
+        let epoch: Option<Arc<Epoch>> = deferred.token.scope().last();
         match epoch {
             Some(epoch) => crate::protocol::attach_defers(vec![epoch], vec![deferred]),
             None => crate::protocol::fire_deferred(deferred),

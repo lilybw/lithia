@@ -11,7 +11,14 @@ use std::sync::Arc;
 use crate::context;
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
 use crate::ids::NodeId;
-use crate::node::{Header, Kind, Node, NodeRef};
+
+/// A key's hash, mixed with its site's address; equal keys at one site hash alike.
+pub(crate) type KeyHash = u64;
+/// Keyed nodes whose keys share one hash.
+type Bucket = Vec<NodeRef>;
+/// A captured input kept for comparison with the next creation's, type-erased.
+type StoredInput = Box<dyn Any + Send + Sync>;
+use crate::node::{Header, Kind, Node, NodeRef, TypedNodeRef};
 use crate::options::{Options, Shape};
 use crate::run::RunShared;
 use crate::sync::MutexGuard;
@@ -32,7 +39,7 @@ impl<T: Hash + Eq + Send + Sync + 'static> KeyValue for T {}
 trait DynKey: Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn same(&self, other: &dyn DynKey) -> bool;
-    fn hash_at(&self, site: &'static Site) -> u64;
+    fn hash_at(&self, site: &'static Site) -> KeyHash;
 }
 
 impl<T: KeyValue> DynKey for T {
@@ -44,13 +51,13 @@ impl<T: KeyValue> DynKey for T {
         other.as_any().downcast_ref::<T>() == Some(self)
     }
 
-    fn hash_at(&self, site: &'static Site) -> u64 {
+    fn hash_at(&self, site: &'static Site) -> KeyHash {
         key_hash(site, self)
     }
 }
 
 /// Hashes a key together with its site and type, so keys of different sites never meet.
-fn key_hash<T: KeyValue>(site: &'static Site, value: &T) -> u64 {
+fn key_hash<T: KeyValue>(site: &'static Site, value: &T) -> KeyHash {
     let mut hasher: DefaultHasher = DefaultHasher::new();
     std::ptr::from_ref(site).addr().hash(&mut hasher);
     TypeId::of::<T>().hash(&mut hasher);
@@ -60,7 +67,7 @@ fn key_hash<T: KeyValue>(site: &'static Site, value: &T) -> u64 {
 
 /// A node's key, kept in its header.
 pub(crate) struct Key {
-    pub(crate) hash: u64,
+    pub(crate) hash: KeyHash,
     value: Box<dyn DynKey>,
 }
 
@@ -98,7 +105,7 @@ impl<T> NodeKey<T> {
 #[doc(hidden)]
 pub struct KeyRef<'a> {
     site: &'static Site,
-    hash: u64,
+    hash: KeyHash,
     value: &'a dyn DynKey,
 }
 
@@ -116,7 +123,7 @@ pub trait Probe {
     /// Whether `stored` holds an equal input.
     fn matches(&self, stored: &(dyn Any + Send + Sync)) -> bool;
     /// What to compare later runs against; `None` when the value cannot be compared.
-    fn keep(&self) -> Option<Box<dyn Any + Send + Sync>>;
+    fn keep(&self) -> Option<StoredInput>;
 }
 
 /// A captured value borrowed for a probe. `(&&&&Probed(&row)).__lithia_probe()`
@@ -144,7 +151,7 @@ impl Probe for HandleProbe {
         stored.downcast_ref::<NodeId>() == Some(&self.0)
     }
 
-    fn keep(&self) -> Option<Box<dyn Any + Send + Sync>> {
+    fn keep(&self) -> Option<StoredInput> {
         Some(Box::new(self.0))
     }
 }
@@ -154,7 +161,7 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> Probe for EqProbe<'_, T> {
         stored.downcast_ref::<T>() == Some(self.0)
     }
 
-    fn keep(&self) -> Option<Box<dyn Any + Send + Sync>> {
+    fn keep(&self) -> Option<StoredInput> {
         Some(Box::new(self.0.clone()))
     }
 }
@@ -164,7 +171,7 @@ impl<T: ?Sized + Send + Sync + 'static> Probe for ArcProbe<'_, T> {
         stored.downcast_ref::<Arc<T>>().is_some_and(|stored: &Arc<T>| Arc::ptr_eq(stored, self.0))
     }
 
-    fn keep(&self) -> Option<Box<dyn Any + Send + Sync>> {
+    fn keep(&self) -> Option<StoredInput> {
         Some(Box::new(self.0.clone()))
     }
 }
@@ -174,7 +181,7 @@ impl Probe for OpaqueProbe {
         false
     }
 
-    fn keep(&self) -> Option<Box<dyn Any + Send + Sync>> {
+    fn keep(&self) -> Option<StoredInput> {
         None
     }
 }
@@ -235,7 +242,7 @@ impl<T: ?Sized> ProbeViaOpaque for Probed<'_, T> {
 
 /// The inputs a keyed node was last created with.
 #[doc(hidden)]
-pub struct Inputs(Vec<Option<Box<dyn Any + Send + Sync>>>);
+pub struct Inputs(Vec<Option<StoredInput>>);
 
 impl Inputs {
     /// Keeps a copy of each probed value. `Inputs::of(&[&__lithia_p0])`
@@ -243,10 +250,17 @@ impl Inputs {
         Inputs(probes.iter().map(|probe: &&dyn Probe| probe.keep()).collect())
     }
 
+    /// Drops the kept copies off the protocol; with nothing kept, no user code can run and it drops here.
+    pub(crate) fn release(self, runtime: Option<&tokio::runtime::Handle>) {
+        if !self.0.is_empty() {
+            crate::drops::drop_later(self, runtime);
+        }
+    }
+
     /// Whether every probe equals what was kept.
     fn matches(&self, probes: &[&dyn Probe]) -> bool {
         self.0.len() == probes.len()
-            && self.0.iter().zip(probes).all(|(stored, probe): (&Option<Box<dyn Any + Send + Sync>>, &&dyn Probe)| {
+            && self.0.iter().zip(probes).all(|(stored, probe): (&Option<StoredInput>, &&dyn Probe)| {
                 stored.as_deref().is_some_and(|stored: &(dyn Any + Send + Sync)| probe.matches(stored))
             })
     }
@@ -254,7 +268,7 @@ impl Inputs {
 
 /// A node reclaimed by key, typed.
 #[doc(hidden)]
-pub struct Reused<K: NodeValue>(pub(crate) Arc<Node<K>>);
+pub struct Reused<K: NodeValue>(pub(crate) TypedNodeRef<K>);
 
 impl<K: NodeValue> Reused<K> {
     /// A new outside handle to the reclaimed derived node, which takes the creation's comparator.
@@ -278,7 +292,7 @@ impl<K: NodeValue> Reused<K> {
 }
 
 /// Its creator's run has reclaimed `node`, refreshed if need be: it may run again (spec §7.2).
-pub(crate) fn decided<K: NodeValue>(node: &Arc<Node<K>>) {
+pub(crate) fn decided<K: NodeValue>(node: &TypedNodeRef<K>) {
     node.header.undecided.store(false, std::sync::atomic::Ordering::SeqCst);
     let erased: NodeRef = node.clone();
     crate::protocol::resume(&erased);
@@ -312,18 +326,18 @@ impl Keyed {
     }
 
     pub(crate) fn key(self, site: &'static Site) -> (Key, Inputs) {
-        let hash: u64 = self.value.hash_at(site);
+        let hash: KeyHash = self.value.hash_at(site);
         (Key { hash, value: self.value }, self.inputs)
     }
 }
 
 /// Keyed nodes of one creator, by key hash, each list in creation order.
 #[derive(Default)]
-pub(crate) struct KeyedSet(BTreeMap<u64, Vec<NodeRef>>);
+pub(crate) struct KeyedSet(BTreeMap<KeyHash, Bucket>);
 
 impl KeyedSet {
     pub(crate) fn insert(&mut self, node: NodeRef) {
-        let hash: u64 = node.header().key.as_ref().map_or(0, |key: &Key| key.hash);
+        let hash: KeyHash = node.header().key.as_ref().map_or(0, |key: &Key| key.hash);
         self.0.entry(hash).or_default().push(node);
     }
 
@@ -349,14 +363,14 @@ impl KeyedSet {
     }
 
     pub(crate) fn remove(&mut self, id: NodeId) -> Option<NodeRef> {
-        let mut found: Option<(u64, usize)> = None;
+        let mut found: Option<(KeyHash, usize)> = None;
         for (hash, list) in &self.0 {
             if let Some(at) = list.iter().position(|node: &NodeRef| node.header().id == id) {
                 found = Some((*hash, at));
                 break;
             }
         }
-        let (hash, at): (u64, usize) = found?;
+        let (hash, at): (KeyHash, usize) = found?;
         let list: &mut Vec<NodeRef> = self.0.get_mut(&hash)?;
         let node: NodeRef = list.remove(at);
         if list.is_empty() {
@@ -445,7 +459,7 @@ pub(crate) fn note_fresh(creator: &mut crate::node::Sched, node: &NodeRef) -> bo
     duplicate
 }
 
-pub(crate) fn typed<K: NodeValue>(node: NodeRef) -> Arc<Node<K>> {
+pub(crate) fn typed<K: NodeValue>(node: NodeRef) -> TypedNodeRef<K> {
     match node.into_any().downcast::<Node<K>>() {
         Ok(node) => node,
         Err(_) => unreachable!("lithia: a reclaimed node of the wrong value type"),
@@ -462,7 +476,7 @@ fn reuse<K: NodeValue>(
     let Some(node) = reclaim(key, kind, TypeId::of::<K>(), shape, parent_ids) else {
         return Reuse::Fresh;
     };
-    let node: Arc<Node<K>> = typed(node);
+    let node: TypedNodeRef<K> = typed(node);
     let same: bool = if kind == Kind::Source {
         node.value
             .load_full()

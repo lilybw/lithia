@@ -20,6 +20,9 @@ pub(crate) fn bump() {
     }
 }
 
+/// Counts progress events; a waiter compares readings taken before and after it checks.
+pub(crate) type SettleSeq = u64;
+
 /// Registers a waiter until dropped.
 pub(crate) struct Waiter(());
 
@@ -30,7 +33,7 @@ impl Waiter {
     }
 
     /// Current progress sequence number.
-    pub(crate) fn seq(&self) -> u64 {
+    pub(crate) fn seq(&self) -> SettleSeq {
         SEQ.load(Ordering::SeqCst)
     }
 
@@ -42,6 +45,7 @@ impl Waiter {
 
 impl Drop for Waiter {
     fn drop(&mut self) {
-        WAITERS.fetch_sub(1, Ordering::SeqCst);
+        let before: usize = WAITERS.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(before > 0, "lithia: more settle waiters left than registered");
     }
 }

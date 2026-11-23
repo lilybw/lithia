@@ -5,6 +5,9 @@
 
 use std::fmt;
 
+/// A site's identity within one build: the address of its static `Site`.
+pub(crate) type SiteKey = usize;
+
 /// Where a node was created, recorded at compile time for diagnostics.
 /// `eprintln!("{}:{} in {}", site.file, site.line, (site.function)());`
 #[derive(Clone, Copy)]

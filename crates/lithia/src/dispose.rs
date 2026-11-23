@@ -7,9 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use crate::capture::SharedLease;
 use crate::context;
 use crate::ids::NodeId;
-use crate::node::{Header, NodeRef, WeakNodeRef, phase};
+use crate::node::{ChangeSender, Header, NodeRef, Parents, WeakNodeRef, phase};
 use crate::protocol;
 use crate::sync::MutexGuard;
 
@@ -105,7 +106,7 @@ pub(crate) fn dispose_unchecked(root: &NodeRef) {
 }
 
 fn is_ghost_parent(node: &NodeRef, parent: NodeId) -> bool {
-    let parents: MutexGuard<'_, Option<Vec<NodeRef>>> = node.header().parents.lock();
+    let parents: MutexGuard<'_, Option<Parents>> = node.header().parents.lock();
     parents
         .as_ref()
         .and_then(|list: &Vec<NodeRef>| list.iter().find(|p: &&NodeRef| p.header().id == parent))
@@ -136,20 +137,21 @@ fn teardown(node: &NodeRef) -> Vec<NodeRef> {
     if me.is_some() {
         crate::diag::support_released(header.site);
     }
-    let parents: Option<Vec<NodeRef>> = header.parents.lock().take();
+    let parents: Option<Parents> = header.parents.lock().take();
     if let Some(list) = parents.as_ref() {
         for parent in list {
             parent.header().unsubscribe(header.id);
         }
     }
-    let sender: Option<tokio::sync::watch::Sender<u64>> = header.changes.lock().take();
+    let sender: Option<ChangeSender> = header.changes.lock().take();
     drop(sender);
     if header.counted.swap(false, Ordering::SeqCst) {
-        header.scope.live.fetch_sub(1, Ordering::SeqCst);
+        let before: usize = header.scope.live.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(before > 0, "lithia: scope {} counted fewer live nodes than it holds", header.scope.id);
     }
     node.release_payload();
     // Handles its block moved out count before disposal recomputes support.
-    let lease: Option<Arc<crate::capture::Lease>> = header.lease.lock().take();
+    let lease: Option<SharedLease> = header.lease.lock().take();
     if let Some(lease) = lease {
         lease.end();
     }

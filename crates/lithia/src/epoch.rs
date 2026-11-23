@@ -10,11 +10,11 @@ use crate::sync::{AtomicUsize, Mutex, MutexGuard};
 use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
 
-use crate::ids::{EpochId, NodeId, next_epoch_id, next_scope_id};
+use crate::ids::{EpochId, NodeId, ScopeId, WriterId, next_epoch_id, next_scope_id};
 
 /// Root of a subtree of epochs: a lithia task, or any other task or thread.
 pub(crate) struct Scope {
-    pub(crate) id: u64,
+    pub(crate) id: ScopeId,
     /// Root epochs with open work, plus deferred functions not yet delivered.
     open: AtomicUsize,
     notify: Notify,
@@ -40,7 +40,9 @@ impl Scope {
     }
 
     pub(crate) fn dec(&self) {
-        if self.open.fetch_sub(1, Ordering::SeqCst) == 1 {
+        let before: usize = self.open.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(before > 0, "lithia: scope {} returned a token it did not hold", self.id);
+        if before == 1 {
             self.notify.notify_waiters();
         }
     }
@@ -71,8 +73,34 @@ impl Scope {
     }
 }
 
+/// An open-work token of a scope, returned when dropped; a panic cannot keep the scope from settling.
+pub(crate) struct ScopeToken(Arc<Scope>);
+
+impl ScopeToken {
+    /// Takes a token from `scope`.
+    pub(crate) fn take(scope: Arc<Scope>) -> ScopeToken {
+        scope.inc();
+        ScopeToken(scope)
+    }
+
+    pub(crate) fn scope(&self) -> &Arc<Scope> {
+        &self.0
+    }
+}
+
+impl Drop for ScopeToken {
+    fn drop(&mut self) {
+        self.0.dec();
+    }
+}
+
 /// A function waiting for an epoch to settle.
 pub(crate) type SettleHook = Box<dyn FnOnce() + Send>;
+/// Epoch tokens a caller holds, one entry per token, closed with `close_all` once no node
+/// reference is held.
+pub(crate) type Tokens = Vec<Arc<Epoch>>;
+/// Epochs referred to without holding a token.
+pub(crate) type Epochs = Vec<Arc<Epoch>>;
 
 struct Hooks {
     settled: bool,
@@ -91,7 +119,7 @@ pub(crate) struct Epoch {
     notify: Notify,
     hooks: Mutex<Hooks>,
     /// Writes runs delivered into this epoch, as (writer, written node), for cut reruns (spec §7.4).
-    writes: Mutex<Vec<(NodeId, NodeId)>>,
+    writes: Mutex<Vec<(WriterId, NodeId)>>,
 }
 
 impl Epoch {
@@ -121,15 +149,15 @@ impl Epoch {
     }
 
     /// Records that `writer`'s run wrote `written` in this epoch.
-    pub(crate) fn record_write(&self, writer: NodeId, written: NodeId) {
-        let mut guard: MutexGuard<'_, Vec<(NodeId, NodeId)>> = self.writes.lock();
+    pub(crate) fn record_write(&self, writer: WriterId, written: NodeId) {
+        let mut guard: MutexGuard<'_, Vec<(WriterId, NodeId)>> = self.writes.lock();
         if !guard.contains(&(writer, written)) {
             guard.push((writer, written));
         }
     }
 
     /// The nodes `writer` wrote in this epoch and the epochs it descends from.
-    pub(crate) fn written_by(&self, writer: NodeId) -> Vec<NodeId> {
+    pub(crate) fn written_by(&self, writer: WriterId) -> Vec<NodeId> {
         let mut out: Vec<NodeId> = Vec::new();
         let mut at: Option<&Epoch> = Some(self);
         while let Some(epoch) = at {
@@ -156,7 +184,9 @@ impl Epoch {
 
     /// Closes `count` open entries at once, as `count` closes in a row would.
     pub(crate) fn close_tokens(&self, count: usize) {
-        if self.own.fetch_sub(count, Ordering::SeqCst) == count {
+        let before: usize = self.own.fetch_sub(count, Ordering::SeqCst);
+        debug_assert!(before >= count, "lithia: epoch {} closed {count} of its {before} tokens", self.id);
+        if before == count {
             self.on_settled();
         }
         self.sub_dec_by(count);
@@ -176,7 +206,9 @@ impl Epoch {
     }
 
     fn sub_dec_by(&self, count: usize) {
-        if self.sub.fetch_sub(count, Ordering::SeqCst) == count {
+        let before: usize = self.sub.fetch_sub(count, Ordering::SeqCst);
+        debug_assert!(before >= count, "lithia: epoch {} closed {count} of its {before} open subtrees", self.id);
+        if before == count {
             self.notify.notify_waiters();
             match &self.parent {
                 Some(parent) => parent.sub_dec(),

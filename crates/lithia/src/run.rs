@@ -7,18 +7,28 @@ use std::any::Any;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 
 use crate::sync::{AtomicBool, AtomicU64, Mutex, MutexGuard};
 
 use crate::NodeValue;
 use crate::context::{self, Batch, ClosureGuard, Frame, FrameGuard, Target};
-use crate::epoch::{Epoch, Scope};
-use crate::ids::{self, NodeId};
-use crate::node::{Body, BoxFut, Header, Node, NodeRef, WeakNodeRef};
+use crate::epoch::{Scope, Tokens};
+use crate::ids::{self, NodeId, RunId, Stamp};
+use crate::node::{
+    AsyncFn, Body, BodySlot, BoxFut, GenFn, Header, Node, NodeRef, SyncFn, TypedNodeRef, WeakNodeRef, WeakTypedNodeRef,
+};
 use crate::protocol::{self, End, Outcome};
+use crate::site::SiteKey;
+
+/// A panic's payload, as `catch_unwind` returns it.
+pub(crate) type PanicPayload = Box<dyn Any + Send>;
+/// One poll of a body: an item, the end of a generator, or not yet.
+type Polled<K> = Poll<Option<K>>;
+/// Creations so far at each site in one run: an unkeyed node's place in its lineage.
+type SiteCounts = Vec<(SiteKey, u64)>;
 
 /// State of one run shared between its task, its yielder and the scheduler.
 pub(crate) struct RunShared {
@@ -27,7 +37,7 @@ pub(crate) struct RunShared {
     scope: Mutex<Arc<Scope>>,
     id: AtomicU64,
     /// Run id an async source block was registered under at creation, or 0.
-    expected: u64,
+    expected: RunId,
     cancelled: AtomicBool,
     waker: Mutex<Option<Waker>>,
     first_done: AtomicBool,
@@ -35,13 +45,13 @@ pub(crate) struct RunShared {
     /// Newest change stamp of the node's own items during the current poll.
     stamp: AtomicU64,
     /// Creations so far at each site, by site address: an unkeyed node's place in its lineage.
-    creations: Mutex<Vec<(usize, u64)>>,
+    creations: Mutex<SiteCounts>,
     /// Nodes this run's writes and reflows leave alone: a cut writer's rerun (spec §7.4).
     suppress: std::sync::OnceLock<Vec<NodeId>>,
 }
 
 impl RunShared {
-    pub(crate) fn new(node: WeakNodeRef, node_id: NodeId, scope: Arc<Scope>, expected: u64) -> RunShared {
+    pub(crate) fn new(node: WeakNodeRef, node_id: NodeId, scope: Arc<Scope>, expected: RunId) -> RunShared {
         RunShared {
             node,
             node_id,
@@ -70,9 +80,9 @@ impl RunShared {
 
     /// The place of the next node this run creates at `site` among its creations there.
     pub(crate) fn place(&self, site: &'static crate::Site) -> u64 {
-        let at: usize = std::ptr::from_ref(site).addr();
-        let mut guard: MutexGuard<'_, Vec<(usize, u64)>> = self.creations.lock();
-        match guard.iter_mut().find(|(known, _): &&mut (usize, u64)| *known == at) {
+        let at: SiteKey = std::ptr::from_ref(site).addr();
+        let mut guard: MutexGuard<'_, SiteCounts> = self.creations.lock();
+        match guard.iter_mut().find(|(known, _): &&mut (SiteKey, u64)| *known == at) {
             Some((_, count)) => {
                 *count += 1;
                 *count - 1
@@ -84,15 +94,15 @@ impl RunShared {
         }
     }
 
-    pub(crate) fn id(&self) -> u64 {
+    pub(crate) fn id(&self) -> RunId {
         self.id.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn set_id(&self, id: u64) {
+    pub(crate) fn set_id(&self, id: RunId) {
         self.id.store(id, Ordering::SeqCst);
     }
 
-    pub(crate) fn expected(&self) -> u64 {
+    pub(crate) fn expected(&self) -> RunId {
         self.expected
     }
 
@@ -138,7 +148,7 @@ impl RunShared {
     }
 
     /// Records a change stamp produced by the node's own item.
-    pub(crate) fn note_stamp(&self, stamp: u64) {
+    pub(crate) fn note_stamp(&self, stamp: Stamp) {
         self.stamp.fetch_max(stamp, Ordering::SeqCst);
     }
 
@@ -163,7 +173,7 @@ enum RunState<K: NodeValue> {
     /// Not started yet.
     Init,
     /// A synchronous body, called within one poll.
-    Sync(Arc<dyn Fn() -> K + Send + Sync>),
+    Sync(SyncFn<K>),
     /// An async body, a generator or an async source block.
     Future(BoxFut<Option<K>>),
     /// Ended, aborted or never started.
@@ -172,7 +182,7 @@ enum RunState<K: NodeValue> {
 
 /// The task of one run; holds its node weakly (spec §10.1).
 pub(crate) struct RunFuture<K: NodeValue> {
-    node: Weak<Node<K>>,
+    node: WeakTypedNodeRef<K>,
     /// The runtime its task runs on, for the fast path.
     runtime: crate::inline::RuntimeKey,
     shared: Arc<RunShared>,
@@ -181,12 +191,12 @@ pub(crate) struct RunFuture<K: NodeValue> {
 }
 
 impl<K: NodeValue> RunFuture<K> {
-    pub(crate) fn new(node: Weak<Node<K>>) -> RunFuture<K> {
-        let (node_id, scope, expected, runtime): (NodeId, Arc<Scope>, u64, crate::inline::RuntimeKey) =
+    pub(crate) fn new(node: WeakTypedNodeRef<K>) -> RunFuture<K> {
+        let (node_id, scope, expected, runtime): (NodeId, Arc<Scope>, RunId, crate::inline::RuntimeKey) =
             match node.upgrade() {
                 Some(strong) => {
                     let header: &Header = &strong.header;
-                    let expected: u64 = if header.kind == crate::node::Kind::AsyncSource {
+                    let expected: RunId = if header.kind == crate::node::Kind::AsyncSource {
                         header.block_run.load(Ordering::SeqCst)
                     } else {
                         0
@@ -207,18 +217,18 @@ impl<K: NodeValue> RunFuture<K> {
     }
 
     /// Builds the run's state from the node's body.
-    fn prepare(&self, node: &Arc<Node<K>>) -> RunState<K> {
-        let mut body: MutexGuard<'_, Option<Body<K>>> = node.body.lock();
+    fn prepare(&self, node: &TypedNodeRef<K>) -> RunState<K> {
+        let mut body: MutexGuard<'_, BodySlot<K>> = node.body.lock();
         let yielder = || Yielder { shared: self.shared.clone(), node: Arc::downgrade(node) };
         match body.as_ref() {
             Some(Body::Sync(f)) => return RunState::Sync(f.clone()),
             Some(Body::Async(f)) => {
-                let f: Arc<dyn Fn() -> BoxFut<K> + Send + Sync> = f.clone();
+                let f: AsyncFn<K> = f.clone();
                 drop(body);
                 return RunState::Future(Box::pin(async move { Some(f().await) }));
             }
             Some(Body::Gen(f)) => {
-                let f: Arc<dyn Fn(Yielder<K>) -> BoxFut<()> + Send + Sync> = f.clone();
+                let f: GenFn<K> = f.clone();
                 drop(body);
                 let generator: BoxFut<()> = f(yielder());
                 return RunState::Future(Box::pin(async move {
@@ -260,7 +270,7 @@ impl<K: NodeValue> Future for RunFuture<K> {
         let open: Option<crate::inline::Open> = crate::inline::open(this.runtime);
         // Every strong reference to the node is gone before any token closes, so a settled
         // scope never finds the node alive only because its run task is finishing (spec §10.1).
-        let (polled, closes): (Poll<()>, Vec<Arc<Epoch>>) = this.poll_run(cx);
+        let (polled, closes): (Poll<()>, Tokens) = this.poll_run(cx);
         match &open {
             Some(open) => {
                 protocol::close_all(closes);
@@ -273,7 +283,7 @@ impl<K: NodeValue> Future for RunFuture<K> {
 }
 
 impl<K: NodeValue> RunFuture<K> {
-    fn poll_run(&mut self, cx: &mut Context<'_>) -> (Poll<()>, Vec<Arc<Epoch>>) {
+    fn poll_run(&mut self, cx: &mut Context<'_>) -> (Poll<()>, Tokens) {
         if matches!(self.state, RunState::Done) {
             return (Poll::Ready(()), Vec::new());
         }
@@ -286,16 +296,16 @@ impl<K: NodeValue> RunFuture<K> {
             return (Poll::Ready(()), Vec::new());
         };
         let erased: NodeRef = node.clone();
-        let mut closes: Vec<Arc<Epoch>> = Vec::new();
+        let mut closes: Tokens = Vec::new();
         if matches!(self.state, RunState::Init) {
-            let (started, pending): (bool, Vec<Arc<Epoch>>) = protocol::start_run(&erased, &self.shared);
+            let (started, pending): (bool, Tokens) = protocol::start_run(&erased, &self.shared);
             protocol::append_closes(&mut closes, pending);
             if !started {
                 self.stop();
                 return (Poll::Ready(()), closes);
             }
             let frame: Frame = Frame::new(Target::Run(self.shared.clone()));
-            let prepared: Result<RunState<K>, Box<dyn Any + Send>> = {
+            let prepared: Result<RunState<K>, PanicPayload> = {
                 let _entered: FrameGuard<'_> = context::enter(&frame);
                 catch_unwind(AssertUnwindSafe(|| self.prepare(&node)))
             };
@@ -334,7 +344,7 @@ impl<K: NodeValue> RunFuture<K> {
         let outcome: Outcome = {
             let _entered: FrameGuard<'_> = context::enter(&frame);
             let state: &mut RunState<K> = &mut self.state;
-            let polled: Result<Poll<Option<K>>, Box<dyn Any + Send>> = catch_unwind(AssertUnwindSafe(|| match state {
+            let polled: Result<Polled<K>, PanicPayload> = catch_unwind(AssertUnwindSafe(|| match state {
                 RunState::Sync(f) => Poll::Ready(Some(f())),
                 RunState::Future(future) => future.as_mut().poll(cx),
                 RunState::Init | RunState::Done => Poll::Ready(None),
@@ -368,7 +378,7 @@ impl<K: NodeValue> RunFuture<K> {
         if ended {
             self.stop();
         }
-        let stamp: u64 = self.shared.stamp.swap(0, Ordering::SeqCst);
+        let stamp: Stamp = self.shared.stamp.swap(0, Ordering::SeqCst);
         protocol::append_closes(&mut closes, protocol::after_poll(&erased, &self.shared, batch, &outcome, stamp));
         if ended {
             return (Poll::Ready(()), closes);
@@ -389,7 +399,7 @@ impl<K: NodeValue> Drop for RunFuture<K> {
         }
         // Dropped before finishing: the runtime shut down (spec §11.3).
         let state: RunState<K> = std::mem::replace(&mut self.state, RunState::Done);
-        let closes: Vec<Arc<Epoch>> = match self.node.upgrade() {
+        let closes: Tokens = match self.node.upgrade() {
             Some(node) => {
                 let erased: NodeRef = node;
                 protocol::abandon(&erased, &self.shared)
@@ -405,7 +415,7 @@ impl<K: NodeValue> Drop for RunFuture<K> {
 #[doc(hidden)]
 pub struct Yielder<K: NodeValue> {
     shared: Arc<RunShared>,
-    node: Weak<Node<K>>,
+    node: WeakTypedNodeRef<K>,
 }
 
 impl<K: NodeValue> Yielder<K> {
@@ -467,13 +477,18 @@ impl<K: NodeValue> Node<K> {
                 if equal {
                     discarded = Some(value);
                     if header.flags.contains(crate::Flags::ALWAYS_PROPAGATE) {
-                        let stamp: u64 = ids::stamp();
+                        let stamp: Stamp = ids::stamp();
+                        debug_assert!(
+                            stamp > header.version.load(Ordering::Relaxed),
+                            "lithia: a node's version went back"
+                        );
                         header.version.store(stamp, Ordering::SeqCst);
                         run.note_stamp(stamp);
                     }
                 } else {
                     replaced = self.value.swap(Some(Arc::new(value)));
-                    let stamp: u64 = ids::stamp();
+                    let stamp: Stamp = ids::stamp();
+                    debug_assert!(stamp > header.version.load(Ordering::Relaxed), "lithia: a node's version went back");
                     header.version.store(stamp, Ordering::SeqCst);
                     run.note_stamp(stamp);
                     header.notify_changes();

@@ -15,12 +15,13 @@ use tokio::sync::futures::Notified;
 use tokio::task::JoinHandle;
 
 use crate::context::{self, Batch, Deferred, Frame, FrameGuard, Target};
-use crate::epoch::{Epoch, Scope};
+use crate::epoch::{Scope, ScopeToken, Tokens};
 use crate::handles::NodeHandle;
-use crate::ids::{self, NodeId};
+use crate::ids::{self, NodeId, Stamp};
 use crate::node::{Header, NodeRef, Sched, Served, WeakNodeRef};
 use crate::protocol::ServedEpochs;
 use crate::run::{self, RunShared};
+use crate::settle_wait::SettleSeq;
 use crate::sync::MutexGuard;
 use crate::{Dispose, Ghosted, Readable, Reflow, Status, dispose as disposal, protocol, settle_wait};
 
@@ -30,7 +31,7 @@ fn take_pending() -> Option<(Batch, Target)> {
 }
 
 /// Delivers `batch` for `target`, returning the child epochs it opened for a run in flight.
-fn deliver(target: &Target, batch: Batch) -> Vec<Arc<Epoch>> {
+fn deliver(target: &Target, batch: Batch) -> Tokens {
     match target {
         Target::Scope(scope) => {
             protocol::deliver_outside(batch, scope);
@@ -56,10 +57,10 @@ fn served_by(run: &Arc<RunShared>) -> Option<(NodeRef, ServedEpochs)> {
 }
 
 /// Delivers a run's batch as child epochs while it is in flight, else as an outside batch.
-fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Vec<Arc<Epoch>> {
+fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Tokens {
     match served_by(run) {
         Some((node, served)) => {
-            let epochs: Vec<Arc<Epoch>> = protocol::deliver_children(&node, &served, batch, 0);
+            let epochs: Tokens = protocol::deliver_children(&node, &served, batch, 0);
             drop(node);
             protocol::close_all(epochs.clone());
             epochs
@@ -75,10 +76,10 @@ fn deliver_for_run(run: &Arc<RunShared>, batch: Batch) -> Vec<Arc<Epoch>> {
 /// `lithia::flush().await;` never waits for async results; tests use `lithia::test::settled`.
 pub async fn flush() {
     let pending: Option<(Batch, Target)> = take_pending();
-    let (scope, epochs): (Option<Arc<Scope>>, Vec<Arc<Epoch>>) = match pending {
+    let (scope, epochs): (Option<Arc<Scope>>, Tokens) = match pending {
         None => (Some(context::detached_scope()), Vec::new()),
         Some((batch, target)) => {
-            let epochs: Vec<Arc<Epoch>> = deliver(&target, batch);
+            let epochs: Tokens = deliver(&target, batch);
             match target {
                 Target::Scope(scope) => (Some(scope), epochs),
                 Target::Run(_) => (None, epochs),
@@ -112,12 +113,13 @@ pub fn try_reflow<N: Reflow>(node: &N) -> Result<(), Ghosted> {
         // A cut writer's rerun: it reflowed this node already in the epoch it was cut in.
         return if header.is_ghost() { Err(Ghosted) } else { Ok(()) };
     }
-    let stamp: u64 = {
+    let stamp: Stamp = {
         let _write: MutexGuard<'_, ()> = header.write.lock();
         if header.is_ghost() {
             return Err(Ghosted);
         }
-        let stamp: u64 = ids::stamp();
+        let stamp: Stamp = ids::stamp();
+        debug_assert!(stamp > header.version.load(Ordering::Relaxed), "lithia: a node's version went back");
         header.version.store(stamp, Ordering::SeqCst);
         stamp
     };
@@ -135,10 +137,9 @@ pub fn dispose<N: Dispose>(node: &N) {
 /// Runs `f` once the current batch's epoch has settled; a thin helper over the epoch tree (7.1).
 /// `lithia::defer(move || done.set(true));`
 pub fn defer(f: impl FnOnce() + Send + 'static) {
-    let scope: Arc<Scope> = context::current_scope();
-    scope.inc();
+    let token: ScopeToken = ScopeToken::take(context::current_scope());
     let runtime: Option<Handle> = Handle::try_current().ok();
-    context::record_defer(Deferred { f: Box::new(f), scope, runtime });
+    context::record_defer(Deferred { f: Box::new(f), token, runtime });
 }
 
 /// Current condition of the node.
@@ -197,9 +198,9 @@ pub mod test_utils {
             let notified: Notified<'_> = waiter.notify().notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let before: u64 = waiter.seq();
+            let before: SettleSeq = waiter.seq();
             let quiet: bool = subtree_quiet(&root);
-            let after: u64 = waiter.seq();
+            let after: SettleSeq = waiter.seq();
             if quiet && before == after {
                 return;
             }

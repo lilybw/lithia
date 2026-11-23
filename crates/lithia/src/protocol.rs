@@ -5,6 +5,7 @@
 //! Its locking and release invariants are stated in spec §11.4.
 
 use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -12,9 +13,9 @@ use crate::sync::{AtomicUsize, Mutex, MutexGuard};
 
 use crate::context::{Batch, Deferred};
 use crate::diag::Diag;
-use crate::epoch::{Epoch, Scope};
-use crate::ids::{self, EpochId, NodeId};
-use crate::node::{Entry, Header, Kind, NodeRef, RunSlot, Sched, Served, merge_served, phase};
+use crate::epoch::{Epoch, Epochs, Scope, ScopeToken, Tokens};
+use crate::ids::{self, EpochId, NodeId, RunId, Stamp, WriterId};
+use crate::node::{Children, Entry, Header, Kind, NodeRef, Parents, RunSlot, Sched, Served, merge_served, phase};
 use crate::options::{Fragility, GhostPolicy};
 use crate::run::{RunShared, TaskFuture};
 use crate::sets::WriterSet;
@@ -22,15 +23,23 @@ use crate::{Failure, Site, diag, settle_wait};
 
 /// Epochs a run serves, each with the writer set its entry carried.
 pub(crate) type ServedEpochs = Vec<(Arc<Epoch>, WriterSet)>;
+/// Epochs a batch is delivered into, each with the writer set its chains start from.
+type Targets = Vec<(Arc<Epoch>, WriterSet)>;
+/// Runs to wake once a step's locks are released.
+type Wakes = Vec<Arc<RunShared>>;
+/// Deferred functions shared by the epochs they wait for; the last epoch to settle fires them.
+type SharedDefers = Arc<Mutex<Option<Vec<Deferred>>>>;
+/// Failures that make a fragile node fail in turn.
+type Causes = Vec<Arc<Failure>>;
 
 /// A parent telling its waiting children that it settled an epoch.
 pub(crate) struct Release {
     from: NodeRef,
     /// The parent's subscribers when the release was gathered: those its obligation counted.
-    children: Vec<NodeRef>,
+    children: Children,
     epoch: Arc<Epoch>,
     /// Change stamp to compare against each child's last run, or 0.
-    carry: u64,
+    carry: Stamp,
     writers: WriterSet,
     origin: Option<&'static Site>,
 }
@@ -40,8 +49,8 @@ pub(crate) struct Release {
 pub(crate) struct Work {
     releases: VecDeque<Release>,
     spawns: Vec<NodeRef>,
-    wakes: Vec<Arc<RunShared>>,
-    closes: Vec<Arc<Epoch>>,
+    wakes: Wakes,
+    closes: Tokens,
     diags: Vec<Diag>,
     /// Strong references taken from weak lists, dropped only after every lock is released.
     keep: Vec<NodeRef>,
@@ -51,6 +60,27 @@ pub(crate) struct Work {
     resumes: Vec<crate::node::WeakNodeRef>,
     /// Writers cut in an epoch, to rerun once it has settled.
     cut_reruns: Vec<CutRerun>,
+}
+
+impl Work {
+    fn is_drained(&self) -> bool {
+        self.releases.is_empty()
+            && self.spawns.is_empty()
+            && self.wakes.is_empty()
+            && self.closes.is_empty()
+            && self.diags.is_empty()
+            && self.keep.is_empty()
+            && self.released.is_empty()
+            && self.resumes.is_empty()
+            && self.cut_reruns.is_empty()
+    }
+}
+
+impl Drop for Work {
+    fn drop(&mut self) {
+        // Undrained, its token closes are lost and its scope never settles.
+        debug_assert!(std::thread::panicking() || self.is_drained(), "lithia: protocol work dropped undrained");
+    }
 }
 
 /// A writer the writer check refused in `epoch`: it reruns once the epoch has settled, leaving
@@ -63,13 +93,13 @@ struct CutRerun {
 
 /// Carries out gathered work: releases, spawns and wakes, then token closes.
 pub(crate) fn drain(work: Work) {
-    let closes: Vec<Arc<Epoch>> = drain_deferred(work);
+    let closes: Tokens = drain_deferred(work);
     close_all(closes);
 }
 
 /// Closes tokens; callers drop every strong node reference first, so a settled scope
 /// never finds a node kept alive only by lithia (spec §10.1).
-pub(crate) fn close_all(mut epochs: Vec<Arc<Epoch>>) {
+pub(crate) fn close_all(mut epochs: Tokens) {
     // Several tokens of one epoch close in one step, so fewer writes hit its shared counters;
     // by id, not address, so loom models stay deterministic.
     epochs.sort_by_key(|epoch: &Arc<Epoch>| epoch.id);
@@ -84,7 +114,7 @@ pub(crate) fn close_all(mut epochs: Vec<Arc<Epoch>>) {
 }
 
 /// Appends `more` to `closes`, taking over `more`'s buffer when `closes` is empty.
-pub(crate) fn append_closes(closes: &mut Vec<Arc<Epoch>>, more: Vec<Arc<Epoch>>) {
+pub(crate) fn append_closes(closes: &mut Tokens, more: Tokens) {
     if closes.is_empty() {
         *closes = more;
     } else {
@@ -94,7 +124,7 @@ pub(crate) fn append_closes(closes: &mut Vec<Arc<Epoch>>, more: Vec<Arc<Epoch>>)
 
 /// Like `drain`, but hands the token closes back to the caller.
 #[must_use = "the returned tokens must be closed with close_all"]
-pub(crate) fn drain_deferred(mut work: Work) -> Vec<Arc<Epoch>> {
+pub(crate) fn drain_deferred(mut work: Work) -> Tokens {
     while let Some(release) = work.releases.pop_front() {
         let Release { from, children, epoch, carry, writers, origin } = release;
         release_children(&from, children, &epoch, carry, &writers, origin, &mut work);
@@ -129,7 +159,7 @@ pub(crate) fn drain_deferred(mut work: Work) -> Vec<Arc<Epoch>> {
     for run in std::mem::take(&mut work.wakes) {
         run.wake();
     }
-    let closes: Vec<Arc<Epoch>> = std::mem::take(&mut work.closes);
+    let closes: Tokens = std::mem::take(&mut work.closes);
     drop(work);
     settle_wait::bump();
     closes
@@ -164,7 +194,7 @@ fn wake_gated(sched: &mut Sched, work: &mut Work) {
 /// Opens an entry on every node downstream of `root` in `epoch`, through `children`, the subscribers
 /// its obligation captured, so each wait counted here is one its parent's release will meet.
 pub(crate) fn frame(root: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, work: &mut Work) {
-    let mut stack: Vec<(NodeRef, Vec<NodeRef>)> = Vec::new();
+    let mut stack: Vec<(NodeRef, Children)> = Vec::new();
     frame_level(root, children, epoch, &mut stack);
     while let Some((parent, children)) = stack.pop() {
         frame_level(parent.header().id, &children, epoch, &mut stack);
@@ -175,9 +205,9 @@ pub(crate) fn frame(root: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, work
 
 /// Frames `children` of `parent_id` in `epoch`; those it opens an entry on go on `stack` with
 /// their subscribers, unless a run of theirs still owes the epoch.
-fn frame_level(parent_id: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, stack: &mut Vec<(NodeRef, Vec<NodeRef>)>) {
+fn frame_level(parent_id: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, stack: &mut Vec<(NodeRef, Children)>) {
     for child in children {
-        let recurse: Option<Vec<NodeRef>> = {
+        let recurse: Option<Children> = {
             let header: &Header = child.header();
             let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
             let sched: &mut Sched = &mut guard;
@@ -230,9 +260,9 @@ fn rerun_cut(rerun: CutRerun) {
 /// Releases each of `children` that waits on `from` in `epoch`, once.
 fn release_children(
     from: &NodeRef,
-    children: Vec<NodeRef>,
+    children: Children,
     epoch: &Arc<Epoch>,
-    carry: u64,
+    carry: Stamp,
     writers: &WriterSet,
     origin: Option<&'static Site>,
     work: &mut Work,
@@ -264,11 +294,11 @@ fn release_children(
 }
 
 /// Failures of the parents that make a fragile node fail, if its condition holds (spec §9.2).
-fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<Vec<Arc<Failure>>> {
+fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<Causes> {
     let header: &Header = node.header();
-    let parents: MutexGuard<'_, Option<Vec<NodeRef>>> = header.parents.lock();
-    let list: &Vec<NodeRef> = parents.as_ref()?;
-    let mut causes: Vec<Arc<Failure>> = Vec::new();
+    let parents: MutexGuard<'_, Option<Parents>> = header.parents.lock();
+    let list: &Parents = parents.as_ref()?;
+    let mut causes: Causes = Vec::new();
     for parent in list {
         let parent_header: &Header = parent.header();
         let bits: u32 = parent_header.phase();
@@ -295,9 +325,9 @@ fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<Vec<Arc<Fail
 }
 
 /// Whether a parent's version is newer than `ran_at`, the start of the node's last run.
-fn parents_changed_since(node: &NodeRef, ran_at: u64) -> bool {
-    let parents: MutexGuard<'_, Option<Vec<NodeRef>>> = node.header().parents.lock();
-    parents.as_ref().is_some_and(|list: &Vec<NodeRef>| {
+fn parents_changed_since(node: &NodeRef, ran_at: Stamp) -> bool {
+    let parents: MutexGuard<'_, Option<Parents>> = node.header().parents.lock();
+    parents.as_ref().is_some_and(|list: &Parents| {
         list.iter().any(|parent: &NodeRef| parent.header().version.load(Ordering::SeqCst) > ran_at)
     })
 }
@@ -313,7 +343,7 @@ fn whole_epochs_wait(header: &Header, sched: &Sched) -> bool {
 }
 
 /// Fails a fragile node whose condition holds (spec §9.2).
-fn fail_by_fragility(header: &Header, sched: &mut Sched, causes: Vec<Arc<Failure>>, work: &mut Work) {
+fn fail_by_fragility(header: &Header, sched: &mut Sched, causes: Causes, work: &mut Work) {
     let parent: String = causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
     header.fail(Failure { message: "parent failed".to_string(), site: *header.site, causes });
     sched.failed_by_fragility = true;
@@ -375,7 +405,7 @@ fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) {
             None => {}
         }
     }
-    let ran_at: u64 = sched.ran_at;
+    let ran_at: Stamp = sched.ran_at;
     let Some(entry) = sched.entries.get_mut(&epoch) else {
         return;
     };
@@ -528,7 +558,7 @@ fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind: Seed, wor
     }
 }
 
-fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet, stamp: u64, work: &mut Work) {
+fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet, stamp: Stamp, work: &mut Work) {
     let header: &Header = node.header();
     let created: Option<Vec<NodeRef>> = {
         let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
@@ -567,13 +597,13 @@ fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet, stamp: u64
 /// A node's own item delivered in a later poll: its children run in the child epoch.
 pub(crate) struct OwnItem<'a> {
     pub(crate) node: &'a NodeRef,
-    pub(crate) stamp: u64,
+    pub(crate) stamp: Stamp,
 }
 
 /// Live nodes of `list` by id, once each, with the newest stamp recorded for each.
-fn upgrade_sorted(mut list: Vec<(crate::node::WeakNodeRef, NodeId, u64)>) -> Vec<(NodeRef, u64)> {
-    list.sort_by_key(|(_, id, _): &(crate::node::WeakNodeRef, NodeId, u64)| *id);
-    let mut out: Vec<(NodeRef, u64)> = Vec::with_capacity(list.len());
+fn upgrade_sorted(mut list: Vec<(crate::node::WeakNodeRef, NodeId, Stamp)>) -> Vec<(NodeRef, Stamp)> {
+    list.sort_by_key(|(_, id, _): &(crate::node::WeakNodeRef, NodeId, Stamp)| *id);
+    let mut out: Vec<(NodeRef, Stamp)> = Vec::with_capacity(list.len());
     for (weak, id, stamp) in list {
         match out.last_mut() {
             Some((last, newest)) if last.header().id == id => *newest = (*newest).max(stamp),
@@ -599,15 +629,15 @@ fn upgrade_nodes(list: Vec<crate::node::WeakNodeRef>) -> Vec<NodeRef> {
 pub(crate) fn deliver_into(
     batch: Batch,
     targets: &[(Arc<Epoch>, WriterSet)],
-    writer: Option<NodeId>,
+    writer: Option<WriterId>,
     own: Option<OwnItem<'_>>,
 ) {
     if batch.is_empty() && own.is_none() {
         return;
     }
     let Batch { writes, reflows, creations, reruns, refreshes, defers } = batch;
-    let writes: Vec<(NodeRef, u64)> = upgrade_sorted(writes);
-    let reflows: Vec<(NodeRef, u64)> = upgrade_sorted(reflows);
+    let writes: Vec<(NodeRef, Stamp)> = upgrade_sorted(writes);
+    let reflows: Vec<(NodeRef, Stamp)> = upgrade_sorted(reflows);
     let creations: Vec<NodeRef> = upgrade_nodes(creations);
     let reruns: Vec<NodeRef> = upgrade_nodes(reruns);
     let refreshes: Vec<NodeRef> = upgrade_nodes(refreshes);
@@ -622,7 +652,7 @@ pub(crate) fn deliver_into(
 
     // Framing: the whole downstream region opens its entries before anything is released. Each
     // written node's release reaches the subscribers its framing counted, in the same order.
-    let mut counted: Vec<Vec<NodeRef>> = Vec::new();
+    let mut counted: Vec<Children> = Vec::new();
     for (epoch, base) in targets {
         let chain: WriterSet = base.with(writer);
         let seed_writers: WriterSet = base.without(writer);
@@ -638,7 +668,7 @@ pub(crate) fn deliver_into(
             seed(node, epoch, &seed_writers, Seed::Rerun, &mut work);
         }
         for (node, _) in &writes {
-            let children: Vec<NodeRef> = node.header().subscribers();
+            let children: Children = node.header().subscribers();
             frame(node.header().id, &children, epoch, &mut work);
             counted.push(children);
         }
@@ -646,34 +676,34 @@ pub(crate) fn deliver_into(
             if node.header().kind == Kind::Derived {
                 seed_reflow(node, epoch, &chain, *stamp, &mut work);
             } else {
-                let children: Vec<NodeRef> = node.header().subscribers();
+                let children: Children = node.header().subscribers();
                 frame(node.header().id, &children, epoch, &mut work);
                 counted.push(children);
             }
         }
         if let Some(item) = &own {
-            let children: Vec<NodeRef> = item.node.header().subscribers();
+            let children: Children = item.node.header().subscribers();
             frame(item.node.header().id, &children, epoch, &mut work);
             counted.push(children);
         }
     }
 
     // Releases.
-    let mut counted: std::vec::IntoIter<Vec<NodeRef>> = counted.into_iter();
+    let mut counted: std::vec::IntoIter<Children> = counted.into_iter();
     for (epoch, base) in targets {
         let chain: WriterSet = base.with(writer);
         for (node, stamp) in &writes {
-            let children: Vec<NodeRef> = counted.next().unwrap_or_default();
+            let children: Children = counted.next().unwrap_or_default();
             release_children(node, children, epoch, *stamp, &chain, Some(node.header().site), &mut work);
         }
         for (node, stamp) in &reflows {
             if node.header().kind != Kind::Derived {
-                let children: Vec<NodeRef> = counted.next().unwrap_or_default();
+                let children: Children = counted.next().unwrap_or_default();
                 release_children(node, children, epoch, *stamp, &chain, Some(node.header().site), &mut work);
             }
         }
         if let Some(item) = &own {
-            let children: Vec<NodeRef> = counted.next().unwrap_or_default();
+            let children: Children = counted.next().unwrap_or_default();
             release_children(item.node, children, epoch, item.stamp, base, None, &mut work);
         }
     }
@@ -686,8 +716,7 @@ pub(crate) fn deliver_into(
         }
     }
     if !defers.is_empty() {
-        let epochs: Vec<Arc<Epoch>> =
-            targets.iter().map(|(epoch, _): &(Arc<Epoch>, WriterSet)| epoch.clone()).collect();
+        let epochs: Epochs = targets.iter().map(|(epoch, _): &(Arc<Epoch>, WriterSet)| epoch.clone()).collect();
         attach_defers(epochs, defers);
     }
     work.keep.extend(writes.into_iter().map(|(node, _)| node));
@@ -705,7 +734,7 @@ pub(crate) fn deliver_outside(batch: Batch, scope: &Arc<Scope>) {
 
 /// Like `deliver_outside`, but hands the epoch's guard token back to the caller.
 #[must_use = "the returned tokens must be closed with close_all"]
-pub(crate) fn deliver_outside_deferred(batch: Batch, scope: &Arc<Scope>) -> Vec<Arc<Epoch>> {
+pub(crate) fn deliver_outside_deferred(batch: Batch, scope: &Arc<Scope>) -> Tokens {
     if batch.is_empty() {
         return Vec::new();
     }
@@ -722,12 +751,12 @@ pub(crate) fn deliver_children(
     node: &NodeRef,
     served: &[(Arc<Epoch>, WriterSet)],
     batch: Batch,
-    own_stamp: u64,
-) -> Vec<Arc<Epoch>> {
+    own_stamp: Stamp,
+) -> Tokens {
     if batch.is_empty() && own_stamp == 0 {
         return Vec::new();
     }
-    let children: Vec<(Arc<Epoch>, WriterSet)> = served
+    let children: Targets = served
         .iter()
         .map(|(epoch, writers): &(Arc<Epoch>, WriterSet)| (Epoch::child(epoch), writers.clone()))
         .collect();
@@ -737,7 +766,7 @@ pub(crate) fn deliver_children(
 }
 
 /// Runs the deferred functions once every one of `epochs` has settled (spec §6.3).
-pub(crate) fn attach_defers(epochs: Vec<Arc<Epoch>>, defers: Vec<Deferred>) {
+pub(crate) fn attach_defers(epochs: Epochs, defers: Vec<Deferred>) {
     if epochs.is_empty() {
         for deferred in defers {
             fire_deferred(deferred);
@@ -745,12 +774,14 @@ pub(crate) fn attach_defers(epochs: Vec<Arc<Epoch>>, defers: Vec<Deferred>) {
         return;
     }
     let remaining: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(epochs.len()));
-    let pending: Arc<Mutex<Option<Vec<Deferred>>>> = Arc::new(Mutex::new(Some(defers)));
+    let pending: SharedDefers = Arc::new(Mutex::new(Some(defers)));
     for epoch in epochs {
         let remaining: Arc<AtomicUsize> = remaining.clone();
-        let pending: Arc<Mutex<Option<Vec<Deferred>>>> = pending.clone();
+        let pending: SharedDefers = pending.clone();
         epoch.on_settle(Box::new(move || {
-            if remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+            let before: usize = remaining.fetch_sub(1, Ordering::SeqCst);
+            debug_assert!(before > 0, "lithia: more epochs settled than deferred functions waited for");
+            if before == 1 {
                 let list: Option<Vec<Deferred>> = pending.lock().take();
                 for deferred in list.into_iter().flatten() {
                     fire_deferred(deferred);
@@ -762,11 +793,12 @@ pub(crate) fn attach_defers(epochs: Vec<Arc<Epoch>>, defers: Vec<Deferred>) {
 
 /// Starts a deferred function as a lithia task in its scope, with an empty writer set.
 pub(crate) fn fire_deferred(deferred: Deferred) {
-    let Deferred { f, scope, runtime } = deferred;
-    let task_scope: Arc<Scope> = scope.clone();
+    let Deferred { f, token, runtime } = deferred;
+    let task_scope: Arc<Scope> = token.scope().clone();
     let future = async move {
-        TaskFuture::new(task_scope, async move { f() }).await;
-        scope.dec();
+        // Returned once the function's writes are delivered, or when the task is dropped unrun.
+        let _token: ScopeToken = token;
+        TaskFuture::new(task_scope, async move { run_deferred(f) }).await;
     };
     #[cfg(lithia_loom)]
     {
@@ -790,6 +822,13 @@ pub(crate) fn fire_deferred(deferred: Deferred) {
     }
 }
 
+/// Runs a deferred function; a panic is reported and its writes up to the panic still land.
+fn run_deferred(f: Box<dyn FnOnce() + Send>) {
+    if let Err(panic) = catch_unwind(AssertUnwindSafe(f)) {
+        diag::defer_panicked(&crate::run::panic_message(&*panic));
+    }
+}
+
 /// Links a new node to its parents and opens entries for every epoch a parent still owes
 /// a release in (spec §11.4 step 7). Returns whether every parent had been torn down as a ghost.
 pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) -> bool {
@@ -799,13 +838,12 @@ pub(crate) fn link(node: &NodeRef, parents: &[NodeRef]) -> bool {
     let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
     for parent in parents {
         let parent_header: &Header = parent.header();
-        let epochs: Vec<Arc<Epoch>> = {
+        let epochs: Epochs = {
             let mut parent_guard: MutexGuard<'_, Sched> = parent_header.sched.lock();
             let parent_sched: &mut Sched = &mut parent_guard;
             all_closed &= parent_sched.closed;
             parent_sched.subscribers.insert(header.id, weak.clone());
-            let mut list: Vec<Arc<Epoch>> =
-                parent_sched.entries.values().map(|entry: &Entry| entry.epoch.clone()).collect();
+            let mut list: Epochs = parent_sched.entries.values().map(|entry: &Entry| entry.epoch.clone()).collect();
             if let Some(slot) = &parent_sched.run {
                 list.extend(slot.served.iter().filter(|s: &&Served| !s.released).map(|s: &Served| s.epoch.clone()));
             }
@@ -864,13 +902,13 @@ fn standing(node: &NodeRef, creator: Option<&NodeRef>) -> Standing {
 
 /// Starts a queued run: takes over the runnable entries and the handover (spec §7.3 item 1).
 /// Returns whether it started, and tokens for the caller to close.
-pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<Arc<Epoch>>) {
+pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Tokens) {
     let header: &Header = node.header();
     let mut work: Work = Work::default();
     let creator: Option<NodeRef> =
         header.creator.and_then(|_: NodeId| header.held_by.lock().as_ref().and_then(crate::node::WeakNodeRef::upgrade));
     // Epochs a cut rerun read its writes from, dropped once the lock is released.
-    let mut suppress_from: Vec<Arc<Epoch>> = Vec::new();
+    let mut suppress_from: Epochs = Vec::new();
     let started: bool = {
         let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
@@ -904,7 +942,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
             );
             let killed: bool =
                 header.kind == Kind::AsyncSource && header.runs.load(Ordering::SeqCst) != shared.expected();
-            let fragile: Option<Vec<Arc<Failure>>> = match header.fragility {
+            let fragile: Option<Causes> = match header.fragility {
                 Some(fragility) if !served.is_empty() && !header.is_ghost() && !killed => {
                     fragility_causes(node, fragility)
                 }
@@ -930,7 +968,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunShared>) -> (bool, Vec<A
             } else {
                 sched.ran_at = ids::now();
                 sched.whole_deferred = 0;
-                let id: u64 = if header.kind == Kind::AsyncSource {
+                let id: RunId = if header.kind == Kind::AsyncSource {
                     shared.expected()
                 } else {
                     header.runs.fetch_add(1, Ordering::SeqCst) + 1
@@ -997,7 +1035,7 @@ fn address_releases(sched: &mut Sched, work: &mut Work, count: usize) {
     if count == 0 {
         return;
     }
-    let mut children: Vec<NodeRef> = sched.children();
+    let mut children: Children = sched.children();
     let first: usize = work.releases.len() - count;
     for (at, release) in work.releases.range_mut(first..).enumerate() {
         release.children = if at + 1 == count { std::mem::take(&mut children) } else { children.clone() };
@@ -1024,12 +1062,25 @@ pub(crate) fn after_poll(
     shared: &Arc<RunShared>,
     batch: Batch,
     outcome: &Outcome,
-    own_stamp: u64,
-) -> Vec<Arc<Epoch>> {
+    own_stamp: Stamp,
+) -> Tokens {
     let header: &Header = node.header();
+    debug_assert!(
+        shared.id() <= header.runs.load(Ordering::Relaxed),
+        "lithia: a run's id is ahead of its node's count"
+    );
     if let Outcome::Panicked(message) = outcome {
         diag::run_panicked(header.site, message);
-        header.fail(Failure { message: message.clone(), site: *header.site, causes: Vec::new() });
+        // Only the current run fails the node, as only it publishes: writes and run starts are held off.
+        let _write: MutexGuard<'_, ()> = header.write.lock();
+        let guard: MutexGuard<'_, Sched> = header.sched.lock();
+        let current: bool = !shared.is_cancelled()
+            && !header.is_ghost()
+            && header.runs.load(Ordering::SeqCst) == shared.id()
+            && guard.run.as_ref().is_some_and(|slot: &RunSlot| slot.id == shared.id());
+        if current {
+            header.fail(Failure { message: message.clone(), site: *header.site, causes: Vec::new() });
+        }
     }
     let first: bool = !shared.first_done();
     // The served epochs are copied only when there is something to deliver into them.
@@ -1062,7 +1113,7 @@ pub(crate) fn after_poll(
         // The run was torn down meanwhile; its writes are applied and still propagate.
         return deliver_outside_deferred(batch, &shared.scope());
     };
-    let mut pending: Vec<Arc<Epoch>> = Vec::new();
+    let mut pending: Tokens = Vec::new();
     if first {
         shared.set_first_done();
         deliver_into(batch, &served, Some(header.writer), None);
@@ -1135,7 +1186,7 @@ pub(crate) fn after_poll(
 
 /// A superseded run published its first item: the run that takes its epochs over releases them
 /// with the item's stamp, so the children see the change even if the new run's item is equal.
-fn carry_published(node: &NodeRef, shared: &Arc<RunShared>, stamp: u64) {
+fn carry_published(node: &NodeRef, shared: &Arc<RunShared>, stamp: Stamp) {
     let mut guard: MutexGuard<'_, Sched> = node.header().sched.lock();
     if let Some(slot) = guard.run.as_mut().filter(|slot: &&mut RunSlot| slot.id == shared.id()) {
         for record in slot.served.iter_mut().filter(|record: &&mut Served| !record.released) {
@@ -1151,7 +1202,7 @@ fn protect_ends(node: &NodeRef, shared: &Arc<RunShared>) {
     {
         let mut guard: MutexGuard<'_, Sched> = header.sched.lock();
         let sched: &mut Sched = &mut guard;
-        let ran_at: u64 = sched.ran_at;
+        let ran_at: Stamp = sched.ran_at;
         // As in `decide`: an entry runnable only for a reflow waits for the run to end.
         let waiting: bool = sched.entries.values().any(|entry: &Entry| {
             let reflow_only: bool = entry.reflow && !entry.first && !entry.force && entry.newest <= ran_at;
@@ -1181,7 +1232,7 @@ pub(crate) enum End {
 /// Ends a run: hands its epochs to the next run if superseded, otherwise closes them.
 /// Returns tokens for the caller to close once it holds no strong reference to the node.
 #[must_use = "the returned tokens must be closed with close_all"]
-pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec<Arc<Epoch>> {
+pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Tokens {
     let header: &Header = node.header();
     let mut work: Work = Work::default();
     {
@@ -1252,7 +1303,7 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
         header.under_way.store(true, Ordering::SeqCst);
     }
     let releasing: bool = !work.released.is_empty();
-    let closes: Vec<Arc<Epoch>> = drain_deferred(work);
+    let closes: Tokens = drain_deferred(work);
     if releasing {
         header.sched.lock().releasing = false;
         crate::settle_wait::bump();
@@ -1262,8 +1313,8 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunShared>, end: End) -> Vec
 
 /// Gives up on a node whose run task was dropped because its runtime shut down (spec §11.3).
 #[must_use = "the returned tokens must be closed with close_all"]
-pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunShared>) -> Vec<Arc<Epoch>> {
-    let mut pending: Vec<Arc<Epoch>> = finalize(node, shared, End::Shutdown);
+pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunShared>) -> Tokens {
+    let mut pending: Tokens = finalize(node, shared, End::Shutdown);
     let header: &Header = node.header();
     let mut work: Work = Work::default();
     {

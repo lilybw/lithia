@@ -3,28 +3,28 @@
 
 //! Small sets used by the scheduler: writer sets and parent masks (spec §5, §7.4).
 
-use crate::ids::NodeId;
+use crate::ids::WriterId;
 
 /// The writers on the chains that reached an entry or run; sorted and unique.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct WriterSet(Vec<NodeId>);
+pub(crate) struct WriterSet(Vec<WriterId>);
 
 impl WriterSet {
     pub(crate) fn new() -> WriterSet {
         WriterSet(Vec::new())
     }
 
-    pub(crate) fn contains(&self, id: NodeId) -> bool {
+    pub(crate) fn contains(&self, id: WriterId) -> bool {
         self.0.binary_search(&id).is_ok()
     }
 
-    pub(crate) fn insert(&mut self, id: NodeId) {
+    pub(crate) fn insert(&mut self, id: WriterId) {
         if let Err(at) = self.0.binary_search(&id) {
             self.0.insert(at, id);
         }
     }
 
-    pub(crate) fn remove(&mut self, id: NodeId) {
+    pub(crate) fn remove(&mut self, id: WriterId) {
         if let Ok(at) = self.0.binary_search(&id) {
             self.0.remove(at);
         }
@@ -37,7 +37,7 @@ impl WriterSet {
     }
 
     /// This set plus `id`.
-    pub(crate) fn with(&self, id: Option<NodeId>) -> WriterSet {
+    pub(crate) fn with(&self, id: Option<WriterId>) -> WriterSet {
         let mut out: WriterSet = self.clone();
         if let Some(id) = id {
             out.insert(id);
@@ -46,7 +46,7 @@ impl WriterSet {
     }
 
     /// This set minus `id`.
-    pub(crate) fn without(&self, id: Option<NodeId>) -> WriterSet {
+    pub(crate) fn without(&self, id: Option<WriterId>) -> WriterSet {
         let mut out: WriterSet = self.clone();
         if let Some(id) = id {
             out.remove(id);

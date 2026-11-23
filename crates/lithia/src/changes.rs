@@ -5,34 +5,32 @@
 
 use std::future::poll_fn;
 use std::pin::Pin;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use tokio_stream::wrappers::WatchStream;
 
 use crate::NodeValue;
-use crate::node::Node;
+use crate::node::{ChangeSender, ChangeSeq, TypedNodeRef, WeakTypedNodeRef};
 
 /// `Unpin` `Stream<Item = Arc<K>>` of a node's values, current value first; holds the node weakly.
 /// `while let Some(v) = changes.next().await { println!("{v}"); }`
 pub struct Changes<K: NodeValue> {
-    node: Weak<Node<K>>,
-    inner: Option<WatchStream<u64>>,
+    node: WeakTypedNodeRef<K>,
+    inner: Option<WatchStream<ChangeSeq>>,
 }
 
 impl<K: NodeValue> Changes<K> {
-    pub(crate) fn new(node: &Arc<Node<K>>) -> Changes<K> {
-        let receiver: Option<tokio::sync::watch::Receiver<u64>> = {
-            let mut slot: crate::sync::MutexGuard<'_, Option<tokio::sync::watch::Sender<u64>>> =
-                node.header.changes.lock();
+    pub(crate) fn new(node: &TypedNodeRef<K>) -> Changes<K> {
+        let receiver: Option<tokio::sync::watch::Receiver<ChangeSeq>> = {
+            let mut slot: crate::sync::MutexGuard<'_, Option<ChangeSender>> = node.header.changes.lock();
             // The channel is made by the first stream. Disposal marks the node a ghost before it
             // takes the sender under this lock, so no stream starts on a channel it never ends.
             if node.header.is_ghost() {
                 None
             } else {
-                let sender: &tokio::sync::watch::Sender<u64> =
-                    slot.get_or_insert_with(|| tokio::sync::watch::channel(0u64).0);
+                let sender: &ChangeSender = slot.get_or_insert_with(|| tokio::sync::watch::channel(0).0);
                 Some(sender.subscribe())
             }
         };
@@ -48,7 +46,7 @@ impl<K: NodeValue> Changes<K> {
 impl<K: NodeValue> Stream for Changes<K> {
     type Item = Arc<K>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Arc<K>>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this: &mut Changes<K> = self.get_mut();
         let Some(inner) = this.inner.as_mut() else {
             return Poll::Ready(None);
@@ -63,8 +61,8 @@ impl<K: NodeValue> Stream for Changes<K> {
                 let value: Option<Arc<K>> = this
                     .node
                     .upgrade()
-                    .filter(|node: &Arc<Node<K>>| !node.header.is_ghost())
-                    .and_then(|node: Arc<Node<K>>| node.value.load_full());
+                    .filter(|node: &TypedNodeRef<K>| !node.header.is_ghost())
+                    .and_then(|node: TypedNodeRef<K>| node.value.load_full());
                 if value.is_none() {
                     this.inner = None;
                 }

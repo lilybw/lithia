@@ -3,6 +3,8 @@
 
 //! Async bodies, generators and supersession (spec §3.6, §7.3, §8).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use lithia::{Changes, DerivedNode, SourceNode, Status, effect};
@@ -224,4 +226,24 @@ async fn a_replacing_generator_is_superseded_after_its_first_item() {
     }
     assert!(*ticks.get() >= 2000, "{}", *ticks.get());
     lithia::dispose(&ticks);
+}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_outlives_the_panic_of_the_block_it_stopped() {
+    let started: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let flag: Arc<AtomicBool> = started.clone();
+    let fed: SourceNode<u32> = effect!(async move {
+        yield 1;
+        flag.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(200));
+        panic!("the stopped block panics");
+    });
+    while !started.load(Ordering::SeqCst) {
+        tokio::task::yield_now().await;
+    }
+    fed.set(5); // stops the block in the middle of its poll
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    lithia::flush().await;
+    assert_eq!(*fed.get(), 5);
+    assert!(matches!(lithia::status(&fed), Status::Ready), "{:?}", lithia::status(&fed));
 }

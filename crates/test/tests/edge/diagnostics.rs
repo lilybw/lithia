@@ -231,3 +231,68 @@ async fn a_memo_that_loses_its_last_child_by_edge_alone_warns_too() {
     assert!(find(Level::WARN, &[UNREAD, &line], Duration::from_secs(2)).await.is_some());
     drop(input);
 }
+
+/// Panics on every event, as a broken subscriber would.
+struct PanickingLayer;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for PanickingLayer {
+    fn on_event(&self, _event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        panic!("subscriber panics");
+    }
+}
+
+#[lithia::test(flavor = "current_thread")]
+async fn a_panicking_subscriber_leaves_lithia_working() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let subscriber: tracing_subscriber::layer::Layered<PanickingLayer, tracing_subscriber::Registry> =
+        tracing_subscriber::registry().with(PanickingLayer);
+    let _default: tracing::subscriber::DefaultGuard = tracing::subscriber::set_default(subscriber);
+    let n: SourceNode<u32> = effect!(0);
+    let checked: DerivedNode<u32> = effect!(|n| {
+        let value: u32 = *n.get();
+        assert_ne!(value, 1, "the body refuses 1");
+        value
+    });
+    lithia::flush().await;
+    n.set(1); // the run panics, and so does the subscriber its warning reaches
+    let flushed: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(2), lithia::flush()).await;
+    assert!(flushed.is_ok(), "flush hung after the subscriber panicked");
+    assert!(matches!(lithia::status(&checked), Status::Failed(_)));
+    n.set(2);
+    lithia::flush().await;
+    assert_eq!(*checked.get(), 2);
+}
+
+/// Panics when dropped, as state holding a broken resource might.
+struct PanicsOnDrop;
+
+impl Drop for PanicsOnDrop {
+    fn drop(&mut self) {
+        panic!("drop-probe-7783");
+    }
+}
+
+#[lithia::test]
+async fn a_comparator_whose_drop_panics_is_reported_not_raised() {
+    let _ = events();
+    let input: SourceNode<u32> = effect!(1);
+    let state: PanicsOnDrop = PanicsOnDrop;
+    let node: DerivedNode<u32> = effect!(
+        |input| *input.get(),
+        equals = move |a: &u32, b: &u32| {
+            let _held: &PanicsOnDrop = &state;
+            a == b
+        }
+    );
+    lithia::flush().await;
+    lithia::dispose(&node);
+    drop(node);
+    input.set(2);
+    let flushed: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(2), lithia::flush()).await;
+    assert!(flushed.is_ok());
+    let event: Option<Captured> =
+        find(Level::WARN, &["a dropped value panicked", "drop-probe-7783"], Duration::from_secs(2)).await;
+    assert!(event.is_some(), "the panic is reported from the drop thread");
+}

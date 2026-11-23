@@ -352,6 +352,18 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   arc-swap writes slow with every thread that has read (a run at 1.97 µs with 64 reader threads against
   1.10 µs). Plan: fix bugs, add safety nets, restructure (module map in the doc), then tune.
 
+## Aliases, debug assertions and panic leaks (2026-11-23)
+
+- Ids are named by aliases in `ids.rs` (`Stamp`, `RunId`, `ScopeId`, `WriterId`), and generic types
+  nested two or three deep by one documented alias per element (`Tokens` and `Epochs` stay apart though
+  both are `Vec<Arc<Epoch>>`). Engine and macro crates only; tests and benches unchanged.
+- Debug assertions on token, anchor, capture, live-node, waiter and drop-queue counts, on version
+  order, on frame nesting, and on protocol work dropped undrained.
+- Panic leaks closed, each with a test that fails without its fix: a deferred function returns its
+  scope's token through a guard and runs under `catch_unwind`; a superseded or stopped run's panic no
+  longer fails its node; every `tracing` emission is caught; comparators, keys and kept inputs drop off
+  the protocol. The deferred-function bug is out of `docs/known_bugs.md`.
+
 ## Design migration to v0.3.0 (ownership)
 
 - `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc), revision 12 plus its implementation notes. A node created in a run is

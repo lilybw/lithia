@@ -12,11 +12,16 @@ use crate::ids::NodeId;
 use crate::node::NodeRef;
 use crate::sync::{Mutex, MutexGuard};
 
+/// A lease shared by the handles one `move` block took over.
+pub(crate) type SharedLease = Arc<Lease>;
+/// Handles a capture recorded, each with whether it may write.
+type Recorded = Vec<(NodeRef, bool)>;
+
 crate::sync::thread_local! {
-    static RECORDING: RefCell<Option<Vec<(NodeRef, bool)>>> = RefCell::new(None);
+    static RECORDING: RefCell<Option<Recorded>> = RefCell::new(None);
     static READ_ONLY: Cell<bool> = Cell::new(false);
     static MOVED: RefCell<Vec<NodeRef>> = RefCell::new(Vec::new());
-    static LEASE: RefCell<Option<Arc<Lease>>> = RefCell::new(None);
+    static LEASE: RefCell<Option<SharedLease>> = RefCell::new(None);
 }
 
 /// The handles one `move` body took over, by node. A one-shot block ends its lease when it is
@@ -77,7 +82,9 @@ impl Lease {
         };
         for (node, _, count) in held {
             let header: &crate::node::Header = node.header();
-            if header.captured.fetch_sub(count, Ordering::SeqCst) == count {
+            let before: usize = header.captured.fetch_sub(count, Ordering::SeqCst);
+            debug_assert!(before >= count, "lithia: a lease uncounted {count} of {before} captures");
+            if before == count {
                 crate::support::check_unread(header);
             }
         }
@@ -85,9 +92,9 @@ impl Lease {
 }
 
 /// The lease of the expansion under way on this thread.
-pub(crate) fn lease() -> Arc<Lease> {
+pub(crate) fn lease() -> SharedLease {
     LEASE
-        .try_with(|lease: &RefCell<Option<Arc<Lease>>>| {
+        .try_with(|lease: &RefCell<Option<SharedLease>>| {
             lease
                 .borrow_mut()
                 .get_or_insert_with(|| Arc::new(Lease(Mutex::new(Leased { ended: false, held: Vec::new() }))))
@@ -96,8 +103,8 @@ pub(crate) fn lease() -> Arc<Lease> {
         .unwrap_or_else(|_| Arc::new(Lease(Mutex::new(Leased { ended: false, held: Vec::new() }))))
 }
 
-fn take_lease() -> Option<Arc<Lease>> {
-    LEASE.try_with(|lease: &RefCell<Option<Arc<Lease>>>| lease.borrow_mut().take()).ok().flatten()
+fn take_lease() -> Option<SharedLease> {
+    LEASE.try_with(|lease: &RefCell<Option<SharedLease>>| lease.borrow_mut().take()).ok().flatten()
 }
 
 /// Records an anchoring handle a `move` body took over: its count drops once the new node's
@@ -108,15 +115,13 @@ pub(crate) fn moved(node: NodeRef) {
 
 /// Whether handle clones on this thread are captures right now.
 pub(crate) fn active() -> bool {
-    RECORDING
-        .try_with(|recording: &RefCell<Option<Vec<(NodeRef, bool)>>>| recording.borrow().is_some())
-        .unwrap_or(false)
+    RECORDING.try_with(|recording: &RefCell<Option<Recorded>>| recording.borrow().is_some()).unwrap_or(false)
 }
 
 /// Records a captured node; `writes` is false for read-only captures and `Accessor`s.
 pub(crate) fn record(node: NodeRef, writes: bool) {
     let read_only: bool = READ_ONLY.try_with(Cell::get).unwrap_or(false);
-    let _ = RECORDING.try_with(|recording: &RefCell<Option<Vec<(NodeRef, bool)>>>| {
+    let _ = RECORDING.try_with(|recording: &RefCell<Option<Recorded>>| {
         if let Some(list) = recording.borrow_mut().as_mut() {
             list.push((node, writes && !read_only));
         }
@@ -141,14 +146,16 @@ pub(crate) fn read_only<T>(f: impl FnOnce() -> T) -> T {
 /// `let captured: Captured = session.finish();`
 #[doc(hidden)]
 #[derive(Default)]
-pub struct Captured(pub(crate) Vec<(NodeRef, bool)>, Vec<NodeRef>, pub(crate) Option<Arc<Lease>>);
+pub struct Captured(pub(crate) Recorded, Vec<NodeRef>, pub(crate) Option<SharedLease>);
 
 impl Drop for Captured {
     fn drop(&mut self) {
         // Handles moved into the body stop counting only now, after creation registered its edges.
         let _op: crate::support::OpGuard = crate::support::enter();
         for node in std::mem::take(&mut self.1) {
-            if node.header().anchors.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            let before: usize = node.header().anchors.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            debug_assert!(before > 0, "lithia: a moved handle dropped an anchor it did not hold");
+            if before == 1 {
                 crate::support::start(node);
             }
         }
@@ -158,15 +165,15 @@ impl Drop for Captured {
 /// One `effect!` expansion's capture clones; ends capture mode when finished or dropped.
 #[doc(hidden)]
 pub struct Capturing {
-    outer: Option<Vec<(NodeRef, bool)>>,
+    outer: Option<Recorded>,
     done: bool,
 }
 
 impl Capturing {
     /// Starts capture mode on this thread.
     pub fn begin() -> Capturing {
-        let outer: Option<Vec<(NodeRef, bool)>> = RECORDING
-            .try_with(|recording: &RefCell<Option<Vec<(NodeRef, bool)>>>| recording.borrow_mut().replace(Vec::new()))
+        let outer: Option<Recorded> = RECORDING
+            .try_with(|recording: &RefCell<Option<Recorded>>| recording.borrow_mut().replace(Vec::new()))
             .ok()
             .flatten();
         Capturing { outer, done: false }
@@ -186,12 +193,10 @@ impl Capturing {
         Captured(self.restore(), moved, take_lease())
     }
 
-    fn restore(&mut self) -> Vec<(NodeRef, bool)> {
-        let outer: Option<Vec<(NodeRef, bool)>> = self.outer.take();
+    fn restore(&mut self) -> Recorded {
+        let outer: Option<Recorded> = self.outer.take();
         RECORDING
-            .try_with(|recording: &RefCell<Option<Vec<(NodeRef, bool)>>>| {
-                std::mem::replace(&mut *recording.borrow_mut(), outer)
-            })
+            .try_with(|recording: &RefCell<Option<Recorded>>| std::mem::replace(&mut *recording.borrow_mut(), outer))
             .ok()
             .flatten()
             .unwrap_or_default()

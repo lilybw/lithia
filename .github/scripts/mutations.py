@@ -53,9 +53,9 @@ MUTATIONS: list[Mutation] = [
         "W3", "A written node's release reaching its subscribers at release time, not those it framed "
         "(uncaught: no test creates a node between a write's framing and its release)",
         "crates/lithia/src/protocol.rs",
-        "        for (node, stamp) in &writes {\n            let children: Vec<NodeRef> = counted.next().unwrap_or_default();\n",
+        "        for (node, stamp) in &writes {\n            let children: Children = counted.next().unwrap_or_default();\n",
         "        for (node, stamp) in &writes {\n            let _ = counted.next();\n"
-        "            let children: Vec<NodeRef> = node.header().subscribers();\n",
+        "            let children: Children = node.header().subscribers();\n",
         "edge", "", caught=False,
     ),
     Mutation(

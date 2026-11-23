@@ -30,16 +30,6 @@ with the node's current version, so its children test the change in turn. `Sched
 because it has one scope and `ScopeConsistent` checks only that runs started; it needs two scopes and the
 property "an epoch settles only after every run it reached has published".
 
-### A deferred function that panics hangs `flush`
-
-*Every time. Reproduced by `flush_returns_after_a_deferred_function_panics`
-(`crates/test/tests/edge/propagation.rs`, ignored until fixed).*
-
-`defer` takes a token on the caller's scope and returns it after the function has run. When the
-function panics, or its runtime has shut down, the token is never returned, and every later `flush` in
-that scope waits forever. Found by the code review of 2026-11-22. The fix: a guard inside the deferred
-call that returns the token when dropped, and `catch_unwind` around the function.
-
 ### `effect!` turns some valid bodies into compile errors
 
 *Every time, for the forms below.*

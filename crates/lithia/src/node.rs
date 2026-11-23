@@ -14,8 +14,9 @@ use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Mutex,
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
-use crate::epoch::{Epoch, Scope};
-use crate::ids::{EpochId, NodeId};
+use crate::capture::SharedLease;
+use crate::epoch::{Epoch, Epochs, Scope, Tokens};
+use crate::ids::{EpochId, NodeId, RunId, Stamp, WriterId};
 use crate::keyed::{Inputs, Key, KeyedSet};
 use crate::options::{Equals, Flags, Fragility, GhostPolicy};
 use crate::run::{RunShared, Yielder};
@@ -26,6 +27,18 @@ use crate::{Failure, NodeValue, Site, Status};
 pub(crate) type NodeRef = Arc<dyn AnyNode>;
 /// Weak, type-erased reference to a node.
 pub(crate) type WeakNodeRef = Weak<dyn AnyNode>;
+/// Strong reference to a node of a known value type.
+pub(crate) type TypedNodeRef<K> = Arc<Node<K>>;
+/// Weak reference to a node of a known value type.
+pub(crate) type WeakTypedNodeRef<K> = Weak<Node<K>>;
+/// A node's parents, in parameter order.
+pub(crate) type Parents = Vec<NodeRef>;
+/// A node's subscribers, as one release or framing walk reaches them.
+pub(crate) type Children = Vec<NodeRef>;
+/// Counts a node's published changes; its change streams watch the count.
+pub(crate) type ChangeSeq = u64;
+/// Wakes a node's change streams.
+pub(crate) type ChangeSender = watch::Sender<ChangeSeq>;
 
 /// Bits of a node's phase word; `Status` derives from it (spec §5.3).
 pub(crate) mod phase {
@@ -50,24 +63,36 @@ pub(crate) enum Kind {
 
 /// Boxed future of one run.
 pub(crate) type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+/// A synchronous body: produces one item per run.
+pub(crate) type SyncFn<K> = Arc<dyn Fn() -> K + Send + Sync>;
+/// An async body: makes one future per run.
+pub(crate) type AsyncFn<K> = Arc<dyn Fn() -> BoxFut<K> + Send + Sync>;
+/// A generator body: makes one future per run, which yields items through its yielder.
+pub(crate) type GenFn<K> = Arc<dyn Fn(Yielder<K>) -> BoxFut<()> + Send + Sync>;
+/// An async source block that yields, made once.
+pub(crate) type OnceGenFn<K> = Box<dyn FnOnce(Yielder<K>) -> BoxFut<()> + Send>;
+/// A node's body, empty for source nodes and once taken on disposal.
+pub(crate) type BodySlot<K> = Option<Body<K>>;
+/// A node's comparator, replaceable by a reclaiming creation.
+pub(crate) type EqualsCell<K> = Mutex<Equals<K>>;
 
 /// The code a node runs.
 pub(crate) enum Body<K: NodeValue> {
     /// A synchronous body producing one item.
-    Sync(Arc<dyn Fn() -> K + Send + Sync>),
+    Sync(SyncFn<K>),
     /// An async body producing one item.
-    Async(Arc<dyn Fn() -> BoxFut<K> + Send + Sync>),
+    Async(AsyncFn<K>),
     /// A generator body producing items through its yielder.
-    Gen(Arc<dyn Fn(Yielder<K>) -> BoxFut<()> + Send + Sync>),
+    Gen(GenFn<K>),
     /// An async source block, run once.
     Once(BoxFut<K>),
     /// An async source block that yields, run once.
-    OnceGen(Box<dyn FnOnce(Yielder<K>) -> BoxFut<()> + Send>),
+    OnceGen(OnceGenFn<K>),
 }
 
 /// Rerun counting for the rerun-rate warning (spec §12).
 pub(crate) struct RateWindow {
-    pub(crate) start_ms: u64,
+    pub(crate) start_ms: crate::diag::Millis,
     pub(crate) count: u64,
     pub(crate) warned: bool,
 }
@@ -90,7 +115,7 @@ pub(crate) struct Header {
     /// The node's scheduling lock (spec §11.4 step 1).
     pub(crate) sched: Mutex<Sched>,
     /// Strong references to the parents; taken on disposal.
-    pub(crate) parents: Mutex<Option<Vec<NodeRef>>>,
+    pub(crate) parents: Mutex<Option<Parents>>,
     /// Parent ids, sorted; a parent's index is its position here.
     pub(crate) parent_ids: Box<[NodeId]>,
     pub(crate) fragility: Option<Fragility>,
@@ -103,7 +128,7 @@ pub(crate) struct Header {
     /// Whether the node still counts towards its scope's live nodes.
     pub(crate) counted: AtomicBool,
     /// The `changes()` channel, made by the first stream.
-    pub(crate) changes: Mutex<Option<watch::Sender<u64>>>,
+    pub(crate) changes: Mutex<Option<ChangeSender>>,
     pub(crate) rate: Mutex<RateWindow>,
     /// Outside handles that anchor the node.
     pub(crate) anchors: AtomicUsize,
@@ -135,14 +160,14 @@ pub(crate) struct Header {
     pub(crate) block_run: AtomicU64,
     /// The identity it writes under in writer sets: its id, or for a node created in a run, its
     /// lineage, which the same creation in the creator's next run shares (spec §7.4).
-    pub(crate) writer: NodeId,
+    pub(crate) writer: WriterId,
     /// Whether support holds the node while an anchor reaches it: a top-level node with parents.
     pub(crate) supportable: bool,
     /// A node its creator has yet to finish deciding: being let go of, in the holdover, or being
     /// reclaimed until its refresh is done (spec §7.2, Creator order).
     pub(crate) undecided: AtomicBool,
     /// The lease of an async source block's `move` captures, ended once the block stops for good.
-    pub(crate) lease: Mutex<Option<Arc<crate::capture::Lease>>>,
+    pub(crate) lease: Mutex<Option<SharedLease>>,
 }
 
 /// Scheduler state of one node, guarded by its scheduling lock.
@@ -158,7 +183,7 @@ pub(crate) struct Sched {
     /// Created, but its creation has not been delivered yet.
     pub(crate) unseeded: bool,
     /// Clock stamp when the last run started.
-    pub(crate) ran_at: u64,
+    pub(crate) ran_at: Stamp,
     /// Children by id, held weakly; a freed child removes itself, without a scan of the others.
     pub(crate) subscribers: BTreeMap<NodeId, WeakNodeRef>,
     /// Nodes created by this node's runs, held weakly, for `lithia::test::settled`.
@@ -183,7 +208,7 @@ pub(crate) struct Sched {
     pub(crate) gated: Vec<(NodeId, WeakNodeRef)>,
     /// Epochs whose writes by this node's lineage its next run leaves alone, as a cut writer's
     /// rerun does (spec §7.4); read when that run starts, so writes recorded after the cut count.
-    pub(crate) suppress_in: Vec<Arc<Epoch>>,
+    pub(crate) suppress_in: Epochs,
     /// Epochs that became ready while a `WHOLE_EPOCHS` node waited, since its last run started.
     pub(crate) whole_deferred: u32,
 }
@@ -274,8 +299,8 @@ impl Sched {
     }
 
     /// The live subscribers in id order, pruning freed ones; the caller drops them after unlocking.
-    pub(crate) fn children(&mut self) -> Vec<NodeRef> {
-        let mut out: Vec<NodeRef> = Vec::with_capacity(self.subscribers.len());
+    pub(crate) fn children(&mut self) -> Children {
+        let mut out: Children = Vec::with_capacity(self.subscribers.len());
         self.subscribers.retain(|_: &NodeId, weak: &mut WeakNodeRef| match weak.upgrade() {
             Some(node) => {
                 out.push(node);
@@ -394,9 +419,9 @@ pub(crate) struct Entry {
     /// Writers on the chains that reached this entry.
     pub(crate) writers: WriterSet,
     /// Newest change stamp a release carried, or 0.
-    pub(crate) newest: u64,
+    pub(crate) newest: Stamp,
     /// Change stamp to hand on to the children when this entry settles.
-    pub(crate) carry: u64,
+    pub(crate) carry: Stamp,
     /// The node's first run is due in this epoch.
     pub(crate) first: bool,
     /// A `lithia::reflow` is due in this epoch.
@@ -438,12 +463,12 @@ pub(crate) struct Served {
     /// Children were released for `epoch`.
     pub(crate) released: bool,
     /// Change stamp to hand on to the children at release.
-    pub(crate) carry: u64,
+    pub(crate) carry: Stamp,
 }
 
 /// The run in flight on a node.
 pub(crate) struct RunSlot {
-    pub(crate) id: u64,
+    pub(crate) id: RunId,
     pub(crate) shared: Arc<RunShared>,
     pub(crate) served: Vec<Served>,
     /// Superseded: start a new run once this one has stopped.
@@ -535,8 +560,8 @@ impl Header {
     }
 
     /// Strong references to the live children, pruning freed ones.
-    pub(crate) fn subscribers(&self) -> Vec<NodeRef> {
-        let children: Vec<NodeRef> = self.sched.lock().children();
+    pub(crate) fn subscribers(&self) -> Children {
+        let children: Children = self.sched.lock().children();
         children
     }
 
@@ -554,7 +579,7 @@ impl Header {
     /// Notifies `changes()` streams of a new value.
     pub(crate) fn notify_changes(&self) {
         if let Some(sender) = self.changes.lock().as_ref() {
-            sender.send_modify(|seq: &mut u64| *seq = seq.wrapping_add(1));
+            sender.send_modify(|seq: &mut ChangeSeq| *seq = seq.wrapping_add(1));
         }
     }
 }
@@ -565,15 +590,15 @@ pub(crate) struct Node<K: NodeValue> {
     /// Lock-free reads; emptied only by disposal under `ON_GHOST_CAUSE_FAILURE`.
     pub(crate) value: ArcCell<K>,
     /// Empty for source nodes; taken on disposal.
-    pub(crate) body: Mutex<Option<Body<K>>>,
+    pub(crate) body: Mutex<BodySlot<K>>,
     /// Empty without `equals`; a reclaiming creation replaces it (spec §10.1, Keyed nodes).
-    pub(crate) equals: Option<Mutex<Equals<K>>>,
+    pub(crate) equals: Option<EqualsCell<K>>,
 }
 
 impl<K: NodeValue> Node<K> {
     /// The current comparator, if the node has one.
     pub(crate) fn comparator(&self) -> Option<Equals<K>> {
-        self.equals.as_ref().map(|cell: &Mutex<Equals<K>>| cell.lock().clone())
+        self.equals.as_ref().map(|cell: &EqualsCell<K>| cell.lock().clone())
     }
 
     /// Takes a reclaiming creation's comparator; returns the one it replaced.
@@ -637,7 +662,7 @@ impl<K: NodeValue> AnyNode for Node<K> {
         {
             crate::drops::drop_value(value, self.header.runtime.as_ref());
         }
-        let body: Option<Body<K>> = self.body.lock().take();
+        let body: BodySlot<K> = self.body.lock().take();
         if let Some(body) = body {
             crate::drops::drop_later(body, self.header.runtime.as_ref());
         }
@@ -659,10 +684,11 @@ impl<K: NodeValue> Drop for Node<K> {
             crate::diag::freed_before_first_run(header.site);
         }
         if header.counted.swap(false, Ordering::SeqCst) {
-            header.scope.live.fetch_sub(1, Ordering::SeqCst);
+            let before: usize = header.scope.live.fetch_sub(1, Ordering::SeqCst);
+            debug_assert!(before > 0, "lithia: scope {} counted fewer live nodes than it holds", header.scope.id);
         }
         let sched: &mut Sched = header.sched.get_mut();
-        let mut tokens: Vec<Arc<Epoch>> = Vec::new();
+        let mut tokens: Tokens = Vec::new();
         for (_, entry) in std::mem::take(&mut sched.entries) {
             tokens.push(entry.epoch);
         }
@@ -684,7 +710,7 @@ impl<K: NodeValue> Drop for Node<K> {
         sched.subscribers.clear();
         sched.created.clear();
         let generation: Vec<NodeRef> = sched.release_all();
-        let parents: Option<Vec<NodeRef>> = header.parents.get_mut().take();
+        let parents: Option<Parents> = header.parents.get_mut().take();
         if let Some(list) = parents.as_ref() {
             for parent in list {
                 parent.header().unsubscribe(header.id);
@@ -700,8 +726,18 @@ impl<K: NodeValue> Drop for Node<K> {
         if let Some(body) = self.body.get_mut().take() {
             crate::drops::drop_later(body, runtime.as_ref());
         }
+        // Comparator, key and kept inputs carry user drop glue, which teardown never runs inline.
+        if let Some(equals) = self.equals.take() {
+            crate::drops::drop_later(equals, runtime.as_ref());
+        }
+        if let Some(key) = self.header.key.take() {
+            crate::drops::drop_later(key, runtime.as_ref());
+        }
+        if let Some(inputs) = self.header.inputs.get_mut().take() {
+            inputs.release(runtime.as_ref());
+        }
         // Handles its block moved out count before its targets lose its support.
-        let lease: Option<Arc<crate::capture::Lease>> = self.header.lease.lock().take();
+        let lease: Option<SharedLease> = self.header.lease.lock().take();
         if let Some(lease) = lease {
             lease.end();
         }

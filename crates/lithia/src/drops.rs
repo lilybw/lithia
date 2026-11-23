@@ -14,7 +14,8 @@ use std::sync::mpsc;
 
 use tokio::runtime::Handle;
 
-use crate::node::NodeRef;
+use crate::node::{NodeRef, Parents};
+use crate::run::PanicPayload;
 
 crate::sync::thread_local! {
     static RELEASING: Cell<bool> = Cell::new(false);
@@ -79,7 +80,10 @@ pub(crate) fn drop_later<T: Send + 'static>(payload: T, runtime: Option<&Handle>
 
 /// A payload bound for a runtime's blocking pool, or for the drop thread without one.
 #[cfg(not(lithia_loom))]
-type Pending = (Option<Handle>, Box<dyn Any + Send>);
+type Pending = (Option<Handle>, Payload);
+
+/// A value or body on its way to be dropped, type-erased.
+type Payload = Box<dyn Any + Send>;
 
 /// Deferred drops gathered on this thread while a batch is open.
 #[cfg(not(lithia_loom))]
@@ -130,14 +134,14 @@ impl Drop for Batch {
 #[cfg(not(lithia_loom))]
 fn drop_on_pool<T: Send + 'static>(payload: T, runtime: Option<&Handle>) {
     QUEUED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let mut loose: Option<Box<dyn Any + Send>> = Some(Box::new(payload));
+    let mut loose: Option<Payload> = Some(Box::new(payload));
     let full: Option<Vec<Pending>> = BAG
         .try_with(|bag: &RefCell<Bag>| {
             let mut bag: std::cell::RefMut<'_, Bag> = bag.borrow_mut();
             if bag.depth == 0 {
                 return None;
             }
-            let payload: Box<dyn Any + Send> = loose.take()?;
+            let payload: Payload = loose.take()?;
             bag.pending.push((runtime.cloned(), payload));
             (bag.pending.len() >= BAG_LIMIT).then(|| std::mem::take(&mut bag.pending))
         })
@@ -151,10 +155,14 @@ fn drop_on_pool<T: Send + 'static>(payload: T, runtime: Option<&Handle>) {
     }
 }
 
+/// Parcels being gathered, one per runtime.
+#[cfg(not(lithia_loom))]
+type Parcels = Vec<(Option<Handle>, Parcel)>;
+
 /// Queues gathered payloads as one parcel per runtime.
 #[cfg(not(lithia_loom))]
 fn send(pending: Vec<Pending>) {
-    let mut parcels: Vec<(Option<Handle>, Parcel)> = Vec::new();
+    let mut parcels: Parcels = Vec::new();
     for (runtime, payload) in pending {
         let id: Option<tokio::runtime::Id> = runtime.as_ref().map(Handle::id);
         match parcels.iter_mut().find(|(known, _): &&mut (Option<Handle>, Parcel)| known.as_ref().map(Handle::id) == id)
@@ -182,7 +190,7 @@ fn dispatch(runtime: Option<Handle>, parcel: Parcel) {
 /// runs them, they go to the drop thread.
 #[cfg(not(lithia_loom))]
 struct Parcel {
-    payloads: Vec<Box<dyn Any + Send>>,
+    payloads: Vec<Payload>,
 }
 
 #[cfg(not(lithia_loom))]
@@ -192,7 +200,8 @@ impl Parcel {
         let _drops: Batch = batch();
         for payload in std::mem::take(&mut self.payloads) {
             run_drop(Some(payload));
-            QUEUED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            let before: usize = QUEUED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            debug_assert!(before > 0, "lithia: more deferred drops ran than were queued");
         }
     }
 }
@@ -206,8 +215,8 @@ impl Drop for Parcel {
     }
 }
 
-fn run_drop(payload: Option<Box<dyn Any + Send>>) {
-    let outcome: Result<(), Box<dyn Any + Send>> = catch_unwind(AssertUnwindSafe(move || drop(payload)));
+fn run_drop(payload: Option<Payload>) {
+    let outcome: Result<(), PanicPayload> = catch_unwind(AssertUnwindSafe(move || drop(payload)));
     if let Err(panic) = outcome {
         crate::diag::drop_panicked(&crate::run::panic_message(&*panic));
     }
@@ -236,8 +245,8 @@ fn send_to_drop_thread(parcel: Parcel) {
 }
 
 /// Drops a freed node's parents iteratively, so a long chain cannot overflow the stack.
-pub(crate) fn release_parents(parents: Vec<NodeRef>) {
-    let mut parents: Option<Vec<NodeRef>> = Some(parents);
+pub(crate) fn release_parents(parents: Parents) {
+    let mut parents: Option<Parents> = Some(parents);
     let queued: bool = PENDING_PARENTS
         .try_with(|pending: &RefCell<Vec<NodeRef>>| pending.borrow_mut().extend(parents.take().into_iter().flatten()))
         .is_ok();

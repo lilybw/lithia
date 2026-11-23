@@ -13,7 +13,7 @@ use syn::visit::Visit;
 use syn::visit_mut::VisitMut;
 use syn::{Expr, ExprAsync, ExprClosure, Ident, Pat, Token, Type};
 
-use crate::captures::{Captures, Class, rewrite_self};
+use crate::captures::{Captures, Class, FieldPath, rewrite_self};
 
 const OPTIONS: &[&str] = &["init", "equals", "fragility", "ghost", "flags", "key"];
 
@@ -480,11 +480,11 @@ fn capture_take(ident: &Ident, class: &Class, moved: bool, dependency: bool) -> 
 
 /// Clones a value used only through field paths: when every path is a handle, the clone
 /// records no edges and each path that may write records its own.
-fn path_take(base: &TokenStream, binding: &Ident, all: &[Vec<Ident>], written: &[Vec<Ident>]) -> TokenStream {
+fn path_take(base: &TokenStream, binding: &Ident, all: &[FieldPath], written: &[FieldPath]) -> TokenStream {
     let checks: Vec<TokenStream> =
-        all.iter().map(|fields: &Vec<Ident>| quote!(&& (#base #(.#fields)*).__lithia_is_handle())).collect();
+        all.iter().map(|fields: &FieldPath| quote!(&& (#base #(.#fields)*).__lithia_is_handle())).collect();
     let edges: Vec<TokenStream> =
-        written.iter().map(|fields: &Vec<Ident>| quote!((#base #(.#fields)*).__lithia_field();)).collect();
+        written.iter().map(|fields: &FieldPath| quote!((#base #(.#fields)*).__lithia_field();)).collect();
     quote_spanned! {binding.span()=>
         let __lithia_paths: bool = {
             #[allow(unused_imports)]
@@ -507,12 +507,12 @@ fn path_take(base: &TokenStream, binding: &Ident, all: &[Vec<Ident>], written: &
 
 /// Flags the handles of a moved value used only through field paths: when every path is a
 /// handle, each is flagged internal in place, read-only or not by its own uses.
-fn moved_paths_take(ident: &Ident, all: &[Vec<Ident>], written: &[Vec<Ident>]) -> TokenStream {
+fn moved_paths_take(ident: &Ident, all: &[FieldPath], written: &[FieldPath]) -> TokenStream {
     let checks: Vec<TokenStream> =
-        all.iter().map(|fields: &Vec<Ident>| quote!(&& (#ident #(.#fields)*).__lithia_is_handle())).collect();
+        all.iter().map(|fields: &FieldPath| quote!(&& (#ident #(.#fields)*).__lithia_is_handle())).collect();
     let flags: Vec<TokenStream> = all
         .iter()
-        .map(|fields: &Vec<Ident>| {
+        .map(|fields: &FieldPath| {
             if written.contains(fields) {
                 quote!((&#ident #(.#fields)*).__lithia_move();)
             } else {

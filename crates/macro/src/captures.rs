@@ -32,10 +32,15 @@ const FORMAT_MACROS: &[&str] = &[
     "unimplemented",
 ];
 
+/// The named fields that follow a captured name, as in `state.rows.selected`.
+pub(crate) type FieldPath = Vec<Ident>;
+/// The names bound in one block scope.
+type Bindings = HashSet<String>;
+
 /// Collects free, lowercase identifiers in expression position, in first-use order.
 #[derive(Default)]
 pub(crate) struct Captures {
-    scopes: Vec<HashSet<String>>,
+    scopes: Vec<Bindings>,
     seen: HashSet<String>,
     pub(crate) found: Vec<Ident>,
     pub(crate) uses_self: bool,
@@ -53,7 +58,7 @@ struct Uses {
     /// Used directly other than to read it.
     written: bool,
     /// Field paths used, each with whether a use of it may write.
-    paths: Vec<(Vec<Ident>, bool)>,
+    paths: Vec<(FieldPath, bool)>,
 }
 
 /// How a capture's handles are classified for writer edges.
@@ -64,7 +69,7 @@ pub(crate) enum Class {
     /// Everything recorded inside it may be written.
     Write,
     /// Used only through field paths; each path that may write, by its fields.
-    Paths { all: Vec<Vec<Ident>>, written: Vec<Vec<Ident>> },
+    Paths { all: Vec<FieldPath>, written: Vec<FieldPath> },
 }
 
 /// Macros whose arguments are plain expressions, evaluated as written.
@@ -88,7 +93,7 @@ impl Captures {
     }
 
     fn is_bound(&self, name: &str) -> bool {
-        self.scopes.iter().any(|scope: &HashSet<String>| scope.contains(name))
+        self.scopes.iter().any(|scope: &Bindings| scope.contains(name))
     }
 
     fn bind(&mut self, name: &Ident) {
@@ -124,10 +129,10 @@ impl Captures {
     }
 
     /// Records a use of the field path `base.fields…`; `read` when the use only reads it.
-    fn path_use(&mut self, base: &Ident, fields: Vec<Ident>, read: bool) {
+    fn path_use(&mut self, base: &Ident, fields: FieldPath, read: bool) {
         let written: bool = !read || self.opaque > 0;
         if let Some(uses) = self.capture(base) {
-            match uses.paths.iter_mut().find(|(known, _): &&mut (Vec<Ident>, bool)| *known == fields) {
+            match uses.paths.iter_mut().find(|(known, _): &&mut (FieldPath, bool)| *known == fields) {
                 Some((_, was)) => *was |= written,
                 None => uses.paths.push((fields, written)),
             }
@@ -146,12 +151,12 @@ impl Captures {
             return Class::Write;
         }
         Class::Paths {
-            all: uses.paths.iter().map(|(fields, _): &(Vec<Ident>, bool)| fields.clone()).collect(),
+            all: uses.paths.iter().map(|(fields, _): &(FieldPath, bool)| fields.clone()).collect(),
             written: uses
                 .paths
                 .iter()
-                .filter(|(_, written): &&(Vec<Ident>, bool)| *written)
-                .map(|(fields, _): &(Vec<Ident>, bool)| fields.clone())
+                .filter(|(_, written): &&(FieldPath, bool)| *written)
+                .map(|(fields, _): &(FieldPath, bool)| fields.clone())
                 .collect(),
         }
     }
@@ -172,13 +177,13 @@ impl Captures {
     }
 
     /// A field path: a captured name, or `self`, followed by named fields only.
-    fn field_path(expr: &Expr) -> Option<(&Ident, Vec<Ident>)> {
+    fn field_path(expr: &Expr) -> Option<(&Ident, FieldPath)> {
         match expr {
             Expr::Field(field) => {
                 let syn::Member::Named(member) = &field.member else {
                     return None;
                 };
-                let (base, mut fields): (&Ident, Vec<Ident>) = match &*field.base {
+                let (base, mut fields): (&Ident, FieldPath) = match &*field.base {
                     Expr::Field(_) => Captures::field_path(&field.base)?,
                     other => (Captures::bare_name(other)?, Vec::new()),
                 };
@@ -672,7 +677,7 @@ mod tests {
         names.into_iter().map(|name: String| (name.clone(), captures.class(&name))).collect()
     }
 
-    fn fields(paths: &[&[&str]]) -> Vec<Vec<Ident>> {
+    fn fields(paths: &[&[&str]]) -> Vec<FieldPath> {
         paths
             .iter()
             .map(|path: &&[&str]| path.iter().map(|f: &&str| Ident::new(f, Span::call_site())).collect())

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::Ordering;
 
 use crate::ids::NodeId;
-use crate::node::{Header, NodeRef, WeakNodeRef};
+use crate::node::{ChangeSender, Header, NodeRef, Parents, WeakNodeRef};
 use crate::sync::{Mutex, MutexGuard};
 
 #[cfg(not(lithia_loom))]
@@ -141,7 +141,8 @@ fn rehold(from: NodeRef, keep: &mut Vec<NodeRef>, held: &mut Vec<&'static crate:
         if !stop && header.supportable {
             *header.support.lock() = Some(current.clone());
             if header.let_go.swap(false, Ordering::SeqCst) {
-                LET_GO.fetch_sub(1, Ordering::SeqCst);
+                let before: usize = LET_GO.fetch_sub(1, Ordering::SeqCst);
+                debug_assert!(before > 0, "lithia: more let-go nodes held again than let go");
             }
             held.push(header.site);
         }
@@ -176,7 +177,8 @@ fn finish(keep: Vec<NodeRef>, held: Vec<&'static crate::Site>) {
 /// Forgets a freed node that support had let go of.
 pub(crate) fn freed(header: &Header) {
     if header.let_go.swap(false, Ordering::SeqCst) {
-        LET_GO.fetch_sub(1, Ordering::SeqCst);
+        let before: usize = LET_GO.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(before > 0, "lithia: more let-go nodes freed than let go");
     }
 }
 
@@ -332,7 +334,7 @@ fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     for site in unread {
         crate::diag::unread_memo(site);
     }
-    tracing::trace!(raised, walked, released, "lithia: sweep");
+    crate::diag::sweep(raised, walked, released);
     keep
 }
 
@@ -353,11 +355,7 @@ fn unread(header: &Header) -> Option<&'static crate::Site> {
     {
         return None;
     }
-    let readers: bool = header
-        .changes
-        .lock()
-        .as_ref()
-        .is_some_and(|sender: &tokio::sync::watch::Sender<u64>| sender.receiver_count() > 0);
+    let readers: bool = header.changes.lock().as_ref().is_some_and(|sender: &ChangeSender| sender.receiver_count() > 0);
     (!readers && header.sched.lock().subscribers.is_empty()).then_some(header.site)
 }
 
@@ -393,7 +391,7 @@ fn predecessors(node: &NodeRef, keep: &mut Vec<NodeRef>) -> Vec<NodeRef> {
 }
 
 /// A copy of the parent list, taken under its own lock and never beside a scheduling lock.
-fn parents(node: &NodeRef) -> Vec<NodeRef> {
+fn parents(node: &NodeRef) -> Parents {
     node.header().parents.lock().clone().unwrap_or_default()
 }
 
@@ -492,7 +490,7 @@ impl Search {
                 stack.pop();
                 continue;
             }
-            let list: Vec<NodeRef> = parents(&top);
+            let list: Parents = parents(&top);
             let direct: bool = list.iter().any(|parent: &NodeRef| {
                 let parent: &Header = parent.header();
                 (parent.scoped.load(Ordering::SeqCst) && !is_anchor(parent))
