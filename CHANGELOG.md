@@ -133,7 +133,7 @@ v0.3.1 adds keyed nodes. With `key` on `effect!`, a body's child keeps its ident
 
 ## 0.3.0
 
-v0.3.0 changes how long nodes live. A node with a body no longer needs a handle: a node created by a run is held by that run until its creator's next run is decided, and a node with parents created anywhere else is held by support, for as long as something outside lithia can still make it run. One opt-in, `.scoped()`, returns a node to v0.2.5's rule. The design was worked out in the v0.3.0 ownership migration (revision 12, in `docs/design`), reviewed in nine rounds, implemented on its own branch and verified there before this spec was written. Where the implementation found that the migration text was wrong or incomplete, this spec follows the implementation, and the last column says so.
+v0.3.0 changes how long nodes live. A node with a body no longer needs a handle: a node created by a run is held by that run until its creator's next run is decided, and a node with parents created anywhere else is held by support, for as long as something outside lithia can still make it run. One opt-in, `.scoped()`, returns a node to v0.2.5's rule. The design was worked out in the v0.3.0 ownership migration (revision 12), reviewed in nine rounds, implemented on its own branch and verified there before this spec was written. Where the implementation found that the migration text was wrong or incomplete, this spec follows the implementation, and the last column says so.
 
 | Section | Change | Found by |
 | --- | --- | --- |

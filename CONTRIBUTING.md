@@ -24,7 +24,7 @@ Changes reach `nightly` and `release` through pull requests; the maintainer may 
 | `crates/validation` | `lithia-validation` | The spec's validation cases (§13), verbatim, and the compile-fail cases |
 | `crates/test` | `lithia-test` | The helpers the test crates share (`src/`), the edge-case tests (`tests/edge/`, one module per area, built as one binary), the deep-chain test and the loom models (`tests/loom/`, likewise) |
 | `crates/bench` | `lithia-bench` | The spec's benchmarks (§15) |
-| `docs/spec` | | The design spec, one file per version |
+| `docs/spec` | | The design spec, current version |
 | `docs/tla` | | The TLA+ models of the scheduling protocol and of node lifetimes, and their TLC models |
 | `docs/site`, `.github/scripts` | | The docs site's styling, scripts and build |
 
@@ -75,8 +75,9 @@ change to `effect!`'s expansion shows in `crates/macro/snapshots`: review the di
 - Every binding and closure parameter has a type annotation.
 - Doc comments are at most two lines, in the standard library's voice, with an example for generic APIs;
   the reasoning behind a design belongs in the spec.
-- Behaviour changes update the spec: a new version is a new file in `docs/spec`, with its changes listed
-  at the top, and a validation case that pins the behaviour down.
+- Behaviour changes update the spec and `CHANGELOG.md`, with a validation case that pins the behaviour
+  down. Until 1.0 a new spec version replaces the file in `docs/spec`, and git history keeps the old
+  ones; from 1.0 each released version keeps its own file.
 - `cargo fmt`, and clippy without warnings (`-D warnings`), in both the normal and the loom build.
 - New source files start with the two-line SPDX header the others have:
 
