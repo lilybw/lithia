@@ -7,28 +7,31 @@ measure on your own machine before relying on them. Nothing has been measured on
 
 ## Current figures
 
-Measured on v0.4.0 with its fast path (2026-11-20), as medians of runs alternated with the version
-before. v0.4.0.2 and v0.5.0 moved no row beyond run-to-run noise, about ±10% on this container.
+Measured on v0.5.0 after the code review's tuning (2026-11-24), as medians of 14 runs alternated with a
+build from before the review; the last column gives the change. Run-to-run noise on this container is
+about ±5%.
 
-| Benchmark | What it measures | Result |
-| --- | --- | --- |
-| Run along a chain | A synchronous node run on the fast path, against a task of its own | 1.25 µs per run, against about 4 µs |
-| Framing | A write into a 1 000-wide fan-out | 1.2 ms per write |
-| Batching | 100 writes, batched in a lithia task against one batch per write | 35 µs against 123 µs |
-| Fan-in contention | 12 800 writes into a 64-parent join | 3.7 µs per write |
-| Clock contention | Writes from 1, 2 and 4 parallel writers | 0.60, 0.60 and 0.57 µs per write |
-| Writer sets in meshes | Runs for an 8-way binding mesh, against the bound n² = 64 | 15–24 runs, depending on scheduling |
-| Drop churn | 100 per-item effects recreated on each rerun | 536 µs per rerun |
-| Rebuilding children | A rerun that creates 100 children and releases the last run's 100 | 471 µs per rerun |
-| Keyed rows | 100 rows per list rerun: rebuilt; keyed, every row changed; keyed, few changed | 572–604 µs; 346 µs; 73–82 µs |
-| Wide creation | 10 000 children created per run | 42 ms per rerun |
-| Sweep over a hub | Letting go of and freeing 10 000 handleless watchers | 107 ms |
-| Rerun rates | One node driven as fast as `flush` allows | 120 000–140 000 runs/s |
-| Discarded values | A run whose value `equals` keeps; an equal write; a `String` write | 8.4 µs; 57 ns; 260 ns |
-| Handles | Clone and drop of a handle, against 11 ns for a bare `Arc`; a read | about 20 ns; about 23 ns |
-| Creation | A bound effect; one held by support | about 0.9 µs; 1.1–1.4 µs |
-| Last-handle drops | The `helper(&x.accessor())` idiom on a supported node, one thread | 605–641 ns |
-| Allocations | Per run on a chain; per child run on a fan-out; per outside write; per node created | 10; 7.5; 17; 16 |
+| Benchmark | What it measures | Result | Change |
+| --- | --- | --- | --- |
+| Run along a chain | A synchronous node run on the fast path | 1.0 µs per run | −14% |
+| Protocol overhead | A node run in a 100-node diamond mesh | 1.0 µs per run | −21% |
+| Framing | A write into a 1 000-wide fan-out | 1.0 ms per write | −9% |
+| Batching | 100 writes, batched in a lithia task against one batch per write | 28 µs against 103 µs | −26%; −9% |
+| Fan-in contention | 12 800 writes into a 64-parent join | 3.3 µs per write | −11% |
+| Clock contention | Writes from 1, 2 and 4 parallel writers | 0.50, 0.31 and 0.33 µs per write | −14%; −44%; −42% |
+| Writer sets in meshes | Runs for an 8-way binding mesh, against the bound n² = 64 | 15–24 runs, depending on scheduling | |
+| Drop churn | 100 per-item effects recreated on each rerun | 381 µs per rerun | −24% |
+| Rebuilding children | A rerun that creates 100 children and releases the last run's 100 | 310 µs per rerun | −22% |
+| Keyed rows | 100 rows per list rerun: rebuilt; keyed, every row changed; keyed, few changed | 367–409 µs; 409 µs; 68–74 µs | −20 to −31%; −15%; within noise |
+| Wide creation | 10 000 children created per run | 29 ms per rerun | −25% |
+| Sweep over a hub | Letting go of and freeing 10 000 handleless watchers | 111 ms | −9% |
+| Rerun rates | One node driven as fast as `flush` allows | about 143 000 runs/s | |
+| Discarded values | A run whose value `equals` keeps; an equal write; a `String` write | 6.8 µs; 55 ns; 124 ns | −8%; −4%; −55% |
+| Handles | Clone and drop of a handle, against 11 ns for a bare `Arc`; a read | about 20 ns; 19 ns | within noise; −17% |
+| Creation | A bound effect; one held by support | 0.85 µs; 1.1 µs | within noise |
+| Last-handle drops | The `helper(&x.accessor())` idiom on a supported node, one thread; two | 533 ns; 2.7 µs | −4%; −10% |
+| Allocations | Per run on a chain; per child run on a fan-out; per outside write; per node created | 3.2; 2.9; 11; 11.6 | from 10.2; 7.9; 17; 16.6 |
+| Reader threads | A chain run after 0, 16 and 64 threads have each read every node once | 1.0 µs at each | was 1.4, 1.7 and 2.1 µs |
 
 - 100 writes batched in one lithia task cost under a third of what 100 separate batches cost.
 - Clock contention stays mild at this scale: four parallel writers cost no more per write than one.
@@ -40,6 +43,27 @@ before. v0.4.0.2 and v0.5.0 moved no row beyond run-to-run noise, about ±10% on
 - Mesh run counts vary with scheduling and stay far below n².
 
 ## History
+
+### v0.5.0 code review tuning (2026-11-24)
+
+Measured against a build from before the review, alternated over 14 runs. Each change was profiled with
+callgrind on the protocol benchmark, whose instruction count fell from 232 to 180 million (−22%); the
+review's safety nets had first added 6%, mostly the checked token lists, and the tuning took that back:
+
+- A step skips the parts it left empty (−8% of instructions by itself).
+- The fast path reads the clock every fourth run, and a node's rerun counter every 1 024th, under the
+  lock its run start already holds.
+- Subscribers, children, token and served lists stay inline while small, and a step reuses its thread's
+  release buffer; an inline run is boxed only if its first poll leaves it pending. Allocations per chain
+  run fell from 10.2 to 3.2.
+- The value cell is a reader-writer lock instead of `arc-swap`. An `arc-swap` write walks a list kept by
+  every thread that has ever read the cell, so a chain run cost 1.4 µs with no reader threads, 1.7 µs
+  after 16 had read and 2.1 µs after 64; the lock keeps it at 1.0 µs. On two cores it also made writes
+  10–14%, drop churn 28% and rebuilding children 37% cheaper.
+- Smaller items: the change-stream lock only once a stream exists, a run's scope set once without a lock,
+  release stores for single-writer run fields, async bodies and leased blocks boxed once, runners spawned
+  unboxed, and a per-site atomic for the support pile-up warning instead of a process-wide map.
+
 
 Each section compares one version with the one before, alternated in the same container. Containers
 differed between sessions, so compare figures within a section only.

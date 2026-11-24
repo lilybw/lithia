@@ -381,7 +381,7 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   guards instead of closures; `Site` trimmed in release builds; attribute macros keep the item on
   error, accept `Result` tests and, with the `test-util` feature, `start_paused`; expansion snapshots.
 - Tuning, A/B against a baseline built before the review (2-core container): the protocol benchmark
-  runs 22% fewer instructions, a chain run allocates 3.2 times instead of 10.2, run paths are 14–29%
+  runs 22% fewer instructions, a chain run allocates 3.2 times instead of 10.2, most rows are 9–31%
   faster, and the value cell's switch from `arc-swap` to a reader-writer lock keeps a chain run at
   1.0 µs with 64 reader threads where it rose from 1.4 to 2.1 µs.
 - Not done from the review, measured or judged too small for the risk: one `Work` per run (merging a
