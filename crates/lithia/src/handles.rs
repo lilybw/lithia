@@ -46,6 +46,16 @@ pub trait Readable: sealed::Sealed + Send + Sync {
     fn try_get(&self) -> Result<Arc<Self::Value>, Ghosted>;
     /// Stream of this node's values from now on; like `tokio::sync::watch`, it may skip values.
     fn changes(&self) -> Changes<Self::Value>;
+    /// Calls `f` with the current value, borrowed, without taking a reference to it; `f` may not
+    /// write nodes. Panics like `get`.
+    /// `let label: String = name.with(|name: &String| name.to_uppercase());`
+    #[track_caller]
+    fn with<R>(&self, f: impl FnOnce(&Self::Value) -> R) -> R
+    where
+        Self: Sized,
+    {
+        f(&self.get())
+    }
     #[doc(hidden)]
     fn __lithia_node(&self) -> NodeHandle;
     #[doc(hidden)]
@@ -111,6 +121,23 @@ impl<K: NodeValue> Node<K> {
             diag::ghost_read(header.site, header.shape.ghost);
         }
         self.value.load_full().ok_or(Ghosted)
+    }
+
+    /// Calls `f` with the current value, borrowed, under a closure guard, so it cannot write.
+    #[track_caller]
+    pub(crate) fn read_with<R>(&self, f: impl FnOnce(&K) -> R) -> R {
+        let header: &Header = &self.header;
+        if header.is_ghost() {
+            if header.shape.ghost == GhostPolicy::CauseFailure {
+                panic!("lithia: read of a disposed node under ON_GHOST_CAUSE_FAILURE ({})", header.site);
+            }
+            diag::ghost_read(header.site, header.shape.ghost);
+        }
+        let _guard: ClosureGuard = ClosureGuard::enter();
+        self.value.with(|value: Option<&K>| match value {
+            Some(value) => f(value),
+            None => panic!("lithia: read of a disposed node under ON_GHOST_CAUSE_FAILURE ({})", header.site),
+        })
     }
 
     #[track_caller]
@@ -184,6 +211,10 @@ macro_rules! readable {
             fn changes(&self) -> Changes<K> {
                 Changes::new(&self.node)
             }
+            #[track_caller]
+            fn with<R>(&self, f: impl FnOnce(&K) -> R) -> R {
+                self.node.read_with(f)
+            }
             fn __lithia_node(&self) -> NodeHandle {
                 NodeHandle(self.node.clone())
             }
@@ -197,6 +228,12 @@ macro_rules! readable {
             #[track_caller]
             pub fn get(&self) -> Arc<K> {
                 self.node.read_or_panic()
+            }
+
+            /// Calls `f` with the current value, borrowed; `f` may not write nodes. Panics like `get`.
+            #[track_caller]
+            pub fn with<R>(&self, f: impl FnOnce(&K) -> R) -> R {
+                self.node.read_with(f)
             }
 
             /// Current value, or `Err(Ghosted)` where the ghost policy would make `get` panic.

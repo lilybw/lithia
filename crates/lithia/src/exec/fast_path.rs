@@ -29,6 +29,9 @@ const PACK: usize = 16;
 /// How long one task runs back to back; past it, the runs left get tasks of their own.
 #[cfg(not(lithia_loom))]
 const SLICE: std::time::Duration = std::time::Duration::from_micros(50);
+/// Runs between reads of the clock for `SLICE`.
+#[cfg(not(lithia_loom))]
+const CLOCK_EVERY: u32 = 4;
 
 /// The runtime a run belongs to, as the fast path compares them.
 #[cfg(not(lithia_loom))]
@@ -82,7 +85,7 @@ impl Open {
     /// Runs the runs handed to this thread, then those in `queue`, back to back within the budget,
     /// and hands the rest on. Each is its own run, polled here: a loop, never recursion.
     pub(crate) fn run(&self, cx: &mut Context<'_>, queue: &mut VecDeque<WeakNodeRef>) {
-        // The clock is read only once something runs here.
+        // The clock is read once something runs here, then every `CLOCK_EVERY` runs.
         #[cfg(not(lithia_loom))]
         let mut start: Option<std::time::Instant> = None;
         let mut ran: u32 = 0;
@@ -94,7 +97,13 @@ impl Open {
                 continue;
             };
             #[cfg(not(lithia_loom))]
-            let heavy: bool = start.get_or_insert_with(std::time::Instant::now).elapsed() >= SLICE && ran > 0;
+            let heavy: bool = match start {
+                None => {
+                    start = Some(std::time::Instant::now());
+                    false
+                }
+                Some(at) => ran.is_multiple_of(CLOCK_EVERY) && at.elapsed() >= SLICE,
+            };
             #[cfg(lithia_loom)]
             let heavy: bool = false;
             if heavy || ran >= RUNS {
@@ -102,8 +111,8 @@ impl Open {
                 break;
             }
             ran += 1;
-            let mut task: RunTask = node.clone().make_run();
-            if task.as_mut().poll(cx).is_pending() {
+            // Boxed only when it does not finish in this poll.
+            if let Some(task) = node.clone().run_here(cx) {
                 spawn_task(node.header().runtime.clone(), task);
             }
             drop(node);
@@ -191,6 +200,11 @@ pub(crate) fn dispatch(mut spawns: Vec<NodeRef>) {
         }
         return;
     }
+    // The common case: every run synchronous, on one runtime, packed as they come.
+    let first: RuntimeKey = runtime_of(&spawns[0]);
+    if spawns.iter().all(|node: &NodeRef| node.header().sync_body && runtime_of(node) == first) {
+        return pack(spawns);
+    }
     let mut packs: Packs = Vec::new();
     for node in spawns {
         if !node.header().sync_body {
@@ -255,11 +269,11 @@ fn pack(mut nodes: Vec<NodeRef>) {
         queue.push_back(Arc::downgrade(&node));
         drop(node);
         if queue.len() == size {
-            spawn_task(runtime.clone(), Box::pin(Runner { runtime: key, queue: std::mem::take(&mut queue) }));
+            spawn_runner(runtime.clone(), Runner { runtime: key, queue: std::mem::take(&mut queue) });
         }
     }
     if !queue.is_empty() {
-        spawn_task(runtime, Box::pin(Runner { runtime: key, queue }));
+        spawn_runner(runtime, Runner { runtime: key, queue });
     }
 }
 
@@ -282,7 +296,7 @@ fn hand_on(node: NodeRef, queue: &mut VecDeque<WeakNodeRef>, heavy: bool) {
             }
         }
     } else {
-        spawn_task(runtime, Box::pin(Runner { runtime: key, queue: left }));
+        spawn_runner(runtime, Runner { runtime: key, queue: left });
     }
 }
 
@@ -329,6 +343,11 @@ fn spawn_task(runtime: Option<tokio::runtime::Handle>, task: RunTask) {
     crate::exec::spawn::spawn(runtime.as_ref(), task, crate::exec::spawn::Orphan::Drop);
 }
 
+/// Spawns a runner as it is, so the runtime boxes it once.
+fn spawn_runner(runtime: Option<tokio::runtime::Handle>, runner: Runner) {
+    crate::exec::spawn::spawn(runtime.as_ref(), runner, crate::exec::spawn::Orphan::Drop);
+}
+
 /// Loom models take the fast path unless `LITHIA_LOOM_FAST_PATH=off`, so CI checks both paths.
 #[cfg(lithia_loom)]
 fn enabled() -> bool {
@@ -342,23 +361,23 @@ fn enabled() -> bool {
     true
 }
 
-/// The key of a run whose node is gone, which never takes the fast path.
+/// The key of a closed fast path, which no run matches.
 #[cfg(not(lithia_loom))]
 const NO_RUNTIME: RuntimeKey = None;
 #[cfg(lithia_loom)]
 const NO_RUNTIME: RuntimeKey = RuntimeKey;
 
-pub(crate) fn no_runtime() -> RuntimeKey {
-    NO_RUNTIME
+pub(crate) fn runtime_of(node: &NodeRef) -> RuntimeKey {
+    runtime_key(node.header())
 }
 
 #[cfg(not(lithia_loom))]
-pub(crate) fn runtime_of(node: &NodeRef) -> RuntimeKey {
-    node.header().runtime.as_ref().map(tokio::runtime::Handle::id)
+pub(crate) fn runtime_key(header: &crate::graph::node::Header) -> RuntimeKey {
+    header.runtime.as_ref().map(tokio::runtime::Handle::id)
 }
 
 #[cfg(lithia_loom)]
-pub(crate) fn runtime_of(_: &NodeRef) -> RuntimeKey {
+pub(crate) fn runtime_key(_: &crate::graph::node::Header) -> RuntimeKey {
     RuntimeKey
 }
 

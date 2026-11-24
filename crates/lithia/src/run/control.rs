@@ -13,7 +13,10 @@ pub(crate) struct RunControl {
     pub(crate) node: WeakNodeRef,
     /// The node's id; none once a run is made for a node already freed.
     pub(crate) node_id: Option<NodeId>,
-    pub(super) scope: Mutex<Arc<Scope>>,
+    /// The scope of the epochs the run serves, set once as it starts; until then, the node's.
+    #[allow(clippy::disallowed_types)] // set under the scheduling lock before the body first polls
+    pub(super) scope: std::sync::OnceLock<Arc<Scope>>,
+    pub(super) home: Arc<Scope>,
     pub(super) id: Atomic<RunId>,
     /// Run id an async source block was registered under at creation, or none.
     pub(super) expected: RunId,
@@ -37,7 +40,8 @@ impl RunControl {
         RunControl {
             node,
             node_id,
-            scope: Mutex::new(scope),
+            scope: std::sync::OnceLock::new(),
+            home: scope,
             id: Atomic::new(RunId::NONE),
             expected,
             cancelled: AtomicBool::new(false),
@@ -77,11 +81,12 @@ impl RunControl {
     }
 
     pub(crate) fn id(&self) -> RunId {
-        self.id.load(Ordering::SeqCst)
+        self.id.load(Ordering::Acquire)
     }
 
+    /// Set under the node's scheduling lock before the run's first poll; a release store suffices.
     pub(crate) fn set_id(&self, id: RunId) {
-        self.id.store(id, Ordering::SeqCst);
+        self.id.store(id, Ordering::Release);
     }
 
     pub(crate) fn expected(&self) -> RunId {
@@ -89,11 +94,13 @@ impl RunControl {
     }
 
     pub(crate) fn scope(&self) -> Arc<Scope> {
-        self.scope.lock().clone()
+        self.scope.get().unwrap_or(&self.home).clone()
     }
 
+    /// Sets the scope as the run starts; a run starts once.
     pub(crate) fn set_scope(&self, scope: Arc<Scope>) {
-        *self.scope.lock() = scope;
+        let set: Result<(), Arc<Scope>> = self.scope.set(scope);
+        debug_assert!(set.is_ok(), "lithia: a run's scope was set twice");
     }
 
     /// Marks the run superseded or killed; its items are discarded from now on.
@@ -122,11 +129,11 @@ impl RunControl {
     }
 
     pub(crate) fn first_done(&self) -> bool {
-        self.first_done.load(Ordering::SeqCst)
+        self.first_done.load(Ordering::Acquire)
     }
 
     pub(crate) fn set_first_done(&self) {
-        self.first_done.store(true, Ordering::SeqCst);
+        self.first_done.store(true, Ordering::Release);
     }
 
     /// Records a change stamp produced by the node's own item.
@@ -134,8 +141,9 @@ impl RunControl {
         self.stamp.fetch_max(stamp, Ordering::SeqCst);
     }
 
+    /// Only the run's own task touches these, during its poll, so the stores need no ordering.
     pub(super) fn begin_poll(&self) {
-        self.yielded.store(false, Ordering::SeqCst);
-        self.stamp.store(Stamp::NONE, Ordering::SeqCst);
+        self.yielded.store(false, Ordering::Relaxed);
+        self.stamp.store(Stamp::NONE, Ordering::Relaxed);
     }
 }

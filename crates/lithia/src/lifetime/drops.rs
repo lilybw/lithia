@@ -166,6 +166,9 @@ type Parcels = Vec<(Option<Handle>, Parcel)>;
 /// Queues gathered payloads as one parcel per runtime.
 #[cfg(not(lithia_loom))]
 fn send(pending: Vec<Pending>) {
+    if pending.is_empty() {
+        return;
+    }
     let mut parcels: Parcels = Vec::new();
     for (runtime, payload) in pending {
         let id: Option<tokio::runtime::Id> = runtime.as_ref().map(Handle::id);

@@ -249,7 +249,7 @@ fn unread(header: &Header) -> Option<&'static crate::Site> {
 /// Nodes support flows to from `node`: children, its generation, and the nodes it may write.
 fn successors(node: &NodeRef, keep: &mut Vec<NodeRef>) -> Vec<NodeRef> {
     let header: &Header = node.header();
-    let mut out: Vec<NodeRef> = header.subscribers();
+    let mut out: Vec<NodeRef> = header.subscribers().into_vec();
     out.extend(header.lock_sched().creations().cloned());
     out.extend(header.targets.iter().filter_map(|weak: &WeakNodeRef| weak.upgrade()));
     keep.extend(out.iter().cloned());

@@ -78,6 +78,8 @@ pub(crate) struct Header {
     pub(crate) scope: Arc<Scope>,
     /// The `changes()` channel, made by the first stream.
     pub(crate) changes: Mutex<Option<ChangeSender>>,
+    /// Set once a change stream exists, so a change on a node without one takes no lock.
+    pub(crate) streamed: AtomicBool,
     /// How long it lives: anchors, support, its generation and lease (spec §10.1).
     pub(crate) lifetime: Lifetime,
     /// A keyed node's key and inputs (spec §10.1, Keyed nodes).
@@ -201,7 +203,7 @@ impl Header {
     /// a memo unread (spec §12).
     pub(crate) fn unsubscribe(&self, child: NodeId) {
         let mut guard: SchedGuard<'_> = self.lock_sched();
-        let last: bool = guard.subscribers.remove(&child).is_some() && guard.subscribers.is_empty();
+        let last: bool = guard.subscribers.remove(child) && guard.subscribers.is_empty();
         drop(guard);
         if last {
             crate::lifetime::support::check_unread(self);
@@ -210,6 +212,11 @@ impl Header {
 
     /// Notifies `changes()` streams of a new value.
     pub(crate) fn notify_changes(&self) {
+        // A stream set this before its first read of the value, which the value cell's lock orders
+        // against this change: either that read sees the change or this load sees the stream.
+        if !self.streamed.load(Ordering::Acquire) {
+            return;
+        }
         if let Some(sender) = self.changes.lock().as_ref() {
             sender.send_modify(|seq: &mut ChangeSeq| *seq = seq.wrapping_add(1));
         }

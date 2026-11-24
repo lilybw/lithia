@@ -22,10 +22,11 @@ lithia-macro = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 futures-core = { workspace = true }
-arc-swap = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 bitflags = { workspace = true }
+pin-project-lite = { workspace = true }
+smallvec = { workspace = true }
 
 [target.'cfg(lithia_loom)'.dependencies]
 loom = { workspace = true }

@@ -25,7 +25,7 @@ pub(crate) struct Sched {
     /// The run in flight, if any.
     pub(crate) run: Option<RunSlot>,
     /// Epochs a superseded run served, handed to the next run.
-    pub(crate) handover: Vec<Served>,
+    pub(crate) handover: ServedList,
     /// A run task was spawned and has not started yet.
     pub(crate) queued: bool,
     /// Created, but its creation has not been delivered yet.
@@ -33,7 +33,7 @@ pub(crate) struct Sched {
     /// Clock stamp when the last run started.
     pub(crate) ran_at: Stamp,
     /// Children by id, held weakly; a freed child removes itself, without a scan of the others.
-    pub(crate) subscribers: BTreeMap<NodeId, WeakNodeRef>,
+    pub(crate) subscribers: Subscribers,
     /// What `lithia::test::settled` follows from this node; only `testing::trace` touches it.
     pub(crate) trace: crate::testing::trace::Trace,
     /// The generation: nodes the runs created without a key, held until the next run is decided.
@@ -55,6 +55,8 @@ pub(crate) struct Sched {
     pub(crate) suppress_in: Epochs,
     /// Epochs that became ready while a `WHOLE_EPOCHS` node waited, since its last run started.
     pub(crate) whole_deferred: u32,
+    /// Run starts in the current window, for the rerun-rate warning (spec §12).
+    pub(crate) rate: crate::diag::RateWindow,
 }
 
 /// A node's scheduling lock, held; debug builds check the lock's invariants (spec §11.4) as it
@@ -116,11 +118,11 @@ impl Sched {
         Sched {
             entries: Entries::default(),
             run: None,
-            handover: Vec::new(),
+            handover: ServedList::new(),
             queued: false,
             unseeded,
             ran_at: Stamp::NONE,
-            subscribers: BTreeMap::new(),
+            subscribers: Subscribers::new(),
             trace: crate::testing::trace::Trace::new(),
             generation: Vec::new(),
             keyed: KeyedSet::default(),
@@ -131,6 +133,7 @@ impl Sched {
             gated: Vec::new(),
             suppress_in: Vec::new(),
             whole_deferred: 0,
+            rate: crate::diag::RateWindow::new(),
         }
     }
 
@@ -198,15 +201,7 @@ impl Sched {
 
     /// The live subscribers in id order, pruning freed ones; the caller drops them after unlocking.
     pub(crate) fn children(&mut self) -> Children {
-        let mut out: Children = Vec::with_capacity(self.subscribers.len());
-        self.subscribers.retain(|_: &NodeId, weak: &mut WeakNodeRef| match weak.upgrade() {
-            Some(node) => {
-                out.push(node);
-                true
-            }
-            None => false,
-        });
-        out
+        self.subscribers.live()
     }
 
     /// Whether the node still owes its children a release for `epoch` through a run.
@@ -228,7 +223,7 @@ impl Sched {
     /// Closes the node to new children; returns its generation and the children linked so far.
     pub(crate) fn close(&mut self) -> (Vec<NodeRef>, Vec<NodeRef>) {
         self.closed = true;
-        let linked: Vec<NodeRef> = self.subscribers.values().filter_map(WeakNodeRef::upgrade).collect();
+        let linked: Vec<NodeRef> = self.subscribers.live().into_vec();
         (self.release_all(), linked)
     }
 
@@ -424,7 +419,7 @@ pub(crate) struct Served {
 pub(crate) struct RunSlot {
     pub(crate) id: RunId,
     pub(crate) shared: Arc<RunControl>,
-    pub(crate) served: Vec<Served>,
+    pub(crate) served: ServedList,
     /// Superseded: start a new run once this one has stopped.
     pub(crate) restart: bool,
     /// It protected a superseded run and has produced no item yet: new input waits for its first
@@ -433,7 +428,10 @@ pub(crate) struct RunSlot {
 }
 
 /// Merges `incoming` into `list`, keeping one record per epoch.
-pub(crate) fn merge_served(list: &mut Vec<Served>, incoming: Served) {
+/// The epochs a run or a handover serves; mostly one, inline.
+pub(crate) type ServedList = smallvec::SmallVec<[Served; 1]>;
+
+pub(crate) fn merge_served(list: &mut ServedList, incoming: Served) {
     match list.iter_mut().find(|s: &&mut Served| s.epoch.id == incoming.epoch.id) {
         Some(existing) => {
             existing.tokens += incoming.tokens;
@@ -442,5 +440,122 @@ pub(crate) fn merge_served(list: &mut Vec<Served>, incoming: Served) {
             existing.carry = existing.carry.max(incoming.carry);
         }
         None => list.push(incoming),
+    }
+}
+
+/// Most subscribers kept inline before they spill into a map.
+const SPILL: usize = 32;
+
+/// A node's subscribers by id, held weakly and kept in id order: a sorted vector while few, a map
+/// once many, so a hub's thousands of children leave in logarithmic time.
+pub(crate) enum Subscribers {
+    Few(smallvec::SmallVec<[(NodeId, WeakNodeRef); 2]>),
+    Many(BTreeMap<NodeId, WeakNodeRef>),
+}
+
+impl Subscribers {
+    pub(crate) const fn new() -> Subscribers {
+        Subscribers::Few(smallvec::SmallVec::new_const())
+    }
+
+    pub(crate) fn insert(&mut self, id: NodeId, child: WeakNodeRef) {
+        match self {
+            Subscribers::Few(few) => match few.binary_search_by_key(&id, |(known, _): &(NodeId, WeakNodeRef)| *known) {
+                Ok(at) => few[at].1 = child,
+                Err(_) if few.len() >= SPILL => {
+                    let mut many: BTreeMap<NodeId, WeakNodeRef> = few.drain(..).collect();
+                    many.insert(id, child);
+                    *self = Subscribers::Many(many);
+                }
+                Err(at) => few.insert(at, (id, child)),
+            },
+            Subscribers::Many(many) => {
+                many.insert(id, child);
+            }
+        }
+    }
+
+    /// Removes `id`; true if it was there.
+    pub(crate) fn remove(&mut self, id: NodeId) -> bool {
+        match self {
+            Subscribers::Few(few) => match few.binary_search_by_key(&id, |(known, _): &(NodeId, WeakNodeRef)| *known) {
+                Ok(at) => {
+                    few.remove(at);
+                    true
+                }
+                Err(_) => false,
+            },
+            Subscribers::Many(many) => many.remove(&id).is_some(),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        match self {
+            Subscribers::Few(few) => few.is_empty(),
+            Subscribers::Many(many) => many.is_empty(),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        *self = Subscribers::new();
+    }
+
+    /// The live subscribers in id order; freed ones are pruned.
+    pub(crate) fn live(&mut self) -> Children {
+        let mut out: Children = Children::new();
+        let mut keep = |_: &NodeId, child: &mut WeakNodeRef| -> bool {
+            match child.upgrade() {
+                Some(node) => {
+                    out.push(node);
+                    true
+                }
+                None => false,
+            }
+        };
+        match self {
+            Subscribers::Few(few) => few.retain(|(id, child): &mut (NodeId, WeakNodeRef)| keep(id, child)),
+            Subscribers::Many(many) => many.retain(|id: &NodeId, child: &mut WeakNodeRef| keep(id, child)),
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dangling() -> WeakNodeRef {
+        let weak: std::sync::Weak<crate::graph::node::Node<u32>> = std::sync::Weak::new();
+        weak
+    }
+
+    #[test]
+    fn subscribers_spill_into_a_map_and_keep_every_id() {
+        let mut subscribers: Subscribers = Subscribers::new();
+        let ids: Vec<NodeId> = (0..2 * SPILL).map(|_: usize| crate::graph::ids::next_node_id()).collect();
+        // Out of order, so the inline part sorts and the spill carries them over.
+        for id in ids.iter().rev() {
+            subscribers.insert(*id, dangling());
+        }
+        assert!(matches!(subscribers, Subscribers::Many(_)));
+        assert!(ids.iter().step_by(2).all(|id: &NodeId| subscribers.remove(*id)));
+        assert!(!subscribers.remove(ids[0]), "removed twice");
+        assert!(!subscribers.is_empty());
+        // Freed children are pruned as the live ones are taken.
+        assert!(subscribers.live().is_empty());
+        assert!(subscribers.is_empty());
+    }
+
+    #[test]
+    fn few_subscribers_stay_in_id_order() {
+        let mut subscribers: Subscribers = Subscribers::new();
+        let (a, b, c): (NodeId, NodeId, NodeId) =
+            (crate::graph::ids::next_node_id(), crate::graph::ids::next_node_id(), crate::graph::ids::next_node_id());
+        for id in [c, a, b] {
+            subscribers.insert(id, dangling());
+        }
+        let Subscribers::Few(few) = &subscribers else { panic!("three subscribers spilled") };
+        assert_eq!(few.iter().map(|(id, _): &(NodeId, WeakNodeRef)| *id).collect::<Vec<NodeId>>(), vec![a, b, c]);
+        assert!(subscribers.remove(b) && !subscribers.remove(b));
     }
 }

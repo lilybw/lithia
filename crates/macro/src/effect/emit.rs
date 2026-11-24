@@ -20,6 +20,7 @@ pub(super) fn site(tokens: &str) -> TokenStream {
         fn __lithia_path() -> &'static str {
             ::lithia::__private::fn_path(::core::any::type_name_of_val(&__lithia_scope))
         }
+        static __LITHIA_HELD: ::lithia::__private::SiteCounter = ::lithia::__private::SiteCounter::new();
         static __LITHIA_SITE: ::lithia::Site = ::lithia::Site::__new(
             ::core::file!(),
             ::core::line!(),
@@ -27,6 +28,7 @@ pub(super) fn site(tokens: &str) -> TokenStream {
             ::core::module_path!(),
             __lithia_path,
             if ::core::cfg!(debug_assertions) { #start } else { "" },
+            &__LITHIA_HELD,
         );
     }
 }

@@ -364,6 +364,31 @@ After an adoption-readiness review of def9487 (v0.4.0.1):
   longer fails its node; every `tracing` emission is caught; comparators, keys and kept inputs drop off
   the protocol. The deferred-function bug is out of `docs/known_bugs.md`.
 
+## Code review implemented (2026-11-23 to 24)
+
+- Newtypes for `NodeId`, `EpochId`, `ScopeId`, `Stamp`, `RunId`, `WriterId` and `Place`, with a typed
+  `Atomic<T>`: mixing two kinds of id is a compile error.
+- Every reviewed bug fixed, each with a test that fails without its fix; the settle bug also with a TLA+
+  property (`AbsorbedReleased`, model `MCAbsorb`) that fails in 3 s without the fix.
+- Safety nets: `#[must_use]` token lists checked on drop, `Sched::check` after every scheduling lock in
+  debug builds, `#![deny(unsafe_code)]`, clippy-enforced lock and atomic types, and loom models with
+  real wakers (51 models; removing any of three wakes fails one).
+- Restructure: `graph`, `protocol`, `run`, `lifetime`, `exec`, `expand`, `testing`; named protocol
+  steps; `lithia-test` as the shared helper crate; loom models and `effect!` split by area;
+  `rust-toolchain.toml`; Miri shards listed by a script.
+- Macro: errors at the token at fault and all of them at once; mixed-site hygiene for internal names
+  (a body passed through `macro_rules!` now compiles); `self` renamed on the syntax tree; capture
+  guards instead of closures; `Site` trimmed in release builds; attribute macros keep the item on
+  error, accept `Result` tests and, with the `test-util` feature, `start_paused`; expansion snapshots.
+- Tuning, A/B against a baseline built before the review (2-core container): the protocol benchmark
+  runs 22% fewer instructions, a chain run allocates 3.2 times instead of 10.2, run paths are 14–29%
+  faster, and the value cell's switch from `arc-swap` to a reader-writer lock keeps a chain run at
+  1.0 µs with 64 reader threads where it rose from 1.4 to 2.1 µs.
+- Not done from the review, measured or judged too small for the risk: one `Work` per run (merging a
+  run's lock sections), reuse of a run's `RunControl` (one 168-byte allocation per run), the node
+  layout target of 400 bytes (a node is 888 bytes; only the test trace moved out of line), non-generic
+  cores, and weaker orderings on the clock and counters, which cost the same on x86.
+
 ## Design migration to v0.3.0 (ownership)
 
 - `docs/design/v0.3.0-ownership-migration.md` (also a Claude doc), revision 12 plus its implementation notes. A node created in a run is
@@ -442,11 +467,8 @@ Five passes from `TODO.md`, run in series:
 
 ## Next steps
 
-1. Fix the settle bug (`docs/known_bugs.md`): extend `Scheduling.tla` to two scopes with the property
-   that an epoch settles only after every run it reached has published, then change `decide`/`settle`.
-2. Work through the architectural review's path to 1.0 and the code review's plan, starting with the
-   bugs in `docs/known_bugs.md`.
+1. Measure on an 8–64 core machine: the value cell, the one sweep lock, allocator contention.
+2. What the review left (see above): one `Work` per run, `RunControl` reuse, the node layout, and the
+   clock and counter orderings, each behind a measurement on more than two cores.
 3. Review what the weekly cargo-mutants run leaves alive.
-4. v0.4.1's allocation work: per-thread scratch buffers for a step's work lists and reuse of a run's
-   `RunShared` (review 2.5, 2.6). Measure on an 8–64 core machine, including the one sweep lock.
-5. Make `blocked()` in `support.rs` cheap while scoped nodes exist (`docs/known_bugs.md`, Performance).
+4. Make `blocked()` in `support.rs` cheap while scoped nodes exist (`docs/known_bugs.md`, Performance).

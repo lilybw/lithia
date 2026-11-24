@@ -15,6 +15,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunControl>) -> (bool, Toke
     });
     // Epochs a cut rerun read its writes from, dropped once the lock is released.
     let mut suppress_from: Epochs = Vec::new();
+    let mut too_fast: Option<u64> = None;
     let started: bool = {
         let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
@@ -32,7 +33,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunControl>) -> (bool, Toke
             false
         } else {
             let protected: bool = !sched.handover.is_empty();
-            let mut served: Vec<Served> = std::mem::take(&mut sched.handover);
+            let mut served: ServedList = std::mem::take(&mut sched.handover);
             sched.entries.take_where(
                 |entry: &Entry| entry.is_ready(),
                 |entry: Entry| {
@@ -96,6 +97,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunControl>) -> (bool, Toke
                     shared.set_suppress(suppress);
                 }
                 header.begin_run();
+                too_fast = sched.rate.count();
                 sched.failed_by_fragility = false;
                 sched.run = Some(RunSlot { id, shared: shared.clone(), served, restart: false, protected });
                 sched.take_generation(&mut work.released);
@@ -107,19 +109,19 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunControl>) -> (bool, Toke
     };
     drop(creator);
     drop(suppress_from);
-    if started {
-        diag::count_run(header);
+    if let Some(observed) = too_fast {
+        diag::rerun_too_fast(header.site, observed);
     }
     (started, drain_deferred(work))
 }
 
 /// Releases unreleased records unchanged and closes their tokens; `sched` is the node's, locked.
-pub(super) fn close_served(node: &NodeRef, sched: &mut Sched, served: Vec<Served>, work: &mut Work) {
+pub(super) fn close_served(node: &NodeRef, sched: &mut Sched, served: ServedList, work: &mut Work) {
     let mut released: usize = 0;
     for record in served {
         if !record.released {
             released += 1;
-            work.releases.push_back(Release::unaddressed(node, &record));
+            work.release(Release::unaddressed(node, &record));
         }
         work.closes.add(record.epoch.clone(), record.tokens);
     }
@@ -134,7 +136,7 @@ pub(super) fn address_releases(sched: &mut Sched, work: &mut Work, count: usize)
     }
     let mut children: Children = sched.children();
     let first: usize = work.releases.len() - count;
-    for (at, release) in work.releases.range_mut(first..).enumerate() {
+    for (at, release) in work.releases[first..].iter_mut().enumerate() {
         release.children = if at + 1 == count { std::mem::take(&mut children) } else { children.clone() };
     }
 }
@@ -355,7 +357,7 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunControl>, end: End) -> To
             }
         }
         wake_gated(sched, &mut work);
-        header.diag.under_way.store(true, Ordering::SeqCst);
+        header.diag.under_way.store(true, Ordering::Release);
     }
     let releasing: bool = !work.released.is_empty();
     let closes: Tokens = drain_deferred(work);
@@ -387,7 +389,7 @@ pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunControl>) -> Tokens {
         for epoch in ready {
             settle(node, sched, epoch, &mut work);
         }
-        let handover: Vec<Served> = std::mem::take(&mut sched.handover);
+        let handover: ServedList = std::mem::take(&mut sched.handover);
         close_served(node, sched, handover, &mut work);
     }
     if !header.is_ghost() {
@@ -421,7 +423,7 @@ pub(crate) fn retire(node: &NodeRef) {
         for epoch in epochs {
             settle(node, sched, epoch, &mut work);
         }
-        let handover: Vec<Served> = std::mem::take(&mut sched.handover);
+        let handover: ServedList = std::mem::take(&mut sched.handover);
         close_served(node, sched, handover, &mut work);
         sched.queued = false;
         wake_gated(sched, &mut work);

@@ -272,3 +272,16 @@ async fn a_fragile_child_whose_parent_recovers_unchanged_is_restored_without_run
     lithia::flush().await;
     assert_eq!((*strict.get(), runs.load(Ordering::SeqCst)), (51, 2));
 }
+
+#[lithia::test]
+async fn with_reads_the_value_in_place_and_refuses_writes() {
+    let name: SourceNode<String> = effect!("ada".to_string());
+    let other: SourceNode<u32> = effect!(0);
+    assert_eq!(name.with(|name: &String| name.to_uppercase()), "ADA");
+    // A read of the same node inside `with` does not wait on its own lock.
+    assert_eq!(name.with(|outer: &String| name.with(|inner: &String| outer.len() + inner.len())), 6);
+    let written: std::thread::Result<()> =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| name.with(|_: &String| other.set(1))));
+    assert!(written.is_err(), "a write inside `with` must panic");
+    assert_eq!(*other.get(), 0);
+}

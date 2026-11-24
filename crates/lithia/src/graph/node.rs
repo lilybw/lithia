@@ -34,8 +34,8 @@ pub(crate) type TypedNodeRef<K> = Arc<Node<K>>;
 pub(crate) type WeakTypedNodeRef<K> = Weak<Node<K>>;
 /// A node's parents, in parameter order.
 pub(crate) type Parents = Vec<NodeRef>;
-/// A node's subscribers, as one release or framing walk reaches them.
-pub(crate) type Children = Vec<NodeRef>;
+/// A node's subscribers, as one release or framing walk reaches them; inline while few.
+pub(crate) type Children = smallvec::SmallVec<[NodeRef; 2]>;
 /// Counts a node's published changes; its change streams watch the count.
 pub(crate) type ChangeSeq = u64;
 /// Wakes a node's change streams.
@@ -101,8 +101,9 @@ pub(crate) trait AnyNode: Send + Sync + 'static {
     fn header(&self) -> &Header;
     /// Spawns a run task on the node's runtime.
     fn spawn_run(self: Arc<Self>);
-    /// The node's next run, to poll on this thread or to spawn (spec §11.4, step 4).
-    fn make_run(self: Arc<Self>) -> crate::exec::fast_path::RunTask;
+    /// Polls the node's next run once on this thread; the run, boxed, if it did not finish
+    /// (spec §11.4, step 4).
+    fn run_here(self: Arc<Self>, cx: &mut std::task::Context<'_>) -> Option<crate::exec::fast_path::RunTask>;
     /// Drops the value where the ghost policy says so, and the body.
     fn release_payload(&self);
     /// The node as `Any`, to recover its value type.
@@ -120,15 +121,19 @@ impl<K: NodeValue> AnyNode for Node<K> {
 
     fn spawn_run(self: Arc<Self>) {
         let runtime: Option<Handle> = self.header.runtime.clone();
-        let future: crate::run::RunFuture<K> = crate::run::RunFuture::new(Arc::downgrade(&self));
+        let future: crate::run::RunFuture<K> = crate::run::RunFuture::new(&self);
         drop(self);
         crate::exec::spawn::spawn(runtime.as_ref(), future, crate::exec::spawn::Orphan::Drop);
     }
 
-    fn make_run(self: Arc<Self>) -> crate::exec::fast_path::RunTask {
-        let future: crate::run::RunFuture<K> = crate::run::RunFuture::new(Arc::downgrade(&self));
+    fn run_here(self: Arc<Self>, cx: &mut std::task::Context<'_>) -> Option<crate::exec::fast_path::RunTask> {
+        let mut future: crate::run::RunFuture<K> = crate::run::RunFuture::new(&self);
         drop(self);
-        Box::pin(future)
+        // `RunFuture` is `Unpin`, so it may move into a box after this poll.
+        match Pin::new(&mut future).poll(cx) {
+            std::task::Poll::Ready(()) => None,
+            std::task::Poll::Pending => Some(Box::pin(future)),
+        }
     }
 
     fn release_payload(&self) {
@@ -211,7 +216,8 @@ impl<K: NodeValue> Node<K> {
         }
         let stamp: Stamp = crate::graph::ids::stamp();
         debug_assert!(stamp > header.version.load(Ordering::Relaxed), "lithia: a node's version went back");
-        header.version.store(stamp, Ordering::SeqCst);
+        // Readers load it with at least acquire ordering.
+        header.version.store(stamp, Ordering::Release);
         if let Commit::Item(run) = commit {
             run.note_stamp(stamp);
         }
@@ -231,7 +237,7 @@ impl<K: NodeValue> Drop for Node<K> {
         let _op: crate::lifetime::op::Operation = crate::lifetime::op::enter();
         let header: &mut Header = &mut self.header;
         let ghost: bool = header.phase.load(Ordering::SeqCst) & phase::GHOST != 0;
-        if header.diag.warn_first_run && !ghost && !header.diag.under_way.load(Ordering::SeqCst) {
+        if header.diag.warn_first_run && !ghost && !header.diag.under_way.load(Ordering::Acquire) {
             crate::diag::freed_before_first_run(header.site);
         }
         let detached: Detached = detach(header);

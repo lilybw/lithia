@@ -70,7 +70,7 @@ pub fn try_reflow<N: Reflow>(node: &N) -> Result<(), Ghosted> {
         }
         let stamp: Stamp = ids::stamp();
         debug_assert!(stamp > header.version.load(Ordering::Relaxed), "lithia: a node's version went back");
-        header.version.store(stamp, Ordering::SeqCst);
+        header.version.store(stamp, Ordering::Release);
         stamp
     };
     context::record_reflow(&handle.0, stamp);

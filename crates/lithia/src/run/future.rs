@@ -27,8 +27,10 @@ pub(super) enum RunState<K: NodeValue> {
     Init,
     /// A synchronous body, called within one poll.
     Sync(SyncFn<K>),
-    /// An async body, a generator or an async source block.
-    Future(BoxFut<Option<K>>),
+    /// An async body or an async source block, which ends with its item.
+    Item(BoxFut<K>),
+    /// A generator, whose items go out through its yielder.
+    Items(BoxFut<()>),
     /// Ended, aborted or never started.
     Done,
 }
@@ -44,30 +46,19 @@ pub(crate) struct RunFuture<K: NodeValue> {
 }
 
 impl<K: NodeValue> RunFuture<K> {
-    pub(crate) fn new(node: WeakTypedNodeRef<K>) -> RunFuture<K> {
-        let (node_id, scope, expected, runtime): (
-            Option<NodeId>,
-            Arc<Scope>,
-            RunId,
-            crate::exec::fast_path::RuntimeKey,
-        ) = match node.upgrade() {
-            Some(strong) => {
-                let header: &Header = &strong.header;
-                let expected: RunId = if header.kind == crate::graph::node::Kind::AsyncSource {
-                    header.block_run.load(Ordering::SeqCst)
-                } else {
-                    RunId::NONE
-                };
-                let erased: NodeRef = strong.clone();
-                (Some(header.id), header.scope.clone(), expected, crate::exec::fast_path::runtime_of(&erased))
-            }
-            None => (None, Scope::new(), RunId::NONE, crate::exec::fast_path::no_runtime()),
+    pub(crate) fn new(strong: &TypedNodeRef<K>) -> RunFuture<K> {
+        let header: &Header = &strong.header;
+        let expected: RunId = if header.kind == crate::graph::node::Kind::AsyncSource {
+            header.block_run.load(Ordering::SeqCst)
+        } else {
+            RunId::NONE
         };
+        let node: WeakTypedNodeRef<K> = Arc::downgrade(strong);
         let weak: WeakNodeRef = node.clone();
         RunFuture {
             node,
-            runtime,
-            shared: Arc::new(RunControl::new(weak, node_id, scope, expected)),
+            runtime: crate::exec::fast_path::runtime_key(header),
+            shared: Arc::new(RunControl::new(weak, Some(header.id), header.scope.clone(), expected)),
             state: RunState::Init,
             polls: 0,
         }
@@ -79,31 +70,24 @@ impl<K: NodeValue> RunFuture<K> {
         let yielder = || Yielder { shared: self.shared.clone(), node: Arc::downgrade(node) };
         match body.as_ref() {
             Some(Body::Sync(f)) => return RunState::Sync(f.clone()),
+            // The bodies' futures are boxed already; their output is mapped as they are polled.
             Some(Body::Async(f)) => {
                 let f: AsyncFn<K> = f.clone();
                 drop(body);
-                return RunState::Future(Box::pin(async move { Some(f().await) }));
+                return RunState::Item(f());
             }
             Some(Body::Gen(f)) => {
                 let f: GenFn<K> = f.clone();
                 drop(body);
-                let generator: BoxFut<()> = f(yielder());
-                return RunState::Future(Box::pin(async move {
-                    generator.await;
-                    None
-                }));
+                return RunState::Items(f(yielder()));
             }
             _ => {}
         }
         match body.take() {
-            Some(Body::Once(future)) => RunState::Future(Box::pin(async move { Some(future.await) })),
+            Some(Body::Once(future)) => RunState::Item(future),
             Some(Body::OnceGen(start)) => {
                 drop(body);
-                let generator: BoxFut<()> = start(yielder());
-                RunState::Future(Box::pin(async move {
-                    generator.await;
-                    None
-                }))
+                RunState::Items(start(yielder()))
             }
             _ => RunState::Done,
         }
@@ -145,7 +129,7 @@ impl<K: NodeValue> RunFuture<K> {
             return (Poll::Ready(()), Tokens::new());
         }
         // Only a run that can suspend is woken: a synchronous body ends within its first poll.
-        if matches!(self.state, RunState::Future(_)) {
+        if matches!(self.state, RunState::Item(_) | RunState::Items(_)) {
             self.shared.set_waker(cx.waker());
         }
         let Some(node) = self.node.upgrade() else {
@@ -185,7 +169,7 @@ impl<K: NodeValue> RunFuture<K> {
                 return (Poll::Ready(()), closes);
             }
             // A cancel before this point finds no waker; the check after the poll catches it.
-            if matches!(self.state, RunState::Future(_)) {
+            if matches!(self.state, RunState::Item(_) | RunState::Items(_)) {
                 self.shared.set_waker(cx.waker());
             }
         } else if self.shared.is_cancelled() {
@@ -203,7 +187,8 @@ impl<K: NodeValue> RunFuture<K> {
                 let _paused: crate::exec::fast_path::Paused = crate::exec::fast_path::pause();
                 catch_unwind(AssertUnwindSafe(|| match state {
                     RunState::Sync(f) => Poll::Ready(Some(f())),
-                    RunState::Future(future) => future.as_mut().poll(cx),
+                    RunState::Item(future) => future.as_mut().poll(cx).map(Some),
+                    RunState::Items(future) => future.as_mut().poll(cx).map(|()| None),
                     RunState::Init | RunState::Done => Poll::Ready(None),
                 }))
             };
@@ -228,7 +213,7 @@ impl<K: NodeValue> RunFuture<K> {
         self.polls = self.polls.saturating_add(1);
         let ended: bool = matches!(outcome, Outcome::Ended | Outcome::Panicked(_));
         if ended || self.polls >= 2 || matches!(outcome, Outcome::Yielded) {
-            node.header.diag.under_way.store(true, Ordering::SeqCst);
+            node.header.diag.under_way.store(true, Ordering::Release);
         }
         if ended {
             self.stop();

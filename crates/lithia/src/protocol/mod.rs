@@ -4,7 +4,6 @@
 //! The scheduling protocol: framing, releases, runs and settling (spec §7, §11.4).
 //! Its locking and release invariants are stated in spec §11.4.
 
-use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -16,8 +15,8 @@ use crate::diag::Diag;
 use crate::graph::epoch::{Epoch, Epochs, Scope, ScopeToken, Tokens};
 use crate::graph::ids::{self, EpochId, NodeId, RunId, Stamp, WriterId};
 use crate::graph::node::{
-    Children, Due, Entries, Entry, Header, Kind, NodeRef, Parents, RunSlot, Sched, SchedGuard, Served, merge_served,
-    phase,
+    Children, Due, Entries, Entry, Header, Kind, NodeRef, Parents, RunSlot, Sched, SchedGuard, Served, ServedList,
+    merge_served, phase,
 };
 use crate::graph::sets::WriterSet;
 use crate::options::{Fragility, GhostPolicy};

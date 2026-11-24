@@ -25,7 +25,7 @@ impl Release {
     pub(super) fn unaddressed(from: &NodeRef, record: &Served) -> Release {
         Release {
             from: from.clone(),
-            children: Vec::new(),
+            children: Children::new(),
             epoch: record.epoch.clone(),
             carry: record.carry,
             writers: record.writers.clone(),
@@ -44,7 +44,7 @@ pub(super) fn release_or_fold(entries: &mut Entries, from: &NodeRef, record: &Se
             false
         }
         None => {
-            work.releases.push_back(Release::unaddressed(from, record));
+            work.release(Release::unaddressed(from, record));
             true
         }
     }
@@ -60,9 +60,8 @@ impl RunSlot {
 }
 
 /// Actions gathered under locks and carried out after unlocking.
-#[derive(Default)]
 pub(crate) struct Work {
-    pub(super) releases: VecDeque<Release>,
+    pub(super) releases: Vec<Release>,
     pub(super) spawns: Vec<NodeRef>,
     pub(super) wakes: Wakes,
     pub(super) closes: Tokens,
@@ -77,7 +76,57 @@ pub(crate) struct Work {
     pub(super) cut_reruns: Vec<CutRerun>,
 }
 
+crate::sync::thread_local! {
+    /// An empty release buffer kept for this thread's next step, so most steps allocate none.
+    static SPARE: std::cell::Cell<Vec<Release>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// Largest release buffer kept for reuse.
+const SPARE_LIMIT: usize = 16;
+
+fn spare_releases() -> Vec<Release> {
+    SPARE.try_with(std::cell::Cell::take).unwrap_or_default()
+}
+
+fn keep_spare(mut releases: Vec<Release>) {
+    if releases.capacity() > 0 && releases.capacity() <= SPARE_LIMIT {
+        releases.clear();
+        let _ = SPARE.try_with(|spare: &std::cell::Cell<Vec<Release>>| spare.set(releases));
+    }
+}
+
+impl Default for Work {
+    fn default() -> Work {
+        Work {
+            releases: Vec::new(),
+            spawns: Vec::new(),
+            wakes: Vec::new(),
+            closes: Tokens::new(),
+            diags: Vec::new(),
+            keep: Vec::new(),
+            released: Vec::new(),
+            resumes: Vec::new(),
+            cut_reruns: Vec::new(),
+        }
+    }
+}
+
 impl Work {
+    /// Queues a release, in this thread's spare buffer if the step has none yet.
+    pub(super) fn release(&mut self, release: Release) {
+        if self.releases.capacity() == 0 {
+            self.releases = spare_releases();
+        }
+        self.releases.push(release);
+    }
+
+    /// Holds `node` until the step's other references go, unless dropping it frees nothing.
+    pub(super) fn keep(&mut self, node: NodeRef) {
+        if Arc::strong_count(&node) == 1 {
+            self.keep.push(node);
+        }
+    }
+
     fn is_drained(&self) -> bool {
         self.releases.is_empty()
             && self.spawns.is_empty()
@@ -95,6 +144,9 @@ impl Drop for Work {
     /// Carries out what it still holds, so a panic through a step cannot leave a scope unsettled.
     fn drop(&mut self) {
         if self.is_drained() {
+            if self.releases.capacity() > 0 {
+                keep_spare(std::mem::take(&mut self.releases));
+            }
             return;
         }
         debug_assert!(std::thread::panicking(), "lithia: protocol work dropped undrained");
@@ -109,11 +161,17 @@ pub(crate) fn drain(work: Work) {
 
 /// Like `drain`, but hands the token closes back to the caller.
 pub(crate) fn drain_deferred(mut work: Work) -> Tokens {
-    while let Some(release) = work.releases.pop_front() {
-        let Release { from, children, epoch, carry, writers, origin } = release;
-        release_children(&from, children, &epoch, carry, &writers, origin, &mut work);
-        work.keep.push(from);
+    // In the order gathered: the releases a batch adds form the next batch.
+    let mut batch: Vec<Release> = Vec::new();
+    while !work.releases.is_empty() {
+        std::mem::swap(&mut batch, &mut work.releases);
+        for Release { from, children, epoch, carry, writers, origin } in batch.drain(..) {
+            release_children(&from, children, &epoch, carry, &writers, origin, &mut work);
+            work.keep(from);
+        }
     }
+    keep_spare(batch);
+    // Most steps leave most of these empty; each part is skipped then, so an empty step costs little.
     for diag in std::mem::take(&mut work.diags) {
         diag.emit();
     }
@@ -122,7 +180,7 @@ pub(crate) fn drain_deferred(mut work: Work) -> Tokens {
             epoch.on_settle(Box::new(move || rerun_cut(rerun)));
         }
     }
-    {
+    if !(work.keep.is_empty() && work.released.is_empty()) {
         // The step's other references and its released generations go before its spawns,
         // so an idle old child released here is freed before its task exists.
         let _op: crate::lifetime::op::Operation = crate::lifetime::op::enter();
@@ -137,9 +195,13 @@ pub(crate) fn drain_deferred(mut work: Work) -> Tokens {
             spawns.push(node);
         }
     }
-    spawns.sort_by_key(|node: &NodeRef| node.header().id);
-    spawns.dedup_by_key(|node: &mut NodeRef| node.header().id);
-    crate::exec::fast_path::dispatch(spawns);
+    if spawns.len() > 1 {
+        spawns.sort_by_key(|node: &NodeRef| node.header().id);
+        spawns.dedup_by_key(|node: &mut NodeRef| node.header().id);
+    }
+    if !spawns.is_empty() {
+        crate::exec::fast_path::dispatch(spawns);
+    }
     for run in std::mem::take(&mut work.wakes) {
         run.wake();
     }

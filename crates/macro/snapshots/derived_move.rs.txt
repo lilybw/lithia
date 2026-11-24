@@ -4,11 +4,12 @@
     fn __lithia_scope () {
     } fn __lithia_path () -> & 'static str {
         :: lithia :: __private :: fn_path (:: core :: any :: type_name_of_val (& __lithia_scope ) )
-    } static __LITHIA_SITE : :: lithia :: Site = :: lithia :: Site :: __new (:: core :: file ! () , :: core :: line ! () , :: core :: column ! () , :: core :: module_path ! () , __lithia_path , if :: core :: cfg ! (debug_assertions ) {
+    } static __LITHIA_HELD : :: lithia :: __private :: SiteCounter = :: lithia :: __private :: SiteCounter :: new () ;
+    static __LITHIA_SITE : :: lithia :: Site = :: lithia :: Site :: __new (:: core :: file ! () , :: core :: line ! () , :: core :: column ! () , :: core :: module_path ! () , __lithia_path , if :: core :: cfg ! (debug_assertions ) {
         "move | n | tx . send (* n . get ())"
     } else {
         ""
-    } , ) ;
+    } , & __LITHIA_HELD , ) ;
     let __lithia_deps : [:: lithia :: __private :: NodeHandle ; 1usize ] = [:: lithia :: __private :: node_ref (& n ) ] ;
     # [allow (unused_imports ) ] use :: lithia :: __private :: {
         CaptureAny as _ , FieldAny as _ , MoveAny as _

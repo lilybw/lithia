@@ -174,10 +174,11 @@ impl<T> Mutex<T> {
     }
 }
 
-/// Atomically replaceable `Option<Arc<T>>` with lock-free reads: arc-swap normally, and a
-/// loom mutex under loom so the model sees every read and write of a value.
+/// Replaceable `Option<Arc<T>>`: a reader-writer lock, whose write costs the same however many
+/// threads read, unlike a lock-free cell's; a loom mutex under loom, so models see every access.
+/// Its reads are recursive, so a read inside `with` cannot wait behind a queued write.
 #[cfg(not(lithia_loom))]
-pub(crate) struct ArcCell<T>(arc_swap::ArcSwapOption<T>);
+pub(crate) struct ArcCell<T>(parking_lot::RecursiveRwLock<Slot<T>>);
 
 /// What an `ArcCell` holds: a shared value, or none.
 type Slot<T> = Option<std::sync::Arc<T>>;
@@ -188,7 +189,7 @@ pub(crate) struct ArcCell<T>(Mutex<Slot<T>>);
 impl<T> ArcCell<T> {
     pub(crate) fn new(value: Slot<T>) -> ArcCell<T> {
         #[cfg(not(lithia_loom))]
-        return ArcCell(arc_swap::ArcSwapOption::new(value));
+        return ArcCell(parking_lot::RecursiveRwLock::new(value));
         #[cfg(lithia_loom)]
         return ArcCell(Mutex::new(value));
     }
@@ -196,7 +197,7 @@ impl<T> ArcCell<T> {
     /// The current value, as a new reference.
     pub(crate) fn load_full(&self) -> Slot<T> {
         #[cfg(not(lithia_loom))]
-        return self.0.load_full();
+        return self.0.read().clone();
         #[cfg(lithia_loom)]
         return self.0.lock().clone();
     }
@@ -204,9 +205,17 @@ impl<T> ArcCell<T> {
     /// Replaces the value, returning the previous one.
     pub(crate) fn swap(&self, value: Slot<T>) -> Slot<T> {
         #[cfg(not(lithia_loom))]
-        return self.0.swap(value);
+        return std::mem::replace(&mut *self.0.write(), value);
         #[cfg(lithia_loom)]
         return std::mem::replace(&mut *self.0.lock(), value);
+    }
+
+    /// Calls `f` with the current value, borrowed, so no reference count changes.
+    pub(crate) fn with<R>(&self, f: impl FnOnce(Option<&T>) -> R) -> R {
+        #[cfg(not(lithia_loom))]
+        return f(self.0.read().as_deref());
+        #[cfg(lithia_loom)]
+        return f(self.0.lock().as_deref());
     }
 
     /// Replaces the value; the previous one drops here.

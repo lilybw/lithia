@@ -100,11 +100,16 @@ pub(crate) type SettleHook = Box<dyn FnOnce() + Send>;
 /// node reference (spec §10.1); dropping them unclosed is a bug, caught in debug builds.
 #[must_use = "epoch tokens must be closed with `Tokens::close`"]
 #[derive(Default)]
-pub(crate) struct Tokens(Vec<(Arc<Epoch>, u32)>);
+pub(crate) struct Tokens(TokenList);
+
+/// Tokens by epoch; most steps hold one or two epochs' worth, inline.
+type TokenList = smallvec::SmallVec<TokenSlots>;
+/// The inline part of a `TokenList`.
+type TokenSlots = [(Arc<Epoch>, u32); 2];
 
 impl Tokens {
     pub(crate) const fn new() -> Tokens {
-        Tokens(Vec::new())
+        Tokens(TokenList::new_const())
     }
 
     /// Adds one token of `epoch`.
@@ -144,12 +149,12 @@ impl Tokens {
     /// Closes every token; the tokens of one epoch close in one step, so fewer writes hit its
     /// shared counters, in id order, so loom models stay deterministic.
     pub(crate) fn close(mut self) {
-        let mut list: Vec<(Arc<Epoch>, u32)> = std::mem::take(&mut self.0);
+        let mut list: TokenList = std::mem::take(&mut self.0);
         if list.is_empty() {
             return;
         }
         list.sort_by_key(|(epoch, _): &(Arc<Epoch>, u32)| epoch.id);
-        let mut list: std::iter::Peekable<std::vec::IntoIter<(Arc<Epoch>, u32)>> = list.into_iter().peekable();
+        let mut list: std::iter::Peekable<smallvec::IntoIter<TokenSlots>> = list.into_iter().peekable();
         while let Some((epoch, mut count)) = list.next() {
             while let Some((_, more)) = list.next_if(|(next, _): &(Arc<Epoch>, u32)| Arc::ptr_eq(next, &epoch)) {
                 count += more;

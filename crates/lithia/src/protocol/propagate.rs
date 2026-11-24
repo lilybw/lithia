@@ -111,7 +111,7 @@ pub(super) fn release_children(
                 }
             }
         }
-        work.keep.push(child);
+        work.keep(child);
     }
 }
 
@@ -321,7 +321,7 @@ pub(super) fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &m
             served.carry = served.carry.max(entry.carry);
             served.writers.union(&entry.writers);
         }
-        None => work.releases.push_back(Release {
+        None => work.release(Release {
             from: node.clone(),
             children: sched.children(),
             epoch: entry.epoch.clone(),
@@ -365,7 +365,7 @@ pub(super) fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind
     // The writer check: a node whose lineage already wrote on the chain does not run on it, so a
     // loop through creation is cut like any other (7.4).
     let cut: bool = writers.contains(header.writer);
-    let created: Option<Vec<NodeRef>> = {
+    let created: Option<Children> = {
         let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         if header.is_ghost() {
@@ -393,7 +393,7 @@ pub(super) fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind
 
 pub(super) fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet, stamp: Stamp, work: &mut Work) {
     let header: &Header = node.header();
-    let created: Option<Vec<NodeRef>> = {
+    let created: Option<Children> = {
         let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
         if header.is_ghost() {

@@ -31,7 +31,9 @@ impl<K: NodeValue> Changes<K> {
                 None
             } else {
                 let sender: &ChangeSender = slot.get_or_insert_with(|| tokio::sync::watch::channel(0).0);
-                Some(sender.subscribe())
+                let receiver: tokio::sync::watch::Receiver<ChangeSeq> = sender.subscribe();
+                node.header.streamed.store(true, std::sync::atomic::Ordering::Release);
+                Some(receiver)
             }
         };
         Changes { node: Arc::downgrade(node), inner: receiver.map(WatchStream::new) }

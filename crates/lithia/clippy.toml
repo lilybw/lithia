@@ -14,4 +14,5 @@ disallowed-types = [
     { path = "std::sync::LazyLock", reason = "loom cannot see it; allow it where it stands, with a reason" },
     { path = "parking_lot::Mutex", reason = "use crate::sync::Mutex, which loom sees" },
     { path = "parking_lot::RwLock", reason = "use crate::sync::Mutex, which loom sees" },
+    { path = "parking_lot::RecursiveRwLock", reason = "use crate::sync::ArcCell, which loom sees" },
 ]

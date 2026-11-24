@@ -3,15 +3,14 @@
 
 //! Diagnostics through `tracing` (spec §12).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
 
 use crate::Site;
 use crate::graph::ids::RunId;
-use crate::graph::node::Header;
 use crate::site::SiteKey;
-use crate::sync::{AtomicBool, Mutex, MutexGuard};
+use crate::sync::AtomicBool;
 
 /// Default rerun-rate threshold in runs per second; override with `LITHIA_RERUN_RATE`.
 /// Milliseconds since the first diagnostic that needed the time.
@@ -34,24 +33,47 @@ static RERUN_THRESHOLD: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
 #[allow(clippy::disallowed_types)]
 static START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
 
-/// Support-held nodes per creating site, for the growth warning.
-#[allow(clippy::disallowed_types)]
-static HELD: parking_lot::Mutex<BTreeMap<SiteKey, usize>> = parking_lot::Mutex::new(BTreeMap::new());
-
 /// Sites already warned about an unread memo.
 #[allow(clippy::disallowed_types)]
 static UNREAD_WARNED: parking_lot::Mutex<BTreeSet<SiteKey>> = parking_lot::Mutex::new(BTreeSet::new());
 
 /// Rerun counting for the rerun-rate warning (spec §12).
 pub(crate) struct RateWindow {
-    pub(crate) start_ms: Millis,
-    pub(crate) count: u64,
-    pub(crate) warned: bool,
+    start_ms: Millis,
+    count: u64,
+    warned: bool,
+}
+
+/// Runs between clock reads while a window is under the threshold.
+const CLOCK_EVERY: u64 = 1024;
+
+impl RateWindow {
+    pub(crate) const fn new() -> RateWindow {
+        RateWindow { start_ms: 0, count: 0, warned: false }
+    }
+
+    /// Counts a run start; the count to warn with when it first passes the threshold within one
+    /// second. The clock is read as a window opens, every `CLOCK_EVERY` runs, and past the threshold.
+    pub(crate) fn count(&mut self) -> Option<u64> {
+        self.count += 1;
+        if self.count == 1 {
+            self.start_ms = millis();
+            return None;
+        }
+        let threshold: u64 = *RERUN_THRESHOLD;
+        let past: bool = self.count > threshold && !self.warned;
+        if (past || self.count.is_multiple_of(CLOCK_EVERY)) && millis().saturating_sub(self.start_ms) >= 1000 {
+            // A new window opens with this run.
+            *self = RateWindow { start_ms: millis(), count: 1, warned: false };
+            return None;
+        }
+        self.warned |= past;
+        past.then_some(self.count)
+    }
 }
 
 /// What a node's diagnostics track.
 pub(crate) struct DiagState {
-    pub(crate) rate: Mutex<RateWindow>,
     /// Warn if freed before its first run got under way.
     pub(crate) warn_first_run: bool,
     /// The first run finished, yielded an item or was polled a second time.
@@ -60,11 +82,7 @@ pub(crate) struct DiagState {
 
 impl DiagState {
     pub(crate) fn new(warn_first_run: bool) -> DiagState {
-        DiagState {
-            rate: Mutex::new(RateWindow { start_ms: 0, count: 0, warned: false }),
-            warn_first_run,
-            under_way: AtomicBool::new(false),
-        }
+        DiagState { warn_first_run, under_way: AtomicBool::new(false) }
     }
 }
 
@@ -87,33 +105,17 @@ fn site_key(site: &'static Site) -> SiteKey {
     std::ptr::from_ref(site).addr()
 }
 
-/// Counts a run start and warns once per window when the node reruns too fast.
-pub(crate) fn count_run(header: &Header) {
+/// Warns that a node reran faster than the threshold; `observed` runs in its window so far.
+pub(crate) fn rerun_too_fast(site: &Site, observed: u64) {
     let threshold: u64 = *RERUN_THRESHOLD;
-    let now: Millis = millis();
-    let observed: Option<u64> = {
-        let mut guard: MutexGuard<'_, RateWindow> = header.diag.rate.lock();
-        let window: &mut RateWindow = &mut guard;
-        if now.saturating_sub(window.start_ms) >= 1000 {
-            window.start_ms = now;
-            window.count = 0;
-            window.warned = false;
-        }
-        window.count += 1;
-        let first: bool = window.count > threshold && !window.warned;
-        window.warned |= first;
-        first.then_some(window.count)
-    };
-    if let Some(observed) = observed {
-        emit(|| {
-            tracing::warn!(
-                site = %header.site,
-                observed,
-                threshold,
-                "lithia: node reran faster than the configured rate; a loop may be unattributed"
-            )
-        });
-    }
+    emit(|| {
+        tracing::warn!(
+            site = %site,
+            observed,
+            threshold,
+            "lithia: node reran faster than the configured rate; a loop may be unattributed"
+        )
+    });
 }
 
 pub(crate) fn run_panicked(site: &Site, message: &str) {
@@ -131,12 +133,7 @@ pub(crate) fn freed_before_first_run(site: &Site) {
 
 /// Counts a node support now holds, warning at 1 000, 10 000, … nodes from one site.
 pub(crate) fn support_held(site: &'static Site) {
-    let reached: usize = {
-        let mut counts: parking_lot::MutexGuard<'_, BTreeMap<SiteKey, usize>> = HELD.lock();
-        let count: &mut usize = counts.entry(site_key(site)).or_insert(0);
-        *count += 1;
-        *count
-    };
+    let reached: usize = site.held.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     if reached >= 1000 && power_of_ten(reached) {
         emit(|| {
             tracing::warn!(
@@ -150,9 +147,11 @@ pub(crate) fn support_held(site: &'static Site) {
 
 /// Counts a node support let go of.
 pub(crate) fn support_released(site: &'static Site) {
-    if let Some(count) = HELD.lock().get_mut(&site_key(site)) {
-        *count = count.saturating_sub(1);
-    }
+    let _ = site.held.0.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |count: usize| count.checked_sub(1),
+    );
 }
 
 /// Warns once per site about a memo support keeps running though nothing reads it.

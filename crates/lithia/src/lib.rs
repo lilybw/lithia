@@ -56,7 +56,7 @@ pub mod __private {
     pub use crate::handles::NodeHandle;
     pub use crate::options::{Options, Shape};
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
-    pub use crate::site::fn_path;
+    pub use crate::site::{SiteCounter, fn_path};
     pub use tokio;
 
     /// Executor and harness for loom models; only under `--cfg lithia_loom`.

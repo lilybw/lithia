@@ -39,7 +39,8 @@ impl<K: NodeValue> Future for YieldItem<'_, K> {
                     Some(node) => node.publish(&this.yielder.shared, value),
                     None => crate::lifetime::drops::drop_owned(value, None),
                 }
-                this.yielder.shared.yielded.store(true, Ordering::SeqCst);
+                // Read by the same poll, on the same thread.
+                this.yielder.shared.yielded.store(true, Ordering::Relaxed);
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }

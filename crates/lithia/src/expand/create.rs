@@ -237,6 +237,7 @@ fn new_node<K: NodeValue>(
             sync_body,
             scope,
             changes: Mutex::new(None),
+            streamed: AtomicBool::new(false),
             lifetime: Lifetime {
                 counted: AtomicBool::new(true),
                 anchors: AtomicUsize::new(1),
@@ -297,27 +298,30 @@ fn new_node<K: NodeValue>(
     node
 }
 
-/// A one-shot block that ends its lease once it is dropped, with what it still owns (spec §4.2).
-struct LeasedBlock<T> {
-    block: Option<BoxFut<T>>,
-    lease: SharedLease,
-}
-
-impl<T> Future for LeasedBlock<T> {
-    type Output = T;
-
-    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<T> {
-        match self.block.as_mut() {
-            Some(block) => block.as_mut().poll(cx),
-            None => std::task::Poll::Pending,
-        }
+pin_project_lite::pin_project! {
+    /// A one-shot block that ends its lease once dropped: fields drop in order, so the lease ends
+    /// after what the block still owns (spec §4.2).
+    struct LeasedBlock<F> {
+        #[pin]
+        block: F,
+        lease: EndsLease,
     }
 }
 
-impl<T> Drop for LeasedBlock<T> {
+impl<F: Future> Future for LeasedBlock<F> {
+    type Output = F::Output;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<F::Output> {
+        self.project().block.poll(cx)
+    }
+}
+
+/// Ends a lease when dropped.
+struct EndsLease(SharedLease);
+
+impl Drop for EndsLease {
     fn drop(&mut self) {
-        drop(self.block.take());
-        self.lease.end();
+        self.0.end();
     }
 }
 
@@ -343,10 +347,9 @@ where
     K: NodeValue,
     F: Future<Output = K> + Send + 'static,
 {
-    let block: BoxFut<K> = Box::pin(block);
     let body: Body<K> = Body::Once(match captured.2.clone() {
-        Some(lease) => Box::pin(LeasedBlock { block: Some(block), lease }),
-        None => block,
+        Some(lease) => Box::pin(LeasedBlock { block, lease: EndsLease(lease) }),
+        None => Box::pin(block),
     });
     SourceNode {
         node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options),
@@ -370,10 +373,9 @@ where
 {
     let lease: Option<SharedLease> = captured.2.clone();
     let start: Box<dyn FnOnce(Yielder<K>) -> BoxFut<()> + Send> = Box::new(move |yielder: Yielder<K>| -> BoxFut<()> {
-        let block: BoxFut<()> = Box::pin(block(yielder));
         match lease {
-            Some(lease) => Box::pin(LeasedBlock { block: Some(block), lease }),
-            None => block,
+            Some(lease) => Box::pin(LeasedBlock { block: block(yielder), lease: EndsLease(lease) }),
+            None => Box::pin(block(yielder)),
         }
     });
     let body: Body<K> = Body::OnceGen(start);
