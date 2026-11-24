@@ -8,10 +8,10 @@ what checks lithia, `docs/known_bugs.md` what is known to be wrong.
 
 | Crate (dir) | Package | Role |
 |---|---|---|
-| `crates/lithia` | `lithia` | Engine and public API: nodes, handles, epochs, scheduling protocol, drops, diagnostics; re-exports the macros; `lithia::test` utilities |
-| `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
+| `crates/lithia` | `lithia` | Engine and public API, by concern: `graph`, `protocol`, `run`, `lifetime`, `exec`, `expand`, `testing` (CONTRIBUTING.md has the module map); re-exports the macros; `lithia::test` utilities |
+| `crates/macro` | `lithia-macro` | `effect!` (`src/effect/`), `#[lithia::main]`, `#[lithia::test]`; expansion snapshots in `snapshots/` |
 | `crates/validation` | `lithia-validation` | Spec §13 cases, verbatim (`tests/cases.rs` A–AG, `tests/support.rs` AI–BC, `tests/keyed.rs` BD–BK, `tests/consistency.rs` BL–BW, `tests/compile.rs` AH) |
-| `crates/test` | `lithia-test` | Edge-case tests: `tests/edge/` (one module per area, one binary), `tests/deep_chain.rs`, `tests/loom.rs` |
+| `crates/test` | `lithia-test` | Helpers the test crates share (`src/`); edge-case tests (`tests/edge/`, one module per area, one binary), `tests/deep_chain.rs`, loom models (`tests/loom/`, by area) |
 | `crates/bench` | `lithia-bench` | Spec §15 benchmarks |
 
 ## Validation cases (spec §13)
@@ -70,14 +70,14 @@ creation is cut); Cases T and BG are extended.
 | §3 Public API | done | all handles, views, traits, free functions, `lithia::test` |
 | §4.1–4.5 effect! expansion | done | deps, capture, site, init, generator lowering |
 | §4.6 compile errors | done | every message covered by `tests/ui` (trybuild) |
-| §4.7 keyed creation | done | v0.3.1: probes, lookup, `NodeKey` (`crates/lithia/src/keyed.rs`, `crates/macro/src/effect.rs`) |
+| §4.7 keyed creation | done | v0.3.1: probes, lookup, `NodeKey` (`crates/lithia/src/expand/keyed.rs`, `crates/macro/src/effect/keyed.rs`) |
 | §5 Node model | done | |
 | §6 Writes, batching, defer, equals | done | |
 | §7 Propagation | done | see protocol notes below |
 | §8 Pending/async/generators | done | |
 | §9 Failure, fragility | done | |
-| §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/support.rs`, `capture.rs`); v0.3.1: keyed nodes, holdover (`keyed.rs`, `create.rs`) |
-| §11 Concurrency, scopes | done | fast path and runner tasks (§11.4 step 4, `crates/lithia/src/inline.rs`) since v0.4.0 |
+| §10 Lifetime, disposal, ghosts | done | v0.3.0: generations, support, sweeps, `.scoped()` (`crates/lithia/src/lifetime/support.rs`, `expand/capture.rs`); v0.3.1: keyed nodes, holdover (`expand/keyed.rs`, `expand/create.rs`) |
+| §11 Concurrency, scopes | done | fast path and runner tasks (§11.4 step 4, `crates/lithia/src/exec/fast_path.rs`) since v0.4.0 |
 | §11.4 step 8 loom | done | 51 models, bound 3 by default, bound 4 on nightly; see "Model checking" below |
 | §11.4 step 8 TLA+ | done | `docs/tla`: scheduling and lifetimes, ten TLC models; TLC gates a release |
 | §12 Diagnostics | done | rerun threshold via `LITHIA_RERUN_RATE` (default 50 000/s since v0.5.0); first-run, growth and unread-memo warnings |
@@ -114,8 +114,8 @@ creation is cut); Cases T and BG are extended.
 
 - `--cfg lithia_loom` (not `--cfg loom`, which tokio reacts to) swaps the engine's mutexes, atomics,
   thread-locals, value cells and version clock for loom's through `crates/lithia/src/sync.rs`, and runs
-  bodies on a model executor (`crates/lithia/src/model.rs`) instead of tokio.
-- Models live in `crates/test/tests/loom.rs`: Cases A, B, C, D, E, G, H, J, M, N, P, R, T, V, W, X,
+  bodies on a model executor (`crates/lithia/src/exec/model.rs`) instead of tokio.
+- Models live in `crates/test/tests/loom/`: Cases A, B, C, D, E, G, H, J, M, N, P, R, T, V, W, X,
   plus concurrent outside writes, a write during a run, disposal during a run, and a generator; and since
   v0.3.0 twelve lifetime models (spec §11.4), which assert on `ModelScope::live()`; v0.3.1 adds three for keyed
   nodes (a reclaim racing a last-handle drop, a disposal during a reclaim, a supersede handing keyed nodes on);
