@@ -15,6 +15,7 @@ use crate::Site;
 use crate::expand::keyed::KeyedSet;
 use crate::graph::epoch::{Epoch, Epochs};
 use crate::graph::ids::{EpochId, NodeId, RunId, Stamp};
+use crate::graph::lineage::Lineage;
 use crate::graph::sets::{ParentMask, WriterSet};
 use crate::run::RunControl;
 
@@ -42,6 +43,8 @@ pub(crate) struct Sched {
     pub(crate) keyed: KeyedSet,
     /// Keyed nodes of released generations, held until a run ends without being superseded.
     pub(crate) holdover: KeyedSet,
+    /// The lineage a top-level node's creations descend from, made at its first creation.
+    pub(crate) root_lineage: Option<Arc<Lineage>>,
     /// Disposed: creations under this node get no creator.
     pub(crate) closed: bool,
     /// A stopped run's generation is being released; the node is not quiet until it is.
@@ -127,6 +130,7 @@ impl Sched {
             generation: Vec::new(),
             keyed: KeyedSet::default(),
             holdover: KeyedSet::default(),
+            root_lineage: None,
             closed: false,
             releasing: false,
             failed_by_parents: false,

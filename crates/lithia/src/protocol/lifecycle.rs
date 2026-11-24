@@ -309,6 +309,7 @@ pub(crate) enum End {
 pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunControl>, end: End) -> Tokens {
     let header: &Header = node.header();
     let mut work: Work = Work::default();
+    let mut let_go: Option<Places> = None;
     {
         let mut guard: SchedGuard<'_> = header.lock_sched();
         let sched: &mut Sched = &mut guard;
@@ -324,8 +325,11 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunControl>, end: End) -> To
             sched.take_generation(&mut work.released);
         }
         if !restart {
-            // The run ended without a successor: keyed nodes it did not reclaim are let go.
+            // The run ended without a successor: keyed nodes it did not reclaim are let go, and its
+            // creations' lineages are the ones the next run finds (spec §7.4).
             sched.holdover.drain_into(&mut work.released);
+            let_go =
+                header.lineage.as_ref().or(sched.root_lineage.as_ref()).map(|lineage: &Arc<Lineage>| lineage.rotate());
         }
         if !work.released.is_empty() {
             sched.releasing = true;
@@ -358,6 +362,7 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunControl>, end: End) -> To
         wake_gated(sched, &mut work);
         header.diag.under_way.store(true, Ordering::Release);
     }
+    drop(let_go);
     let releasing: bool = !work.released.is_empty();
     let closes: Tokens = drain_deferred(work);
     if releasing {

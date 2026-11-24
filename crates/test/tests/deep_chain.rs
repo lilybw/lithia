@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! A 20 000-node chain, in a binary of its own: while any scoped node is alive in the process, each
-//! sweep walks the chain's handleless nodes to its top, so building it beside other tests is quadratic.
+//! A 20 000-node chain, built beside a live scoped node, in a binary of its own for its size: each sweep
+//! checks only the nodes downstream of where it starts for a scoped parent, so building stays linear.
 
 use std::time::Duration;
 
@@ -10,6 +10,11 @@ use lithia::{DerivedNode, SourceNode, effect};
 
 #[lithia::test]
 async fn a_long_chain_propagates_and_drops_without_recursion() {
+    let other: SourceNode<u64> = effect!(0);
+    let _scoped: DerivedNode<()> = effect!(|other| {
+        let _ = other.get();
+    })
+    .scoped();
     let source: SourceNode<u64> = effect!(0);
     let mut tail: DerivedNode<u64> = effect!(|source| *source.get() + 1);
     for _ in 0..20_000 {

@@ -286,12 +286,13 @@ async fn case_n_created_mid_propagation() {
     let a: SourceNode<i32> = effect!(1);
     let slow: DerivedNode<i32> = effect!(|a| {
         started_tx.send(()).unwrap();
-        go_rx.lock().unwrap().recv().unwrap(); // still running while `m` is created
+        // Still running while `m` is created; blocking hands the worker's queue on.
+        tokio::task::block_in_place(|| go_rx.lock().unwrap().recv().unwrap());
         *a.get()
     });
     let holder: SourceNode<Option<DerivedNode<i32>>> = effect!(None);
     let _maker: DerivedNode<()> = effect!(|a| {
-        started_rx.lock().unwrap().recv().unwrap();
+        tokio::task::block_in_place(|| started_rx.lock().unwrap().recv().unwrap());
         holder.set(Some(effect!(|slow| *slow.get() + 1)));
         go_tx.send(()).unwrap();
     });
@@ -562,7 +563,7 @@ async fn case_ac_ghost_with_a_surviving_child() {
     lithia::flush().await;
     lithia::dispose(&doomed); // `both` survives through `kept` (10.4)
     lithia::flush().await;
-    assert!(matches!(lithia::status(&doomed), Status::Ghost));
+    assert!(matches!(lithia::status(&doomed), Status::Pending)); // `PEND` shows a parent pending forever
     kept.set(2);
     lithia::flush().await;
     assert_eq!(*both.get(), 12); // the ghost still reads its last value

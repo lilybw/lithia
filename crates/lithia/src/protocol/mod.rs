@@ -14,6 +14,7 @@ use crate::context::{self, Batch, Deferred, Frame, Target};
 use crate::diag::Diag;
 use crate::graph::epoch::{Epoch, Epochs, Scope, ScopeToken, Tokens};
 use crate::graph::ids::{self, EpochId, NodeId, RunId, Stamp, WriterId};
+use crate::graph::lineage::{Lineage, Places};
 use crate::graph::node::{
     Children, Due, Entries, Entry, Header, Kind, NodeRef, Parents, RunSlot, Sched, SchedGuard, Served, ServedList,
     merge_served, phase,

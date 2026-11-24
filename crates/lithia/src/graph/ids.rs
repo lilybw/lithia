@@ -41,16 +41,7 @@ pub(crate) struct RunId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WriterId(u64);
 
-/// Where a creation sits in its creator's run, for its lineage (spec §7.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Place {
-    /// The n-th creation at its site in the run.
-    Nth(u64),
-    /// A keyed creation, by its key's hash.
-    Key(u64),
-}
-
-/// Lineage hashes carry the top bit, so they never equal a node's own id.
+/// Lineage ids carry the top bit, so they never equal a node's own id.
 const LINEAGE: u64 = 1 << 63;
 
 impl NodeId {
@@ -107,9 +98,9 @@ impl WriterId {
         WriterId(id.get())
     }
 
-    /// A node created in a run, writing under its lineage hash.
-    pub(crate) fn lineage(hash: u64) -> WriterId {
-        WriterId(hash | LINEAGE)
+    /// The `n`-th lineage, for nodes created in runs (spec §7.4).
+    pub(crate) fn lineage(n: u64) -> WriterId {
+        WriterId(n | LINEAGE)
     }
 }
 
@@ -174,6 +165,8 @@ static NEXT_NODE: Padded<std::sync::atomic::AtomicU64> = Padded(std::sync::atomi
 static NEXT_EPOCH: Padded<std::sync::atomic::AtomicU64> = Padded(std::sync::atomic::AtomicU64::new(1));
 #[allow(clippy::disallowed_types)]
 static NEXT_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+#[allow(clippy::disallowed_types)]
+static NEXT_LINEAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 #[cfg(not(lithia_loom))]
 #[allow(clippy::disallowed_types)]
 static CLOCK: Padded<std::sync::atomic::AtomicU64> = Padded(std::sync::atomic::AtomicU64::new(1));
@@ -186,6 +179,11 @@ loom::lazy_static! {
 pub(crate) fn next_node_id() -> NodeId {
     let bits: u64 = NEXT_NODE.fetch_add(1, Ordering::SeqCst);
     NodeId(NonZeroU64::new(bits).expect("lithia: node ids start at 1"))
+}
+
+/// Allocates a new lineage's writer identity; never reused (spec §7.4).
+pub(crate) fn next_lineage() -> WriterId {
+    WriterId::lineage(NEXT_LINEAGE.fetch_add(1, Ordering::Relaxed))
 }
 
 /// Allocates the next epoch id.

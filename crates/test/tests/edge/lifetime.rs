@@ -299,3 +299,18 @@ async fn disposal_ends_a_run_parked_on_a_future_that_never_wakes_it() {
     .await;
     assert!(left.is_ok(), "the parked run kept its parent alive");
 }
+
+#[lithia::test]
+async fn a_ghost_reports_the_status_its_disposed_option_names() {
+    let failing: SourceNode<u32> = effect!(1);
+    let masked: SourceNode<u32> = effect!(2, disposed = MASK);
+    let pending: SourceNode<u32> = effect!(3, disposed = PEND);
+    for node in [&failing, &masked, &pending] {
+        lithia::dispose(node);
+    }
+    assert!(matches!(lithia::status(&failing), Status::Ghost));
+    assert!(matches!(lithia::status(&masked), Status::Ready));
+    assert!(matches!(lithia::status(&pending), Status::Pending));
+    assert_eq!((masked.try_set(4), pending.try_set(5)), (Err(lithia::Ghosted), Err(lithia::Ghosted)));
+    assert_eq!((*masked.get(), *pending.get()), (2, 3));
+}

@@ -67,12 +67,35 @@ fn key_hash<T: KeyValue>(site: &'static Site, value: &T) -> KeyHash {
 /// A node's key, kept in its header.
 pub(crate) struct Key {
     pub(crate) hash: KeyHash,
-    value: Box<dyn DynKey>,
+    value: Arc<dyn DynKey>,
 }
 
 impl Key {
     fn matches(&self, probe: &KeyRef<'_>) -> bool {
         self.hash == probe.hash && self.value.same(probe.value)
+    }
+
+    /// The key's value, shared with the lineage it names.
+    pub(crate) fn share(&self) -> SharedKey {
+        SharedKey(Some(self.value.clone()))
+    }
+}
+
+/// A key value a lineage keeps; dropped off the protocol, like the node's own key.
+pub(crate) struct SharedKey(Option<Arc<dyn DynKey>>);
+
+impl SharedKey {
+    /// Whether `key` has this value; runs the key type's `PartialEq`, so never under a lock.
+    pub(crate) fn same(&self, key: &Key) -> bool {
+        self.0.as_ref().is_some_and(|own: &Arc<dyn DynKey>| own.same(&*key.value))
+    }
+}
+
+impl Drop for SharedKey {
+    fn drop(&mut self) {
+        if let Some(value) = self.0.take() {
+            crate::lifetime::drops::drop_later(value, None);
+        }
     }
 }
 
@@ -82,7 +105,7 @@ impl Key {
 pub struct NodeKey<T> {
     value: T,
     erase: fn(&T) -> &dyn DynKey,
-    boxed: fn(T) -> Box<dyn DynKey>,
+    shared: fn(T) -> Arc<dyn DynKey>,
 }
 
 impl<T> NodeKey<T> {
@@ -91,11 +114,11 @@ impl<T> NodeKey<T> {
     where
         T: KeyValue,
     {
-        NodeKey { value, erase: |value: &T| value, boxed: |value: T| Box::new(value) }
+        NodeKey { value, erase: |value: &T| value, shared: |value: T| Arc::new(value) }
     }
 
-    fn into_box(self) -> Box<dyn DynKey> {
-        (self.boxed)(self.value)
+    fn into_shared(self) -> Arc<dyn DynKey> {
+        (self.shared)(self.value)
     }
 }
 
@@ -311,7 +334,7 @@ pub enum Reclaim<K: NodeValue> {
 /// What `Options::keyed` carries to node creation.
 pub(crate) struct Keyed {
     pub(crate) reclaimed: Option<NodeRef>,
-    value: Box<dyn DynKey>,
+    value: Arc<dyn DynKey>,
     pub(crate) inputs: Inputs,
 }
 
@@ -321,7 +344,7 @@ impl Keyed {
             Reclaim::Same(Reclaimed(node)) | Reclaim::Changed(Reclaimed(node)) => Some(node),
             Reclaim::Fresh => None,
         };
-        Keyed { reclaimed, value: key.into_box(), inputs }
+        Keyed { reclaimed, value: key.into_shared(), inputs }
     }
 
     pub(crate) fn key(self, site: &'static Site) -> (Key, Inputs) {

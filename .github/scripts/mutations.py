@@ -51,7 +51,8 @@ MUTATIONS: list[Mutation] = [
     ),
     Mutation(
         "W3", "A written node's release reaching its subscribers at release time, not those it framed "
-        "(uncaught: no test creates a node between a write's framing and its release)",
+        "(equivalent: a child linked in between waits on the written node only through an entry, run or "
+        "handover that releases it too; the early release reads the same value, and the later one is ignored)",
         "crates/lithia/src/protocol/deliver.rs",
         "        for (node, stamp) in &writes {\n            let children: Children = counted.next().unwrap_or_default();\n",
         "        for (node, stamp) in &writes {\n            let _ = counted.next();\n"

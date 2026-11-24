@@ -16,7 +16,9 @@ use crate::expand::capture::SharedLease;
 use crate::expand::keyed::{Inputs, Key};
 use crate::graph::epoch::Scope;
 use crate::graph::ids::{Atomic, NodeId, RunId, Stamp, WriterId};
+use crate::graph::lineage::Lineage;
 use crate::options::Shape;
+use crate::options::disposed::Ghost;
 use crate::{Failure, Site, Status};
 
 /// Bits of a node's phase word; `Status` derives from it (spec §5.3).
@@ -72,6 +74,8 @@ pub(crate) struct Header {
     /// The identity it writes under in writer sets: its id, or for a node created in a run, its
     /// lineage, which the same creation in the creator's next run shares (spec §7.4).
     pub(crate) writer: WriterId,
+    /// For a node created in a run, its lineage, which `writer` names.
+    pub(crate) lineage: Option<Arc<Lineage>>,
     pub(crate) runtime: Option<Handle>,
     /// Whether its body is synchronous, so its runs may take the fast path (spec §11.4, step 4).
     pub(crate) sync_body: bool,
@@ -142,11 +146,15 @@ impl Header {
         self.phase.fetch_and(!bits, Ordering::SeqCst);
     }
 
-    /// Condition of the node as seen by readers (spec §5.3).
+    /// Condition of the node as seen by readers; a ghost shows what its `disposed` option names (spec §5.3).
     pub(crate) fn status(&self) -> Status {
         let bits: u32 = self.phase();
         if bits & phase::GHOST != 0 {
-            Status::Ghost
+            match self.shape.disposed.0 {
+                Ghost::Fail => Status::Ghost,
+                Ghost::Mask => Status::Ready,
+                Ghost::Pend => Status::Pending,
+            }
         } else if bits & phase::FAILED != 0 {
             match self.failure.load_full() {
                 Some(failure) => Status::Failed(failure),
@@ -175,6 +183,15 @@ impl Header {
         if self.phase.fetch_and(!(phase::PENDING | phase::FAILED), Ordering::SeqCst) & phase::FAILED != 0 {
             self.failure.store(None);
         }
+    }
+
+    /// The lineage its runs' creations descend from: its own, or one under its id for a top-level node.
+    pub(crate) fn lineage_root(&self) -> Arc<Lineage> {
+        if let Some(lineage) = &self.lineage {
+            return lineage.clone();
+        }
+        let mut guard: SchedGuard<'_> = self.lock_sched();
+        guard.root_lineage.get_or_insert_with(|| Lineage::root(self.writer)).clone()
     }
 
     /// Takes the node's scheduling lock (spec §11.4, step 1).

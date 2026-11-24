@@ -372,7 +372,10 @@ impl Search {
                 stack.pop();
                 continue;
             }
-            if is_anchor(header) {
+            // A node support holds outside the region was decided unblocked, and only nodes
+            // downstream of a starting point can have become blocked since, as with `supported`.
+            let trusted: bool = self.trust && !self.region.contains_key(&header.id) && is_held(header);
+            if is_anchor(header) || trusted {
                 self.blocked.insert(header.id, false);
                 stack.pop();
                 continue;

@@ -123,7 +123,10 @@ async fn a_whole_batches_join_runs_once_input_has_kept_it_waiting_too_long() {
     let slow: DerivedNode<u32> = effect!(|b| {
         let value: u32 = *b.get();
         if value > 0 {
-            let _ = gate.lock().unwrap().recv();
+            // Blocking hands the worker's queue on, or a run tokio queued behind this one waits too.
+            tokio::task::block_in_place(|| {
+                let _ = gate.lock().unwrap().recv();
+            });
         }
         value * 10
     });

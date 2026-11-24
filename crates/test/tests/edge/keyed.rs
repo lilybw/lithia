@@ -5,8 +5,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
-use lithia::{DerivedNode, SourceNode, effect};
+use lithia::{Accessor, DerivedNode, SourceNode, effect};
 
 fn count(counter: &AtomicU32) -> u32 {
     counter.load(Ordering::SeqCst)
@@ -393,4 +394,44 @@ async fn a_key_comparison_runs_outside_the_creators_lock() {
     lithia::test::settled(&creator).await;
     assert_eq!(*creator.get(), 11);
     assert_eq!(count(&child_runs), 1, "the child was reclaimed each time");
+}
+
+/// A key whose values all hash alike, so only equality tells two of them apart.
+#[derive(PartialEq, Eq)]
+struct Colliding(u32);
+
+impl std::hash::Hash for Colliding {
+    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {}
+}
+
+#[lithia::test]
+async fn keys_that_hash_alike_name_lineages_of_their_own() {
+    let _ = lithia_test::events();
+    let go: SourceNode<u32> = effect!(0);
+    let shared: SourceNode<u32> = effect!(0);
+    let out: SourceNode<u32> = effect!(0);
+    let _creator: DerivedNode<()> = effect!(|go| {
+        for first in [true, false] {
+            // The second runs on the first's write; with one lineage for both, it would be cut.
+            let input: Accessor<u32> = if first { go.accessor() } else { shared.accessor() };
+            effect!(
+                |input| {
+                    if *first {
+                        shared.set(*input.get() + 1);
+                    } else {
+                        out.set(*input.get() * 10);
+                    }
+                },
+                key = Colliding(u32::from(first))
+            );
+        }
+    });
+    lithia::flush().await;
+    go.set(5);
+    lithia::test::settled(&go).await;
+    assert_eq!((*shared.get(), *out.get()), (6, 60));
+    let here: &str = "keys_that_hash_alike_name_lineages_of_their_own";
+    let cut: Option<lithia_test::Captured> =
+        lithia_test::find(tracing::Level::DEBUG, &["a cycle cut an effect", here], Duration::from_millis(200)).await;
+    assert!(cut.is_none(), "{cut:?}");
 }

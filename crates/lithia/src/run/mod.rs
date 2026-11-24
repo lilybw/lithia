@@ -17,6 +17,7 @@ use crate::NodeValue;
 use crate::context::{self, Batch, Frame, Target};
 use crate::graph::epoch::{Scope, Tokens};
 use crate::graph::ids::{Atomic, NodeId, RunId, Stamp};
+use crate::graph::lineage::Lineage;
 use crate::graph::node::{
     AsyncFn, Body, BodySlot, BoxFut, Commit, Displaced, GenFn, Header, Node, NodeRef, SyncFn, TypedNodeRef,
     WeakNodeRef, WeakTypedNodeRef,

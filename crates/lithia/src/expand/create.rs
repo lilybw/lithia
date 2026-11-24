@@ -15,7 +15,8 @@ use crate::diag::DiagState;
 use crate::expand::capture::{Captured, SharedLease};
 use crate::expand::keyed::{self, Inputs, Key, Keyed};
 use crate::graph::epoch::Scope;
-use crate::graph::ids::{self, Atomic, NodeId, Place, RunId, Stamp, WriterId};
+use crate::graph::ids::{self, Atomic, NodeId, RunId, Stamp, WriterId};
+use crate::graph::lineage::Lineage;
 use crate::graph::node::{
     Body, BodySlot, BoxFut, Header, KeyedState, Kind, Lifetime, Node, NodeRef, Parents, Sched, SchedGuard,
     TypedNodeRef, WeakNodeRef, phase,
@@ -23,6 +24,7 @@ use crate::graph::node::{
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
 use crate::options::{Equals, Options};
 use crate::run::{RunControl, Yielder};
+use crate::site::SiteKey;
 use crate::{NodeValue, Readable, Site, protocol, testing::progress};
 
 /// Type-erased dependency of a derived node; requires `Readable`.
@@ -133,15 +135,12 @@ fn refresh<K: NodeValue>(
     crate::lifetime::drops::drop_owned(value, runtime.as_ref());
 }
 
-/// A lineage's writer identity: the creator's, the site, and the key or place among the site's
-/// creations in a run.
-fn lineage(creator: WriterId, site: &'static Site, place: Place) -> WriterId {
-    use std::hash::{Hash, Hasher};
-    let mut hasher: std::hash::DefaultHasher = std::hash::DefaultHasher::new();
-    creator.hash(&mut hasher);
-    std::ptr::from_ref(site).addr().hash(&mut hasher);
-    place.hash(&mut hasher);
-    WriterId::lineage(hasher.finish())
+/// A reclaimed node keeps its lineage, which the creator's next run then finds too.
+fn keep_lineage(header: &Header) {
+    let creator: Option<NodeRef> = context::creating_run().and_then(|run: Arc<RunControl>| run.node.upgrade());
+    if let (Some(creator), Some(lineage), Some(key)) = (creator, &header.lineage, &header.keyed.key) {
+        creator.header().lineage_root().keep_keyed(std::ptr::from_ref(header.site).addr(), key.hash, lineage);
+    }
 }
 
 fn new_node<K: NodeValue>(
@@ -161,6 +160,7 @@ fn new_node<K: NodeValue>(
                 if same_targets(&node.header, captured) {
                     let (key, inputs): (Key, Inputs) = keyed.key(site);
                     refresh(&node, value, body, inputs, options.equals, captured.2.clone());
+                    keep_lineage(&node.header);
                     keyed::decided(&node);
                     // The node keeps the key it was created with; this copy may carry user drop glue.
                     crate::lifetime::drops::drop_later(key, node.header.runtime.as_ref());
@@ -197,16 +197,21 @@ fn new_node<K: NodeValue>(
     }
     let creator_node: Option<NodeRef> = run.as_ref().and_then(|r: &Arc<RunControl>| r.node.upgrade());
     let id: NodeId = ids::next_node_id();
-    let writer: WriterId = match (&run, &creator_node) {
+    // A node created in a run writes under the lineage its creation shares with the same creation
+    // in the creator's next run: by its key, or else its place among the site's creations (spec §7.4).
+    let lineage: Option<Arc<Lineage>> = match (&run, &creator_node) {
         (Some(run), Some(creator)) => {
-            let place: Place = match &key {
-                Some(key) => Place::Key(key.hash),
-                None => Place::Nth(run.place(site)),
-            };
-            lineage(creator.header().writer, site, place)
+            let at: SiteKey = std::ptr::from_ref(site).addr();
+            let (from, place): (Arc<Lineage>, u64) =
+                run.creation(at, key.is_some(), || creator.header().lineage_root());
+            Some(match &key {
+                Some(key) => from.keyed(at, key),
+                None => from.nth(at, place),
+            })
         }
-        _ => WriterId::node(id),
+        _ => None,
     };
+    let writer: WriterId = lineage.as_ref().map_or(WriterId::node(id), |lineage: &Arc<Lineage>| lineage.id);
     let closed: bool = creator_node.as_ref().is_some_and(|c: &NodeRef| c.header().lock_sched().closed);
     let held: bool = creator_node.is_some() && !closed;
     let top_level: bool = run.is_none();
@@ -233,6 +238,7 @@ fn new_node<K: NodeValue>(
             parent_ids,
             targets: targets.iter().map(Arc::downgrade).collect(),
             writer,
+            lineage,
             runtime,
             sync_body,
             scope,

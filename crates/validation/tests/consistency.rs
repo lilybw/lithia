@@ -234,7 +234,10 @@ async fn reads_of_a_join(batches: lithia::batches::Batches) -> Vec<(u32, u32)> {
     let slow: DerivedNode<u32> = effect!(|b| {
         let value: u32 = *b.get();
         if value > 0 {
-            let _ = gate.lock().unwrap().recv();
+            // Blocking hands the worker's queue on, or a run tokio queued behind this one waits too.
+            tokio::task::block_in_place(|| {
+                let _ = gate.lock().unwrap().recv();
+            });
         }
         value * 10
     });
@@ -252,13 +255,18 @@ async fn reads_of_a_join(batches: lithia::batches::Batches) -> Vec<(u32, u32)> {
     a.set(1);
     tokio::task::yield_now().await;
     if batches == lithia::batches::PARTIAL {
-        // `a`'s epoch runs the join while `b`'s is still held.
+        // `a`'s epoch runs the join while `b`'s is still held. Bounded below the harness timeout, so
+        // a stall says which step it was, and that timers still ran.
+        let deadline: tokio::time::Instant = tokio::time::Instant::now() + Duration::from_secs(10);
         while seen.lock().unwrap().len() < 2 {
+            assert!(tokio::time::Instant::now() < deadline, "the join never ran on `a`'s epoch: {seen:?}");
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
     open.send(()).unwrap();
-    lithia::flush().await;
+    let settled: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(10), lithia::flush()).await;
+    assert!(settled.is_ok(), "`b`'s epoch never settled once `slow` was let go: {seen:?}");
     let reads: Vec<(u32, u32)> = seen.lock().unwrap().clone();
     reads
 }

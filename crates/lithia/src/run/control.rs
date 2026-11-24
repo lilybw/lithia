@@ -8,6 +8,14 @@ use super::*;
 /// Creations so far at each site in one run: an unkeyed node's place in its lineage.
 pub(super) type SiteCounts = Vec<(SiteKey, u64)>;
 
+/// What a run's creations share: their places so far, and the lineage they descend from.
+#[derive(Default)]
+pub(super) struct Creations {
+    counts: SiteCounts,
+    /// The creator's lineage, fetched at the run's first creation.
+    lineage: Option<Arc<Lineage>>,
+}
+
 /// State of one run shared between its task, its yielder and the scheduler.
 pub(crate) struct RunControl {
     pub(crate) node: WeakNodeRef,
@@ -27,7 +35,7 @@ pub(crate) struct RunControl {
     /// Newest change stamp of the node's own items during the current poll.
     pub(super) stamp: Atomic<Stamp>,
     /// Creations so far at each site, by site address: an unkeyed node's place in its lineage.
-    pub(super) creations: Mutex<SiteCounts>,
+    pub(super) creations: Mutex<Creations>,
     /// Nodes this run's writes and reflows leave alone: a cut writer's rerun (spec §7.4). Set under
     /// the node's scheduling lock before the body first polls, so loom need not see it.
     #[allow(clippy::disallowed_types)]
@@ -49,7 +57,7 @@ impl RunControl {
             first_done: AtomicBool::new(false),
             yielded: AtomicBool::new(false),
             stamp: Atomic::new(Stamp::NONE),
-            creations: Mutex::new(Vec::new()),
+            creations: Mutex::new(Creations::default()),
             suppress: std::sync::OnceLock::new(),
         }
     }
@@ -64,20 +72,39 @@ impl RunControl {
         self.suppress.get().is_some_and(|nodes: &Vec<NodeId>| nodes.contains(&node))
     }
 
-    /// The place of the next node this run creates at `site` among its creations there.
-    pub(crate) fn place(&self, site: &'static crate::Site) -> u64 {
-        let at: SiteKey = std::ptr::from_ref(site).addr();
-        let mut guard: MutexGuard<'_, SiteCounts> = self.creations.lock();
-        match guard.iter_mut().find(|(known, _): &&mut (SiteKey, u64)| *known == at) {
+    /// The lineage this run's creations descend from, and for an unkeyed one its place among the
+    /// run's creations at `site`; `root` gives the lineage at the run's first creation.
+    pub(crate) fn creation(
+        &self,
+        site: SiteKey,
+        keyed: bool,
+        root: impl FnOnce() -> Arc<Lineage>,
+    ) -> (Arc<Lineage>, u64) {
+        let mut guard: MutexGuard<'_, Creations> = self.creations.lock();
+        let lineage: Arc<Lineage> = match &guard.lineage {
+            Some(lineage) => lineage.clone(),
+            None => {
+                // Fetched without this lock held, as it takes the creator's scheduling lock.
+                drop(guard);
+                let lineage: Arc<Lineage> = root();
+                guard = self.creations.lock();
+                guard.lineage.get_or_insert(lineage).clone()
+            }
+        };
+        if keyed {
+            return (lineage, 0);
+        }
+        let place: u64 = match guard.counts.iter_mut().find(|(known, _): &&mut (SiteKey, u64)| *known == site) {
             Some((_, count)) => {
                 *count += 1;
                 *count - 1
             }
             None => {
-                guard.push((at, 1));
+                guard.counts.push((site, 1));
                 0
             }
-        }
+        };
+        (lineage, place)
     }
 
     pub(crate) fn id(&self) -> RunId {

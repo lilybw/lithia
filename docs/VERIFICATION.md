@@ -152,8 +152,10 @@ These make nothing fail, and are harmless:
 
 `.github/scripts/mutations.py` keeps each mutation as code, applies it to a copy of the workspace and
 runs the test named for it, which must fail; `--list` names them. W1–W4 cover the protocol, F1–F5 the
-fast path, S1–S3 support's walks, and K1–K3 the wakes that end a stopped, retired or freed run. Two survive: W3 needs a node created between a write's framing and
-its release, and F5 is equivalent to the original. cargo-mutants also runs weekly over `crates/lithia`
+fast path, S1–S3 support's walks, and K1–K3 the wakes that end a stopped, retired or freed run. Two survive, both equivalent to the original: W3 releases a
+write to a child linked after the write's framing, which waits on the written node only through an
+entry, run or handover of that node that releases it as well, so the child reads the same value
+whichever release comes first; F5 runs the kept share once either way. cargo-mutants also runs weekly over `crates/lithia`
 in 16 shards and lists the mutants the tests leave alive.
 
 ## Stress

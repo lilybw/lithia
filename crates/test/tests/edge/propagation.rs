@@ -317,6 +317,37 @@ async fn a_loop_through_creation_is_cut_at_the_lineage() {
 }
 
 #[lithia::test]
+async fn a_loop_through_two_levels_of_creation_is_cut_at_the_lineage() {
+    let n: SourceNode<u32> = effect!(0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _holder: DerivedNode<()> = effect!(|n| {
+        runs.fetch_add(1, Ordering::SeqCst);
+        effect!(|n| {
+            let _ = n.get();
+            effect!(|n| n.update(|v: &u32| v + 1));
+        });
+    });
+    lithia::flush().await;
+    // The rerun's middle node is a new node of the first one's lineage, and so is the child it
+    // makes, though the first child was freed with its creator before that.
+    assert_eq!((*n.get(), runs.load(Ordering::SeqCst)), (1, 2));
+}
+
+#[lithia::test]
+async fn a_loop_through_a_keyed_creation_is_cut_when_a_new_node_takes_the_key() {
+    let n: SourceNode<u32> = effect!(0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _holder: DerivedNode<()> = effect!(|n| {
+        runs.fetch_add(1, Ordering::SeqCst);
+        let strict: bool = (*n.get()).is_multiple_of(2);
+        // Another shape on every run, so a new node takes the key, under the key's lineage.
+        effect!(|n| n.update(|v: &u32| v + 1), key = 7u8, resilience = if strict { NONE } else { PARTIAL });
+    });
+    lithia::flush().await;
+    assert_eq!((*n.get(), runs.load(Ordering::SeqCst)), (1, 2));
+}
+
+#[lithia::test]
 async fn a_cut_writer_reruns_once_its_epoch_settles() {
     let x: SourceNode<i32> = effect!(0);
     let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
@@ -365,7 +396,10 @@ async fn reads_of_a_join(batches: lithia::batches::Batches) -> Vec<(u32, u32)> {
     let slow: DerivedNode<u32> = effect!(|b| {
         let value: u32 = *b.get();
         if value > 0 {
-            let _ = gate.lock().unwrap().recv();
+            // Blocking hands the worker's queue on, or a run tokio queued behind this one waits too.
+            tokio::task::block_in_place(|| {
+                let _ = gate.lock().unwrap().recv();
+            });
         }
         value * 10
     });
@@ -383,13 +417,18 @@ async fn reads_of_a_join(batches: lithia::batches::Batches) -> Vec<(u32, u32)> {
     a.set(1);
     tokio::task::yield_now().await;
     if batches == lithia::batches::PARTIAL {
-        // `a`'s epoch runs the join while `b`'s is still held.
+        // `a`'s epoch runs the join while `b`'s is still held. Bounded below the harness timeout, so
+        // a stall says which step it was, and that timers still ran.
+        let deadline: tokio::time::Instant = tokio::time::Instant::now() + Duration::from_secs(10);
         while seen.lock().unwrap().len() < 2 {
+            assert!(tokio::time::Instant::now() < deadline, "the join never ran on `a`'s epoch: {seen:?}");
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
     open.send(()).unwrap();
-    lithia::flush().await;
+    let settled: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(10), lithia::flush()).await;
+    assert!(settled.is_ok(), "`b`'s epoch never settled once `slow` was let go: {seen:?}");
     let reads: Vec<(u32, u32)> = seen.lock().unwrap().clone();
     reads
 }

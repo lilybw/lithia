@@ -6,6 +6,7 @@
 pub(crate) mod epoch;
 pub(crate) mod header;
 pub(crate) mod ids;
+pub(crate) mod lineage;
 pub(crate) mod node;
 pub(crate) mod sched;
 pub(crate) mod sets;

@@ -12,13 +12,13 @@ use crate::Site;
 /// `if let Status::Failed(f) = lithia::status(&parent) { eprintln!("{}", f.message); }`
 #[derive(Clone, Debug)]
 pub enum Status {
-    /// The node holds its latest item and no run is pending.
+    /// The node holds its latest item and no run is pending, or it was disposed under `disposed = MASK`.
     Ready,
-    /// A run is in flight and has not produced an item yet.
+    /// A run is in flight and has not produced an item yet, or the node was disposed under `disposed = PEND`.
     Pending,
     /// The last run panicked, or the node failed through its parents.
     Failed(Arc<Failure>),
-    /// The node was freed by `lithia::dispose`.
+    /// The node was freed by `lithia::dispose` under `disposed = FAIL`, the default.
     Ghost,
 }
 
