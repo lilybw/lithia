@@ -20,7 +20,7 @@ commands to run them, and [`known_bugs.md`](known_bugs.md) lists what they have 
 ## Random differential test
 
 `random_graphs_settle_on_their_definition_and_free_everything` builds random graphs over a few
-sources: sync, async, `WHOLE_EPOCHS`, creator, keyed-creator and writer nodes. Three lithia tasks write
+sources: sync, async, `batches = WHOLE`, creator, keyed-creator and writer nodes. Three lithia tasks write
 at once. When everything has settled, the test checks that every node's last run, and every creator's
 child, computed its definition from the current values. It then drops the handles of nodes nothing
 depends on, checks that support keeps them running, and finally checks that every node and body is
@@ -81,7 +81,7 @@ Each of these made the named test fail. Newer mutations are kept as code (next s
 | Letting support reach or pass a scoped node without handles, or supporting what depends on one | Case AT |
 | Leaving a scoped node in its run's generation | Case BA |
 | Holding only nodes with a body in a generation | Case BC |
-| Holding a scheduling lock while copying a parent list | the fragility model deadlocks |
+| Holding a scheduling lock while copying a parent list | the resilience-decision model deadlocks |
 | Taking a moved handle's count down before the edges exist | the `move` model |
 | Checking starting points before taking the sweep lock, which reads counts outside it | the parent-and-child and zero-crossing models |
 | Dropping a released generation, or the step's other strong references, after the step's spawns | the Case AO model |
@@ -99,7 +99,7 @@ Each of these made the named test fail. Newer mutations are kept as code (next s
 | Disposal leaving the holdover | the mid-run disposal edge test; the keyed disposal model reports a causality violation |
 | Not disposing a node created with only ghosts for parents | Case BO, the only-parent creation model |
 | Teardown not handing back the children linked when a node closes | the creation models |
-| Not checking fragility again at a run start | the one-parent creation model |
+| Not checking failed parents again at a run start | the one-parent creation model |
 | Leaving the shape out of the reclaim conditions | Case BN |
 | Keeping the first creation's comparator | Case BN |
 | Checking an unread memo only at sweeps | the unread-memo edge tests, one per lost reader |
@@ -113,13 +113,13 @@ Each of these made the named test fail. Newer mutations are kept as code (next s
 | A refresh rerun beside a held-back run that runs the new body | the keyed creator model |
 | Superseding a replacement before its item | Case BS |
 | Keeping a replacement protected after its item | the generator supersession edge test |
-| Forcing a rerun on every fragility recovery | Case BT |
+| Forcing a rerun on every recovery from failed parents | Case BT |
 | One lineage for all of a site's creations in a run | the sibling lineage edge test |
 | Node ids instead of lineages in writer sets | Case S |
 | No cut rerun | Case BU |
 | A cut rerun that writes what it wrote | the suppression edge test |
 | A cut rerun's writes to leave alone read when the cut is decided | the edge test of a cut rerun and writes recorded after the cut |
-| `WHOLE_EPOCHS` not waiting | Case BV |
+| `batches = WHOLE` not waiting | Case BV |
 | Drop batches that never hand their drops on | the 20 000-node chain test |
 | A freed child left in its parent's subscribers | the unread-memo edge tests |
 | No waker for a run's first poll of a future | Case BI |
@@ -127,7 +127,7 @@ Each of these made the named test fail. Newer mutations are kept as code (next s
 | A node written twice in one batch carrying its older stamp | the twice-written edge test |
 | No delivery for a generator's later item when the poll wrote nothing else | the async source generator edge test |
 | Writes to an async source node not stopping its block | Case AQ |
-| A run start that keeps `Failed` | the fragility-recovery and panicking-comparator edge tests |
+| A run start that keeps `Failed` | the parent-recovery and panicking-comparator edge tests |
 | The fast path keeping runs of another runtime | the runtime edge test of bodies on their own runtime |
 | Runs left past a task's budget dropped instead of handed on | the wide fan-out and drop edge tests |
 | A runner task dropped before its poll dropping its runs | the edge test of runs packed for a runtime that shuts down |

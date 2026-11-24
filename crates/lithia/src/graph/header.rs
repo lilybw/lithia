@@ -23,7 +23,7 @@ use crate::{Failure, Site, Status};
 pub(crate) mod phase {
     /// A run is in flight and has produced no item yet.
     pub(crate) const PENDING: u32 = 1;
-    /// The last run panicked, fragility failed the node, or its runtime shut down.
+    /// The last run panicked, its parents failed the node, or its runtime shut down.
     pub(crate) const FAILED: u32 = 2;
     /// The node was disposed.
     pub(crate) const GHOST: u32 = 4;

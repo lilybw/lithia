@@ -13,7 +13,7 @@ use crate::expand::capture::SharedLease;
 use crate::graph::ids::Stamp;
 use crate::graph::node::{Commit, Displaced, Header, Kind, Node, NodeRef, TypedNodeRef};
 use crate::sync::MutexGuard;
-use crate::{GhostPolicy, Ghosted, NodeValue, Status, diag, protocol};
+use crate::{Ghosted, NodeValue, Status, diag, protocol};
 
 /// Type-erased reference to a node, used by `effect!` and the free functions.
 #[doc(hidden)]
@@ -40,9 +40,9 @@ mod sealed {
 pub trait Readable: sealed::Sealed + Send + Sync {
     /// The node's value type.
     type Value: NodeValue;
-    /// Current value. Panics if the node is a ghost under `ON_GHOST_CAUSE_FAILURE`.
+    /// Current value. Panics if the node is a ghost under `disposed = FAIL`.
     fn get(&self) -> Arc<Self::Value>;
-    /// Current value, or `Err(Ghosted)` where the node's ghost policy would make `get` panic.
+    /// Current value, or `Err(Ghosted)` where the node's `disposed` option would make `get` panic.
     fn try_get(&self) -> Result<Arc<Self::Value>, Ghosted>;
     /// Stream of this node's values from now on; like `tokio::sync::watch`, it may skip values.
     fn changes(&self) -> Changes<Self::Value>;
@@ -111,14 +111,14 @@ pub trait Dispose: sealed::Sealed + Send + Sync {
 }
 
 impl<K: NodeValue> Node<K> {
-    /// Current value, honouring the ghost policy (spec §10.5).
+    /// Current value, honouring the `disposed` option (spec §10.5).
     pub(crate) fn read(&self) -> Result<Arc<K>, Ghosted> {
         let header: &Header = &self.header;
         if header.is_ghost() {
-            if header.shape.ghost == GhostPolicy::CauseFailure {
+            if header.shape.ghost_fails() {
                 return Err(Ghosted);
             }
-            diag::ghost_read(header.site, header.shape.ghost);
+            diag::ghost_read(header.site, header.shape.disposed);
         }
         self.value.load_full().ok_or(Ghosted)
     }
@@ -128,15 +128,15 @@ impl<K: NodeValue> Node<K> {
     pub(crate) fn read_with<R>(&self, f: impl FnOnce(&K) -> R) -> R {
         let header: &Header = &self.header;
         if header.is_ghost() {
-            if header.shape.ghost == GhostPolicy::CauseFailure {
-                panic!("lithia: read of a disposed node under ON_GHOST_CAUSE_FAILURE ({})", header.site);
+            if header.shape.ghost_fails() {
+                panic!("lithia: read of a disposed node under `disposed = FAIL` ({})", header.site);
             }
-            diag::ghost_read(header.site, header.shape.ghost);
+            diag::ghost_read(header.site, header.shape.disposed);
         }
         let _guard: ClosureGuard = ClosureGuard::enter();
         self.value.with(|value: Option<&K>| match value {
             Some(value) => f(value),
-            None => panic!("lithia: read of a disposed node under ON_GHOST_CAUSE_FAILURE ({})", header.site),
+            None => panic!("lithia: read of a disposed node under `disposed = FAIL` ({})", header.site),
         })
     }
 
@@ -145,7 +145,7 @@ impl<K: NodeValue> Node<K> {
         match self.read() {
             Ok(value) => value,
             Err(Ghosted) => {
-                panic!("lithia: read of a disposed node under ON_GHOST_CAUSE_FAILURE ({})", self.header.site)
+                panic!("lithia: read of a disposed node under `disposed = FAIL` ({})", self.header.site)
             }
         }
     }
@@ -224,7 +224,7 @@ macro_rules! readable {
         }
 
         impl<K: NodeValue> $ty<K> {
-            /// Current value. Panics if the node is a ghost under `ON_GHOST_CAUSE_FAILURE`.
+            /// Current value. Panics if the node is a ghost under `disposed = FAIL`.
             #[track_caller]
             pub fn get(&self) -> Arc<K> {
                 self.node.read_or_panic()
@@ -236,7 +236,7 @@ macro_rules! readable {
                 self.node.read_with(f)
             }
 
-            /// Current value, or `Err(Ghosted)` where the ghost policy would make `get` panic.
+            /// Current value, or `Err(Ghosted)` where the `disposed` option would make `get` panic.
             #[must_use = "a read has no effect; use the value or drop the call"]
             pub fn try_get(&self) -> Result<Arc<K>, Ghosted> {
                 self.node.read()

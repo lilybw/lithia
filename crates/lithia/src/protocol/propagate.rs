@@ -5,7 +5,7 @@
 
 use super::*;
 
-/// Failures that make a fragile node fail in turn.
+/// Failures of a node's parents that fail it in turn.
 pub(super) type Causes = Vec<Arc<Failure>>;
 
 /// A writer the writer check refused in `epoch`: it reruns once the epoch has settled, leaving
@@ -115,8 +115,13 @@ pub(super) fn release_children(
     }
 }
 
-/// Failures of the parents that make a fragile node fail, if its condition holds (spec §9.2).
-pub(super) fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<Causes> {
+/// Failures of the parents that fail the node, if its resilience gives way to them (spec §9.2).
+pub(super) fn parent_failures(node: &NodeRef, resilience: Resilience) -> Option<Causes> {
+    let all: bool = match resilience.0 {
+        Fails::Never => return None,
+        Fails::WhenAny => false,
+        Fails::WhenAll => true,
+    };
     let header: &Header = node.header();
     let parents: MutexGuard<'_, Option<Parents>> = header.parents.lock();
     let list: &Parents = parents.as_ref()?;
@@ -125,7 +130,7 @@ pub(super) fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<C
         let parent_header: &Header = parent.header();
         let bits: u32 = parent_header.phase();
         if bits & phase::GHOST != 0 {
-            if parent_header.shape.ghost == GhostPolicy::CauseFailure {
+            if parent_header.shape.ghost_fails() {
                 causes.push(Arc::new(Failure::new("parent disposed", *parent_header.site)));
             }
         } else if bits & phase::FAILED != 0 {
@@ -136,10 +141,7 @@ pub(super) fn fragility_causes(node: &NodeRef, fragility: Fragility) -> Option<C
             causes.push(failure);
         }
     }
-    let holds: bool = match fragility {
-        Fragility::Fragile => !causes.is_empty(),
-        Fragility::SemiFragile => !causes.is_empty() && causes.len() == list.len(),
-    };
+    let holds: bool = !causes.is_empty() && (!all || causes.len() == list.len());
     holds.then_some(causes)
 }
 
@@ -151,22 +153,22 @@ pub(super) fn parents_changed_since(node: &NodeRef, ran_at: Stamp) -> bool {
     })
 }
 
-/// Epochs a `WHOLE_EPOCHS` node lets become ready while it waits before it runs on them anyway.
+/// Epochs a `batches = WHOLE` node lets become ready while it waits before it runs on them anyway.
 pub(crate) const WHOLE_EPOCHS_BOUND: u32 = 64;
 
-/// Whether a `WHOLE_EPOCHS` node still waits for an epoch that has reached it to become ready.
+/// Whether a `batches = WHOLE` node still waits for an epoch that has reached it to become ready.
 pub(super) fn whole_epochs_wait(header: &Header, sched: &Sched) -> bool {
-    header.shape.flags.contains(crate::Flags::WHOLE_EPOCHS)
+    header.shape.whole_batches()
         && sched.whole_deferred < WHOLE_EPOCHS_BOUND
         && sched.entries.values().any(|entry: &Entry| !entry.waiting.is_empty())
 }
 
-/// Fails a fragile node whose condition holds (spec §9.2).
-pub(super) fn fail_by_fragility(header: &Header, sched: &mut Sched, causes: Causes, work: &mut Work) {
+/// Fails a node whose resilience gave way to its parents' failures (spec §9.2).
+pub(super) fn fail_by_parents(header: &Header, sched: &mut Sched, causes: Causes, work: &mut Work) {
     let parent: String = causes.first().map(|cause: &Arc<Failure>| cause.message.clone()).unwrap_or_default();
     header.fail(Failure { causes, ..Failure::new("parent failed", *header.site) });
-    sched.failed_by_fragility = true;
-    work.diags.push(Diag::FragilityFailed { site: header.site, parent });
+    sched.failed_by_parents = true;
+    work.diags.push(Diag::ParentsFailed { site: header.site, parent });
 }
 
 /// Decides what a ready entry does: run, wait for the run in flight, or settle (spec §7.2).
@@ -193,34 +195,32 @@ pub(super) fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &m
         return;
     }
     let mut force: bool = false;
-    if let Some(fragility) = header.shape.fragility {
-        match fragility_causes(node, fragility) {
-            Some(causes) => {
-                fail_by_fragility(header, sched, causes, work);
-                // A run in flight would publish over the failure: it restarts, and the restart
-                // finds the node fragile in `start_run`.
-                if let Some(slot) = sched.run.as_mut()
-                    && !slot.restart
-                {
-                    slot.supersede(header.site, work);
-                    work.wakes.push(slot.shared.clone());
-                }
-                settle(node, sched, epoch, work);
-                return;
+    match parent_failures(node, header.shape.resilience) {
+        Some(causes) => {
+            fail_by_parents(header, sched, causes, work);
+            // A run in flight would publish over the failure: it restarts, and the restart
+            // finds the node failing in `start_run`.
+            if let Some(slot) = sched.run.as_mut()
+                && !slot.restart
+            {
+                slot.supersede(header.site, work);
+                work.wakes.push(slot.shared.clone());
             }
-            // Recovered: a status change, which reruns the node only if it never ran or a parent
-            // changed since its last run; otherwise it is restored as it was (spec §9.2).
-            None if sched.failed_by_fragility => {
-                if !sched.ran_at.is_some() || parents_changed_since(node, sched.ran_at) {
-                    force = true;
-                } else {
-                    header.clear_bits(phase::FAILED);
-                    header.failure.store(None);
-                    sched.failed_by_fragility = false;
-                }
-            }
-            None => {}
+            settle(node, sched, epoch, work);
+            return;
         }
+        // Recovered: a status change, which reruns the node only if it never ran or a parent
+        // changed since its last run; otherwise it is restored as it was (spec §9.2).
+        None if sched.failed_by_parents => {
+            if !sched.ran_at.is_some() || parents_changed_since(node, sched.ran_at) {
+                force = true;
+            } else {
+                header.clear_bits(phase::FAILED);
+                header.failure.store(None);
+                sched.failed_by_parents = false;
+            }
+        }
+        None => {}
     }
     let ran_at: Stamp = sched.ran_at;
     let Some(entry) = sched.entries.get_mut(&epoch) else {
@@ -254,7 +254,7 @@ pub(super) fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &m
         }
     }
     match sched.run.as_mut() {
-        // Under `WHOLE_EPOCHS`, the last epoch to become ready starts the run (or `settle` does).
+        // Under `batches = WHOLE`, the last epoch to become ready starts the run (or `settle` does).
         None if whole_wait => {}
         None => {
             sched.take_generation(&mut work.released);
@@ -305,8 +305,8 @@ pub(super) fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &m
         sched.whole_deferred = 0;
     }
     wake_gated(sched, work);
-    // The last epoch a `WHOLE_EPOCHS` node waited for settled: the run the others made due starts.
-    if node.header().shape.flags.contains(crate::Flags::WHOLE_EPOCHS)
+    // The last epoch a `batches = WHOLE` node waited for settled: the run the others made due starts.
+    if node.header().shape.whole_batches()
         && sched.run.is_none()
         && !sched.queued
         && !whole_epochs_wait(node.header(), sched)

@@ -337,7 +337,7 @@ fn case_j_an_effect_lives_while_its_parent_can_change() {
 }
 
 #[test]
-fn case_e_fragility_follows_a_failing_parent() {
+fn case_e_failure_follows_a_failing_parent() {
     check(|| {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
@@ -345,7 +345,7 @@ fn case_e_fragility_follows_a_failing_parent() {
                 scope.batch(|| {
                     let n: SourceNode<i32> = effect!(1);
                     let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get());
-                    let strict: DerivedNode<i32> = effect!(|inv| *inv.get() + 1, fragility = FRAGILE);
+                    let strict: DerivedNode<i32> = effect!(|inv| *inv.get() + 1, resilience = NONE);
                     let lenient: DerivedNode<i32> = effect!(|inv| *inv.get() + 2);
                     (n, inv, strict, lenient)
                 });

@@ -206,10 +206,10 @@ fn a_cut_writer_reruns_after_its_epoch() {
     });
 }
 
-/// Two threads write one source at once: a `WHOLE_EPOCHS` join of its two paths holds its runs
+/// Two threads write one source at once: a `batches = WHOLE` join of its two paths holds its runs
 /// while an epoch is on its way to it, and ends on the final value.
 #[test]
-fn a_whole_epochs_join_converges_under_concurrent_writes() {
+fn a_whole_batches_join_converges_under_concurrent_writes() {
     check(|| {
         let scope: ModelScope = ModelScope::new();
         let seen: std::sync::Arc<std::sync::Mutex<Vec<(i32, i32)>>> = Default::default();
@@ -222,7 +222,7 @@ fn a_whole_epochs_join_converges_under_concurrent_writes() {
                     let pair: (i32, i32) = (*ones.get(), *tens.get());
                     seen.lock().unwrap().push(pair);
                 },
-                flags = WHOLE_EPOCHS
+                batches = WHOLE
             );
             (s, join)
         });

@@ -1,5 +1,5 @@
-error: option `ghost` is given twice
- --> tests/ui/repeated_option.rs:7:54
+error: option `disposed` is given twice
+ --> tests/ui/repeated_option.rs:7:41
   |
-7 |     let _ = effect!(0, ghost = ON_GHOST_EMIT_LATEST, ghost = ON_GHOST_SET_AS_PENDING);
-  |                                                      ^^^^^
+7 |     let _ = effect!(0, disposed = MASK, disposed = PEND);
+  |                                         ^^^^^^^^

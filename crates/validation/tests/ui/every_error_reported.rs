@@ -4,5 +4,5 @@
 use lithia::{effect, SourceNode};
 
 fn main() {
-    let _n: SourceNode<u32> = effect!(1, init = 0, fragility = FRAGILE, bogus = 2);
+    let _n: SourceNode<u32> = effect!(1, init = 0, resilience = NONE, bogus = 2);
 }

@@ -26,7 +26,7 @@ async fn main() {
   when `a` or `b` changes; one that returns `()` is an effect.
 - Handles are `Send + Sync`, and bodies run on tokio's worker threads. Within one batch of writes,
   propagation is glitch-free: a node reached along two paths runs once, with both inputs updated.
-  Batches written concurrently can still meet at such a node; `WHOLE_EPOCHS` makes it wait for both.
+  Batches written concurrently can still meet at such a node; `batches = WHOLE` makes it wait for both.
 - Bodies can `.await` and can `yield` several values in turn. Pending and failed are states of a node,
   and a panic fails its node, not the program.
 - No owners: a node lives while something outside lithia can still make it run. Nodes created inside

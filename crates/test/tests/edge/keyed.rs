@@ -278,11 +278,11 @@ async fn keys_of_other_sites_never_meet() {
 
 #[lithia::test]
 async fn a_different_shape_makes_a_new_node() {
-    let fragile: SourceNode<bool> = effect!(true);
+    let strict: SourceNode<bool> = effect!(true);
     let rerun: SourceNode<u32> = effect!(0);
     let tick: SourceNode<u32> = effect!(0);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let _creator: DerivedNode<()> = effect!(|fragile, rerun| {
+    let _creator: DerivedNode<()> = effect!(|strict, rerun| {
         let _ = rerun.get();
         effect!(
             |tick| {
@@ -290,7 +290,7 @@ async fn a_different_shape_makes_a_new_node() {
                 runs.fetch_add(1, Ordering::SeqCst);
             },
             key = 0u8,
-            fragility = if *fragile.get() { FRAGILE } else { SEMI_FRAGILE }
+            resilience = if *strict.get() { NONE } else { PARTIAL }
         );
     });
     lithia::flush().await;
@@ -299,9 +299,9 @@ async fn a_different_shape_makes_a_new_node() {
     lithia::flush().await;
     // Same captures, same shape: reclaimed without a run.
     assert_eq!(count(&runs), 1);
-    fragile.set(false);
+    strict.set(false);
     lithia::flush().await;
-    // Same captures, other fragility: a new node, which runs.
+    // Same captures, other resilience: a new node, which runs.
     assert_eq!(count(&runs), 2);
 }
 

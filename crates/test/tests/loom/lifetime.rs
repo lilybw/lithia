@@ -72,7 +72,7 @@ fn a_creation_races_the_disposal_of_its_only_parent() {
     });
 }
 
-/// A fragile node created, and run on the worker, while one of its parents is disposed ends
+/// A non-resilient node created, and run on the worker, while one of its parents is disposed ends
 /// failed: it reruns as a surviving child, or its first run already sees the ghost.
 #[test]
 fn a_creation_races_the_disposal_of_one_parent() {
@@ -83,7 +83,7 @@ fn a_creation_races_the_disposal_of_one_parent() {
             let (parent, live): (SourceNode<u32>, SourceNode<u32>) = (p.clone(), k.clone());
             let creator: loom::thread::JoinHandle<(ModelScope, DerivedNode<u32>)> = loom::thread::spawn(move || {
                 let there: ModelScope = ModelScope::new();
-                let strict: DerivedNode<u32> = there.batch(|| effect!(|parent, live| *live.get(), fragility = FRAGILE));
+                let strict: DerivedNode<u32> = there.batch(|| effect!(|parent, live| *live.get(), resilience = NONE));
                 (there, strict)
             });
             lithia::dispose(&p);
@@ -281,10 +281,10 @@ fn a_sweep_inside_an_update_closure() {
     });
 }
 
-/// A sweep copies a fragile child's parent list while the worker decides that child's
-/// fragility, which takes the two locks the other way round; neither waits on the other.
+/// A sweep copies a non-resilient child's parent list while the worker decides whether its
+/// parents fail it, which takes the two locks the other way round; neither waits on the other.
 #[test]
-fn a_sweep_alongside_a_fragile_decision() {
+fn a_sweep_alongside_a_resilience_decision() {
     check(|| {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
@@ -292,13 +292,13 @@ fn a_sweep_alongside_a_fragile_decision() {
                 let n: SourceNode<i32> = effect!(1);
                 let k: SourceNode<i32> = effect!(1);
                 let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get());
-                effect!(|inv, k| *inv.get() + *k.get(), fragility = FRAGILE);
+                effect!(|inv, k| *inv.get() + *k.get(), resilience = NONE);
                 drop(inv);
                 (n, k)
             });
             scope.flush();
             scope.batch(|| n.set(0));
-            drop(k); // a sweep from `k` over the fragile child
+            drop(k); // a sweep from `k` over the non-resilient child
             scope.flush();
             assert_eq!(scope.live(), 4); // the child still hangs off `n` through `inv`
         });

@@ -14,8 +14,8 @@
 (* every order, a superset of the engine's.                                *)
 (*                                                                         *)
 (* Left out: node creation, lifetimes (generations, support, sweeps,       *)
-(* leases), creator order, fragility, reflow, generators, WHOLE_EPOCHS and *)
-(* disposal. Values are abstract: a body changes its value or not, and     *)
+(* leases), creator order, resilience, reflow, generators, whole batches   *)
+(* and disposal. Values are abstract: a body changes its value or not, and *)
 (* writes any of its targets, chosen freely while the clock allows.        *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC

@@ -1,70 +1,93 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! Typed option constants for `effect!` (spec §3.2).
+//! Option values for `effect!`: each option's constants live in a module of its name (spec §3.2).
 
 use std::sync::Arc;
 
 use crate::NodeValue;
 use crate::expand::keyed::{Inputs, Keyed, NodeKey, Reclaim};
 
-/// How a derived node reacts to failed parents (spec §9.2); not set means never.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Fragility {
-    /// The node fails when any parent is failed.
-    Fragile,
-    /// The node fails when all parents are failed.
-    SemiFragile,
-}
+/// Defines an option's module: its opaque policy type, the constants that are its only values, and
+/// a `Debug` that prints the constant's path.
+macro_rules! policy {
+    (
+        $(#[$module_doc:meta])*
+        mod $module:ident;
+        $(#[$type_doc:meta])*
+        struct $name:ident($inner:ident) default $default:ident;
+        $($(#[$const_doc:meta])* const $constant:ident = $variant:ident;)+
+    ) => {
+        $(#[$module_doc])*
+        pub mod $module {
+            $(#[$type_doc])*
+            #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+            pub struct $name(pub(crate) $inner);
 
-/// Fails the node when any parent is failed.
-pub const FRAGILE: Fragility = Fragility::Fragile;
-/// Fails the node when all parents are failed.
-pub const SEMI_FRAGILE: Fragility = Fragility::SemiFragile;
+            #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+            pub(crate) enum $inner {
+                $($variant,)+
+            }
 
-/// What readers and children see once a node is disposed (spec §10.5).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum GhostPolicy {
-    /// `get` panics, children see a failed parent, and the value is dropped at disposal.
-    #[default]
-    CauseFailure,
-    /// `get` returns the last value, and children see a ready, frozen parent.
-    EmitLatest,
-    /// `get` returns the last value, and children see a parent pending forever.
-    SetAsPending,
-}
+            $($(#[$const_doc])* pub const $constant: $name = $name($inner::$variant);)+
 
-/// `get` panics on the ghost; children see a failed parent. The default.
-pub const ON_GHOST_CAUSE_FAILURE: GhostPolicy = GhostPolicy::CauseFailure;
-/// `get` returns the last value; children see a ready parent.
-pub const ON_GHOST_EMIT_LATEST: GhostPolicy = GhostPolicy::EmitLatest;
-/// `get` returns the last value; children see a parent pending forever.
-pub const ON_GHOST_SET_AS_PENDING: GhostPolicy = GhostPolicy::SetAsPending;
+            impl Default for $name {
+                fn default() -> Self {
+                    $default
+                }
+            }
 
-bitflags::bitflags! {
-    /// Behaviour flags for a node, combinable with `|` (spec §3.2).
-    /// `effect!(0, equals = lithia::eq, flags = ALWAYS_PROPAGATE)`
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-    pub struct Flags: u32 {
-        /// Keeps the old value on an equal write, but propagates anyway; without `equals`, a no-op.
-        const ALWAYS_PROPAGATE = 1;
-        /// Runs only once every epoch that has reached the node is ready at it, so a run never
-        /// reads one epoch's changes beside another's half-propagated ones.
-        const WHOLE_EPOCHS = 2;
-    }
-}
-
-/// Keeps the old value on an equal write, but propagates anyway; without `equals`, a no-op.
-pub const ALWAYS_PROPAGATE: Flags = Flags::ALWAYS_PROPAGATE;
-/// Runs only once every epoch that has reached the node is ready at it (spec §8).
-pub const WHOLE_EPOCHS: Flags = Flags::WHOLE_EPOCHS;
-
-/// The option constants, re-exported at the crate root and glob-imported around option values.
-pub mod consts {
-    pub use super::{
-        ALWAYS_PROPAGATE, FRAGILE, ON_GHOST_CAUSE_FAILURE, ON_GHOST_EMIT_LATEST, ON_GHOST_SET_AS_PENDING, SEMI_FRAGILE,
-        WHOLE_EPOCHS,
+            impl std::fmt::Debug for $name {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    let name: &str = match self.0 {
+                        $($inner::$variant => concat!(stringify!($module), "::", stringify!($constant)),)+
+                    };
+                    f.write_str(name)
+                }
+            }
+        }
     };
+}
+
+policy! {
+    /// Values of the `batches` option: whether a derived node runs on partly propagated batches
+    /// (spec §7.2). `effect!(|a, b| *a.get() + *b.get(), batches = WHOLE)`
+    mod batches;
+    /// When a derived node runs while batches are still reaching it; one of the constants beside it.
+    struct Batches(Runs) default PARTIAL;
+    /// Runs once every batch that has reached the node is ready at it, never on one batch's changes
+    /// beside another's half-propagated ones.
+    const WHOLE = OnWhole;
+    /// Runs as soon as a batch is ready at the node, whatever other batches are on their way. The default.
+    const PARTIAL = OnPartial;
+}
+
+policy! {
+    /// Values of the `resilience` option: whether failed parents fail a derived node (spec §9.2).
+    /// `effect!(|a, b| *a.get() + *b.get(), resilience = NONE)`
+    mod resilience;
+    /// How many failed parents a derived node withstands; one of the constants beside it.
+    struct Resilience(Fails) default COMPLETE;
+    /// Never fails through its parents. The default.
+    const COMPLETE = Never;
+    /// Fails once all of its parents are failed.
+    const PARTIAL = WhenAll;
+    /// Fails once any parent is failed.
+    const NONE = WhenAny;
+}
+
+policy! {
+    /// Values of the `disposed` option: what readers and children see once a node is disposed
+    /// (spec §10.5). `effect!(0, disposed = MASK)`
+    mod disposed;
+    /// What a disposed node shows; one of the constants beside it.
+    struct Disposal(Ghost) default FAIL;
+    /// `get` panics, children see a failed parent, and the value is dropped at disposal. The default.
+    const FAIL = Fail;
+    /// `get` returns the last value, and children see a ready parent, frozen.
+    const MASK = Mask;
+    /// `get` returns the last value, and children see a parent pending forever.
+    const PEND = Pend;
 }
 
 /// Comparator for the `equals` option, where `true` means equal.
@@ -74,9 +97,9 @@ pub(crate) type Equals<K> = Arc<dyn Fn(&K, &K) -> bool + Send + Sync>;
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Shape {
-    pub(crate) fragility: Option<Fragility>,
-    pub(crate) ghost: GhostPolicy,
-    pub(crate) flags: Flags,
+    pub(crate) batches: batches::Batches,
+    pub(crate) resilience: resilience::Resilience,
+    pub(crate) disposed: disposed::Disposal,
 }
 
 impl Shape {
@@ -85,22 +108,32 @@ impl Shape {
         Self::default()
     }
 
-    /// Sets the fragility.
-    pub fn fragility(mut self, fragility: Fragility) -> Self {
-        self.fragility = Some(fragility);
+    /// Sets the `batches` option.
+    pub fn batches(mut self, batches: batches::Batches) -> Self {
+        self.batches = batches;
         self
     }
 
-    /// Sets the ghost policy.
-    pub fn ghost(mut self, ghost: GhostPolicy) -> Self {
-        self.ghost = ghost;
+    /// Sets the `resilience` option.
+    pub fn resilience(mut self, resilience: resilience::Resilience) -> Self {
+        self.resilience = resilience;
         self
     }
 
-    /// Sets the flags.
-    pub fn flags(mut self, flags: Flags) -> Self {
-        self.flags = flags;
+    /// Sets the `disposed` option.
+    pub fn disposed(mut self, disposed: disposed::Disposal) -> Self {
+        self.disposed = disposed;
         self
+    }
+
+    /// Whether the node runs on whole batches only.
+    pub(crate) fn whole_batches(&self) -> bool {
+        self.batches == batches::WHOLE
+    }
+
+    /// Whether, once disposed, the node fails its readers and children and drops its value.
+    pub(crate) fn ghost_fails(&self) -> bool {
+        self.disposed == disposed::FAIL
     }
 }
 

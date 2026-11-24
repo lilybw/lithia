@@ -1,17 +1,17 @@
 error: `init` applies to derived nodes and async source nodes; a source node starts with its value
  --> tests/ui/every_error_reported.rs:7:42
   |
-7 |     let _n: SourceNode<u32> = effect!(1, init = 0, fragility = FRAGILE, bogus = 2);
+7 |     let _n: SourceNode<u32> = effect!(1, init = 0, resilience = NONE, bogus = 2);
   |                                          ^^^^
 
-error: `fragility` applies to derived nodes only; a source node has no parents
+error: `resilience` applies to derived nodes only; a source node has no parents
  --> tests/ui/every_error_reported.rs:7:52
   |
-7 |     let _n: SourceNode<u32> = effect!(1, init = 0, fragility = FRAGILE, bogus = 2);
-  |                                                    ^^^^^^^^^
+7 |     let _n: SourceNode<u32> = effect!(1, init = 0, resilience = NONE, bogus = 2);
+  |                                                    ^^^^^^^^^^
 
-error: unknown option `bogus`; expected one of init, equals, fragility, ghost, flags, key
- --> tests/ui/every_error_reported.rs:7:73
+error: unknown option `bogus`; expected one of init, equals, key, batches, resilience, disposed
+ --> tests/ui/every_error_reported.rs:7:71
   |
-7 |     let _n: SourceNode<u32> = effect!(1, init = 0, fragility = FRAGILE, bogus = 2);
-  |                                                                         ^^^^^
+7 |     let _n: SourceNode<u32> = effect!(1, init = 0, resilience = NONE, bogus = 2);
+  |                                                                       ^^^^^

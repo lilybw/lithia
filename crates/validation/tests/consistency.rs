@@ -26,34 +26,37 @@ async fn case_bl_captures_by_reference() {
     assert_eq!((*sync_body.get(), *async_body.get(), rx.await.unwrap()), (11, 11, 10));
 }
 
-// Case BM: `ALWAYS_PROPAGATE` without `equals` changes nothing, since every write propagates already.
+// Case BM: an option's value may be any expression of its type, not only one of its constants.
 #[lithia::test]
-async fn case_bm_always_propagate_without_equals() {
-    let flags: lithia::Flags = lithia::ALWAYS_PROPAGATE; // computed or literal, it is accepted
-    let a: SourceNode<i32> = effect!(1, flags = flags);
-    let runs: SourceNode<u32> = effect!(0);
-    let _child: DerivedNode<()> = effect!(|a| runs.update(|n: &u32| n + 1));
+async fn case_bm_computed_option_values() {
+    let n: SourceNode<i32> = effect!(1);
+    let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get());
+    let policy: lithia::resilience::Resilience = lithia::resilience::NONE;
+    let strict: DerivedNode<i32> = effect!(|inv| *inv.get(), resilience = policy);
+    let lenient: DerivedNode<i32> =
+        effect!(|inv| *inv.get(), resilience = if policy == NONE { COMPLETE } else { NONE });
     lithia::flush().await;
-    a.set(1); // an equal value propagates, as it would without the flag
+    n.set(0); // `inv` fails
     lithia::flush().await;
-    assert_eq!(*runs.get(), 2);
+    assert!(matches!(lithia::status(&strict), Status::Failed(_)));
+    assert!(matches!(lithia::status(&lenient), Status::Ready));
 }
 
 // Case BN: a reclaim needs the same shape, and takes the creation's comparator.
 #[lithia::test]
 async fn case_bn_reclaim_shape_and_comparator() {
-    let config: SourceNode<(bool, bool)> = effect!((false, false)); // (fragile, compare by tens)
+    let config: SourceNode<(bool, bool)> = effect!((false, false)); // (non-resilient, compare by tens)
     let input: SourceNode<u32> = effect!(0);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let made: DerivedNode<Option<DerivedNode<u32>>> = effect!(|config| {
-        let (fragile, by_tens): (bool, bool) = *config.get();
+        let (strict, by_tens): (bool, bool) = *config.get();
         Some(effect!(
             |input| {
                 runs.fetch_add(1, Ordering::SeqCst);
                 *input.get()
             },
             key = 0u8,
-            fragility = if fragile { FRAGILE } else { SEMI_FRAGILE },
+            resilience = if strict { NONE } else { PARTIAL },
             equals = move |a: &u32, b: &u32| by_tens && a / 10 == b / 10
         ))
     });
@@ -65,7 +68,7 @@ async fn case_bn_reclaim_shape_and_comparator() {
     input.set(5); // equal by tens, so the node keeps 0
     lithia::flush().await;
     assert_eq!((*first.get(), runs.load(Ordering::SeqCst)), (0, 2));
-    config.set((true, true)); // another fragility: a new node takes the key, and runs
+    config.set((true, true)); // another resilience: a new node takes the key, and runs
     lithia::flush().await;
     assert_eq!(runs.load(Ordering::SeqCst), 3);
 }
@@ -73,13 +76,13 @@ async fn case_bn_reclaim_shape_and_comparator() {
 // Case BO: a new child of a ghost behaves as a surviving child; with only ghosts for parents, it is one.
 #[lithia::test]
 async fn case_bo_new_children_of_ghosts() {
-    let frozen: SourceNode<i32> = effect!(5, ghost = ON_GHOST_EMIT_LATEST);
-    let doomed: SourceNode<i32> = effect!(7); // ON_GHOST_CAUSE_FAILURE, the default
+    let frozen: SourceNode<i32> = effect!(5, disposed = MASK);
+    let doomed: SourceNode<i32> = effect!(7); // `disposed = FAIL`, the default
     let k: SourceNode<i32> = effect!(2);
     lithia::dispose(&frozen);
     lithia::dispose(&doomed);
     let late: DerivedNode<i32> = effect!(|frozen, k| *frozen.get() * *k.get());
-    let strict: DerivedNode<i32> = effect!(|doomed, k| *k.get(), fragility = FRAGILE);
+    let strict: DerivedNode<i32> = effect!(|doomed, k| *k.get(), resilience = NONE);
     let orphan: DerivedNode<i32> = effect!(|frozen| *frozen.get());
     lithia::flush().await;
     assert_eq!(*late.get(), 10); // the ghost's last value, frozen
@@ -181,9 +184,9 @@ async fn case_bs_progress_under_fast_input() {
     assert_eq!(*slow.get(), 40);
 }
 
-// Case BT: a fragile child whose parent recovers unchanged is restored without running.
+// Case BT: a non-resilient child whose parent recovers unchanged is restored without running.
 #[lithia::test]
-async fn case_bt_fragility_recovers_by_status() {
+async fn case_bt_resilience_recovers_by_status() {
     let n: SourceNode<i32> = effect!(1);
     let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get(), equals = lithia::eq);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
@@ -192,7 +195,7 @@ async fn case_bt_fragility_recovers_by_status() {
             runs.fetch_add(1, Ordering::SeqCst);
             *inv.get() + 1
         },
-        fragility = FRAGILE
+        resilience = NONE
     );
     lithia::flush().await;
     n.set(0); // `inv` fails, and `strict` with it, without running
@@ -222,7 +225,7 @@ async fn case_bu_a_cut_writer_reruns() {
     assert_eq!((*x.get(), *doubled.get(), *over.get()), (10, 20, false));
 }
 
-async fn reads_of_a_join(flags: lithia::Flags) -> Vec<(u32, u32)> {
+async fn reads_of_a_join(batches: lithia::batches::Batches) -> Vec<(u32, u32)> {
     let a: SourceNode<u32> = effect!(0);
     let b: SourceNode<u32> = effect!(0);
     // `slow` holds `b`'s epoch at the gate until `a`'s epoch has reached the join.
@@ -241,14 +244,14 @@ async fn reads_of_a_join(flags: lithia::Flags) -> Vec<(u32, u32)> {
             let pair: (u32, u32) = (*a.get(), *slow.get());
             seen.lock().unwrap().push(pair);
         },
-        flags = flags
+        batches = batches
     );
     lithia::flush().await;
     b.set(1);
     tokio::task::yield_now().await; // delivers `b`'s epoch, which frames the join and waits in `slow`
     a.set(1);
     tokio::task::yield_now().await;
-    if !flags.contains(lithia::WHOLE_EPOCHS) {
+    if batches == lithia::batches::PARTIAL {
         // `a`'s epoch runs the join while `b`'s is still held.
         while seen.lock().unwrap().len() < 2 {
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -260,13 +263,13 @@ async fn reads_of_a_join(flags: lithia::Flags) -> Vec<(u32, u32)> {
     reads
 }
 
-// Case BV: a `WHOLE_EPOCHS` join waits for every epoch that has reached it.
+// Case BV: a `batches = WHOLE` join waits for every batch that has reached it.
 // Two workers, so `a` is written while `slow` blocks one of them.
 #[lithia::test(flavor = "multi_thread", worker_threads = 2)]
-async fn case_bv_whole_epochs() {
-    // Without the flag, `a`'s epoch runs the join while `b`'s is still on its way through `slow`.
-    assert_eq!(reads_of_a_join(lithia::Flags::empty()).await, [(0, 0), (1, 0), (1, 10)]);
-    assert_eq!(reads_of_a_join(lithia::WHOLE_EPOCHS).await, [(0, 0), (1, 10)]);
+async fn case_bv_whole_batches() {
+    // On partial batches, `a`'s runs the join while `b`'s is still on its way through `slow`.
+    assert_eq!(reads_of_a_join(lithia::batches::PARTIAL).await, [(0, 0), (1, 0), (1, 10)]);
+    assert_eq!(reads_of_a_join(lithia::batches::WHOLE).await, [(0, 0), (1, 10)]);
 }
 
 // Case BW: `lithia::test::settled` follows the subtree's writes.

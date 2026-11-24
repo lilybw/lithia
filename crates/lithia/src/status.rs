@@ -16,17 +16,17 @@ pub enum Status {
     Ready,
     /// A run is in flight and has not produced an item yet.
     Pending,
-    /// The last run panicked, or fragility failed the node.
+    /// The last run panicked, or the node failed through its parents.
     Failed(Arc<Failure>),
     /// The node was freed by `lithia::dispose`.
     Ghost,
 }
 
-/// Why a node failed: its own panic, or its parents' failures under `fragility`.
+/// Why a node failed: its own panic, or its parents' failures under `resilience`.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct Failure {
-    /// The panic message, or the fragility reason.
+    /// The panic message, or why its parents failed it.
     pub message: String,
     /// Where the failed node was created.
     pub site: Site,

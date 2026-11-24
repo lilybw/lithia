@@ -110,10 +110,10 @@ async fn an_unattributed_loop_triggers_the_rerun_rate_warning() {
     assert!(event.is_some(), "loop count {}", *n.get());
 }
 
-/// A `WHOLE_EPOCHS` join whose input never pauses runs on the ready epochs once 64 of them have
+/// A `batches = WHOLE` join whose input never pauses runs on the ready epochs once 64 of them have
 /// become ready while it waited, and warns once.
 #[lithia::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_whole_epochs_join_runs_once_input_has_kept_it_waiting_too_long() {
+async fn a_whole_batches_join_runs_once_input_has_kept_it_waiting_too_long() {
     let _ = events();
     let a: SourceNode<u32> = effect!(0);
     let b: SourceNode<u32> = effect!(0);
@@ -134,7 +134,7 @@ async fn a_whole_epochs_join_runs_once_input_has_kept_it_waiting_too_long() {
             runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             *a.get() + *slow.get()
         },
-        flags = lithia::WHOLE_EPOCHS
+        batches = WHOLE
     );
     lithia::flush().await;
     let before: u32 = runs.load(std::sync::atomic::Ordering::SeqCst);
@@ -153,7 +153,7 @@ async fn a_whole_epochs_join_runs_once_input_has_kept_it_waiting_too_long() {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(*join.get(), 64, "ran on the ready epochs, without `b`'s");
-    let event: Option<Captured> = find(Level::WARN, &["WHOLE_EPOCHS", &line], Duration::from_secs(2)).await;
+    let event: Option<Captured> = find(Level::WARN, &["batches = WHOLE", &line], Duration::from_secs(2)).await;
     assert!(event.is_some());
     open.send(()).unwrap();
     lithia::flush().await;

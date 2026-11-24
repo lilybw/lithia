@@ -18,7 +18,7 @@ None.
 *2 in about 2 100 runs on macOS ARM CI runners since the test's rework, both in one job; never in
 7 300 runs on Linux, under load or pinned to one core.*
 
-`case_bv_whole_epochs` (`crates/validation/tests/consistency.rs`) timed out after 20 seconds. The test
+`case_bv_whole_batches` (`crates/validation/tests/consistency.rs`) timed out after 20 seconds. The test
 blocks one of its two worker threads in a synchronous body on purpose, and whether the engine or that
 blocked worker stalls the rest is not known. Not investigated further at this frequency; listed in
 `known-flaky.txt`.
@@ -35,13 +35,13 @@ run (spec §7.4), so the same creation in the creator's next run keeps the ident
 lineages collide look like one writer: a write by one can be cut, as though it fed back into the other,
 and that write's rerun is lost. Lineages stay hashed rather than interned, by decision (spec §17).
 
-### `WHOLE_EPOCHS` running before every epoch is whole
+### `batches = WHOLE` running before every epoch is whole
 
 *Only under input that never pauses: 64 epochs become ready while the node waits for another.*
 
-A `WHOLE_EPOCHS` node starts no run while an epoch that reached it is still on its way. So that input
-without pauses cannot hold it back for ever, once 64 epochs have become ready while it waits it runs on
-them as a node without the flag would, and warns once per site (spec §8, §12).
+A `batches = WHOLE` node starts no run while an epoch that reached it is still on its way. So that
+input without pauses cannot hold it back for ever, once 64 epochs have become ready while it waits it
+runs on them as under `batches = PARTIAL`, and warns once per site (spec §8, §12).
 
 ## Leaks and duplicates by design
 
@@ -68,8 +68,8 @@ warning catch the leaks.
 - Two kept mutations survive the tests (`.github/scripts/mutations.py`): W3, a written node's release
   reaching its subscribers at release time rather than those it framed, needs a node created between a
   write's framing and its release; F5 is equivalent to the original.
-- The TLA+ models (`docs/tla`) leave out creator order, fragility, reflow, generators,
-  `WHOLE_EPOCHS`, keyed nodes, disposal and ghosts, and check small graphs only. `MCDiamond` has
+- The TLA+ models (`docs/tla`) leave out creator order, resilience, reflow, generators,
+  `batches = WHOLE`, keyed nodes, disposal and ghosts, and check small graphs only. `MCDiamond` has
   finished once in CI (26 147 949 states, depth 109, 3 h 57 min, no error); runners differ in speed,
   so CI stops it after 270 minutes and passes it if it found no error by then. The loom models (`crates/test/tests/loom/`) run with at
   most three preemptions on each push and four on nightly.

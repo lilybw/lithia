@@ -5,12 +5,12 @@
 
 use super::*;
 
-pub(super) const OPTIONS: &[&str] = &["init", "equals", "fragility", "ghost", "flags", "key"];
+pub(super) const OPTIONS: &[&str] = &["init", "equals", "key", "batches", "resilience", "disposed"];
 
 /// Validated options, as token streams ready for the expansion.
 pub(super) struct Resolved {
     pub(super) init: Option<Expr>,
-    /// The `Shape` of the node: fragility, ghost policy and flags.
+    /// The `Shape` of the node: its `batches`, `resilience` and `disposed` options.
     pub(super) shape: TokenStream,
     /// `.equals(…)`, or nothing.
     pub(super) equals: TokenStream,
@@ -31,7 +31,7 @@ pub(super) fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Resu
                 &mut errors,
                 syn::Error::new_spanned(
                     &option.name,
-                    format!("unknown option `{name}`; expected one of init, equals, fragility, ghost, flags, key"),
+                    format!("unknown option `{name}`; expected one of {}", OPTIONS.join(", ")),
                 ),
             );
             continue;
@@ -41,10 +41,6 @@ pub(super) fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Resu
             continue;
         }
         let value: &Expr = &option.value;
-        let consts: TokenStream = quote!(
-            #[allow(unused_imports)]
-            use ::lithia::__private::consts::*;
-        );
         match name.as_str() {
             "init" => {
                 if let Form::Source(_) = form {
@@ -62,24 +58,24 @@ pub(super) fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Resu
             "equals" => {
                 equals = quote!(.equals(#value));
             }
-            "fragility" => {
-                if !matches!(form, Form::Derived(_)) {
+            "batches" | "resilience" | "disposed" => {
+                if name != "disposed" && !matches!(form, Form::Derived(_)) {
                     combine(
                         &mut errors,
                         syn::Error::new_spanned(
                             &option.name,
-                            "`fragility` applies to derived nodes only; a source node has no parents",
+                            format!("`{name}` applies to derived nodes only; a source node has no parents"),
                         ),
                     );
                     continue;
                 }
-                shape = quote!(#shape.fragility({ #consts #value }));
-            }
-            "ghost" => {
-                shape = quote!(#shape.ghost({ #consts #value }));
-            }
-            "flags" => {
-                shape = quote!(#shape.flags({ #consts #value }));
+                // The option's constants, and only its own, resolve inside its value.
+                let setter: &Ident = &option.name;
+                shape = quote!(#shape.#setter({
+                    #[allow(unused_imports)]
+                    use ::lithia::#setter::*;
+                    #value
+                }));
             }
             "key" => match KeyArg::parse(value) {
                 Ok(parsed) => key = Some(parsed),

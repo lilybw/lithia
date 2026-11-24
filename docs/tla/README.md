@@ -30,8 +30,8 @@ A process's pending frame visits and releases are sets, handled in every order: 
 engine's. Bodies are abstract: a run writes any subset of its targets, freely while the clock stays
 within `MaxClock`, and changes its value or not; a node outside `Changing` never changes.
 
-Not modelled: node creation and lifetimes (in `Lifetimes.tla`), creator order, fragility, reflow,
-generators, `WHOLE_EPOCHS` and disposal. The loom models and the edge tests cover those.
+Not modelled: node creation and lifetimes (in `Lifetimes.tla`), creator order, resilience, reflow,
+generators, `batches = WHOLE` and disposal. The loom models and the edge tests cover those.
 
 ### Properties
 

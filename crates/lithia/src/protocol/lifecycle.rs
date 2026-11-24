@@ -26,7 +26,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunControl>) -> (bool, Toke
             standing(node, creator.as_ref())
         };
         let started: bool = if sched.run.is_some() || whole_epochs_wait(header, sched) {
-            // A `WHOLE_EPOCHS` node framed again meanwhile starts once that epoch is ready too.
+            // A `batches = WHOLE` node framed again meanwhile starts once that epoch is ready too.
             false
         } else if standing == Standing::Gated {
             // Its creator decides it first: it starts again once the creator has moved on.
@@ -49,11 +49,10 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunControl>) -> (bool, Toke
             );
             let killed: bool =
                 header.kind == Kind::AsyncSource && header.runs.load(Ordering::SeqCst) != shared.expected();
-            let fragile: Option<Causes> = match header.shape.fragility {
-                Some(fragility) if !served.is_empty() && !header.is_ghost() && !killed => {
-                    fragility_causes(node, fragility)
-                }
-                _ => None,
+            let failing: Option<Causes> = if !served.is_empty() && !header.is_ghost() && !killed {
+                parent_failures(node, header.shape.resilience)
+            } else {
+                None
             };
             // Let go of by its creator, with nothing left that can reach it: it is being freed, and
             // only this task keeps it alive for now (spec §7.2, Creator order).
@@ -67,9 +66,9 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunControl>) -> (bool, Toke
             } else if header.is_ghost() || killed || orphaned {
                 close_served(node, sched, served, &mut work);
                 false
-            } else if let Some(causes) = fragile {
+            } else if let Some(causes) = failing {
                 // Decided before a parent failed: the node fails instead, as `decide` would now.
-                fail_by_fragility(header, sched, causes, &mut work);
+                fail_by_parents(header, sched, causes, &mut work);
                 close_served(node, sched, served, &mut work);
                 false
             } else {
@@ -98,7 +97,7 @@ pub(crate) fn start_run(node: &NodeRef, shared: &Arc<RunControl>) -> (bool, Toke
                 }
                 header.begin_run();
                 too_fast = sched.rate.count();
-                sched.failed_by_fragility = false;
+                sched.failed_by_parents = false;
                 sched.run = Some(RunSlot { id, shared: shared.clone(), served, restart: false, protected });
                 sched.take_generation(&mut work.released);
                 true

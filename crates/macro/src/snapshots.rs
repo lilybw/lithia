@@ -11,7 +11,7 @@ use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 
 const CASES: &[(&str, &str)] = &[
     ("source", "0"),
-    ("source_options", "0, equals = |a: &u32, b: &u32| a == b, flags = ALWAYS_PROPAGATE"),
+    ("source_options", "0, equals = |a: &u32, b: &u32| a == b, disposed = MASK"),
     ("source_keyed", "row.clone(), key = row.id"),
     ("async_source", "async { lookup().await }"),
     ("async_source_move", "async move { tx.send(1) }"),
@@ -21,6 +21,7 @@ const CASES: &[(&str, &str)] = &[
     ("derived_async", "async |n| { tokio::task::yield_now().await; *n.get() }"),
     ("derived_gen", "|n| -> u64 { yield u64::from(*n.get()); }"),
     ("derived_keyed", "|n| *n.get() * factor, key = id"),
+    ("derived_options", "|n| *n.get(), batches = WHOLE, resilience = NONE"),
 ];
 
 #[test]

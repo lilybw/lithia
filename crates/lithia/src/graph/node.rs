@@ -18,7 +18,7 @@ use crate::context::ClosureGuard;
 use crate::graph::epoch::Tokens;
 use crate::graph::ids::Stamp;
 use crate::lifetime::teardown::{Detached, detach};
-use crate::options::{Equals, GhostPolicy};
+use crate::options::Equals;
 use crate::run::Yielder;
 
 pub(crate) use super::header::*;
@@ -73,7 +73,7 @@ pub(crate) enum Body<K: NodeValue> {
 /// Internal record of one node; type-erased behind every handle.
 pub(crate) struct Node<K: NodeValue> {
     pub(crate) header: Header,
-    /// Lock-free reads; emptied only by disposal under `ON_GHOST_CAUSE_FAILURE`.
+    /// Emptied only by disposal under `disposed = FAIL`.
     pub(crate) value: ArcCell<K>,
     /// Empty for source nodes; taken on disposal.
     pub(crate) body: Mutex<BodySlot<K>>,
@@ -104,7 +104,7 @@ pub(crate) trait AnyNode: Send + Sync + 'static {
     /// Polls the node's next run once on this thread; the run, boxed, if it did not finish
     /// (spec §11.4, step 4).
     fn run_here(self: Arc<Self>, cx: &mut std::task::Context<'_>) -> Option<crate::exec::fast_path::RunTask>;
-    /// Drops the value where the ghost policy says so, and the body.
+    /// Drops the value where the `disposed` option says so, and the body.
     fn release_payload(&self);
     /// The node as `Any`, to recover its value type.
     fn into_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync>;
@@ -137,7 +137,7 @@ impl<K: NodeValue> AnyNode for Node<K> {
     }
 
     fn release_payload(&self) {
-        if self.header.shape.ghost == GhostPolicy::CauseFailure
+        if self.header.shape.ghost_fails()
             && let Some(value) = self.value.swap(None)
         {
             crate::lifetime::drops::drop_value(value, self.header.runtime.as_ref());
@@ -180,8 +180,8 @@ impl<K: NodeValue> Displaced<K> {
 }
 
 impl<K: NodeValue> Node<K> {
-    /// Lands `next` over `current` under the node's write lock, unless the comparator finds them equal
-    /// and the node does not always propagate; returns the change's stamp (spec §6.1, §6.4).
+    /// Lands `next` over `current` under the node's write lock, unless the comparator finds them
+    /// equal; returns the change's stamp (spec §6.1, §6.4).
     pub(crate) fn commit(
         &self,
         current: &Arc<K>,
@@ -200,7 +200,7 @@ impl<K: NodeValue> Node<K> {
         if let Commit::Item(_) = commit {
             header.clear_bits(phase::PENDING);
         }
-        if equal && !header.shape.flags.contains(crate::Flags::ALWAYS_PROPAGATE) {
+        if equal {
             displaced.discarded = Some(next);
             return None;
         }
@@ -209,11 +209,7 @@ impl<K: NodeValue> Node<K> {
             header.runs.advance(Ordering::SeqCst);
             header.clear_pending_failed();
         }
-        if equal {
-            displaced.discarded = Some(next);
-        } else {
-            displaced.previous = self.value.swap(Some(Arc::new(next)));
-        }
+        displaced.previous = self.value.swap(Some(Arc::new(next)));
         let stamp: Stamp = crate::graph::ids::stamp();
         debug_assert!(stamp > header.version.load(Ordering::Relaxed), "lithia: a node's version went back");
         // Readers load it with at least acquire ordering.
@@ -221,9 +217,7 @@ impl<K: NodeValue> Node<K> {
         if let Commit::Item(run) = commit {
             run.note_stamp(stamp);
         }
-        if !equal {
-            header.notify_changes();
-        }
+        header.notify_changes();
         Some(stamp)
     }
 

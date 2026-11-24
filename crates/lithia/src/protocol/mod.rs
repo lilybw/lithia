@@ -19,7 +19,7 @@ use crate::graph::node::{
     merge_served, phase,
 };
 use crate::graph::sets::WriterSet;
-use crate::options::{Fragility, GhostPolicy};
+use crate::options::resilience::{Fails, Resilience};
 use crate::run::{RunControl, TaskFuture};
 use crate::{Failure, Site, diag, testing::progress};
 

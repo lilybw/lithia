@@ -1,0 +1,33 @@
+// effect!(|n| *n.get(), batches = WHOLE, resilience = NONE)
+
+{
+    fn __lithia_scope () {
+    } fn __lithia_path () -> & 'static str {
+        :: lithia :: __private :: fn_path (:: core :: any :: type_name_of_val (& __lithia_scope ) )
+    } static __LITHIA_HELD : :: lithia :: __private :: SiteCounter = :: lithia :: __private :: SiteCounter :: new () ;
+    static __LITHIA_SITE : :: lithia :: Site = :: lithia :: Site :: __new (:: core :: file ! () , :: core :: line ! () , :: core :: column ! () , :: core :: module_path ! () , __lithia_path , if :: core :: cfg ! (debug_assertions ) {
+        "| n | * n . get () , batches = WHOLE , resilience = NONE"
+    } else {
+        ""
+    } , & __LITHIA_HELD , ) ;
+    let __lithia_deps : [:: lithia :: __private :: NodeHandle ; 1usize ] = [:: lithia :: __private :: node_ref (& n ) ] ;
+    # [allow (unused_imports ) ] use :: lithia :: __private :: {
+        CaptureAny as _ , FieldAny as _ , MoveAny as _
+    } ;
+    let __lithia_cap = :: lithia :: __private :: Capturing :: begin () ;
+    # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let n = {
+        let __lithia_ro : :: lithia :: __private :: ReadOnly = __lithia_cap . read_only (true ) ;
+        (n ) . __lithia_capture ()
+    } ;
+    let __lithia_captured : :: lithia :: __private :: Captured = __lithia_cap . finish () ;
+    :: lithia :: __private :: derived (& __LITHIA_SITE , & __lithia_deps , & __lithia_captured , < _ as :: lithia :: __private :: InitDefault > :: __lithia_init () , move || {
+        # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let n = & n ;
+        * n . get ()
+    } , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () . batches ({
+        # [allow (unused_imports ) ] use :: lithia :: batches :: * ;
+        WHOLE
+    } ) . resilience ({
+        # [allow (unused_imports ) ] use :: lithia :: resilience :: * ;
+        NONE
+    } ) ) )
+}

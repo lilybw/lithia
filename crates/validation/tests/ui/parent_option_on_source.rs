@@ -4,6 +4,6 @@
 use lithia::effect;
 
 fn main() {
-    let _ = effect!(0, fragility = FRAGILE);
-    let _ = effect!(async { 1 }, fragility = SEMI_FRAGILE);
+    let _ = effect!(0, resilience = NONE);
+    let _ = effect!(async { 1 }, batches = WHOLE);
 }

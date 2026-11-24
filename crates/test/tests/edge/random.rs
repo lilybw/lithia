@@ -76,7 +76,7 @@ impl Kind {
         match self {
             Kind::Sync => "sync",
             Kind::Async => "async",
-            Kind::Whole => "whole-epochs",
+            Kind::Whole => "whole-batches",
             Kind::Creator { keyed: false } => "creator",
             Kind::Creator { keyed: true } => "keyed creator",
             Kind::Writer => "writer",
@@ -266,7 +266,7 @@ impl Graph {
                         let _ = &token;
                         put(slot, mix(&[*p0.get(), *p1.get()]))
                     },
-                    flags = lithia::WHOLE_EPOCHS
+                    batches = WHOLE
                 )
             }
             (Kind::Whole, [p0, p1, p2], None) => {
@@ -276,7 +276,7 @@ impl Graph {
                         let _ = &token;
                         put(slot, mix(&[*p0.get(), *p1.get(), *p2.get()]))
                     },
-                    flags = lithia::WHOLE_EPOCHS
+                    batches = WHOLE
                 )
             }
             (_, [p0], None) => {

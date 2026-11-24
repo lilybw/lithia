@@ -157,8 +157,8 @@ async fn shadowing_and_closures_inside_bodies_are_not_captured() {
 
 #[lithia::test]
 async fn options_accept_bare_constants_and_paths() {
-    let n: SourceNode<i32> = effect!(1, ghost = lithia::ON_GHOST_EMIT_LATEST);
-    let m: SourceNode<i32> = effect!(1, ghost = ON_GHOST_SET_AS_PENDING, equals = |a: &i32, b: &i32| a == b);
+    let n: SourceNode<i32> = effect!(1, disposed = lithia::disposed::MASK);
+    let m: SourceNode<i32> = effect!(1, disposed = PEND, equals = |a: &i32, b: &i32| a == b);
     lithia::dispose(&n);
     lithia::dispose(&m);
     assert_eq!((*n.get(), *m.get()), (1, 1));

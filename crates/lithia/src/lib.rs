@@ -29,8 +29,7 @@ pub use api::{defer, dispose, eq, flush, reflow, spawn, spawn_blocking, status, 
 pub use changes::Changes;
 pub use handles::{Accessor, DerivedNode, Dispose, Readable, Reflow, Setter, SourceNode, Writable};
 pub use lithia_macro::{effect, main, test};
-pub use options::consts::*;
-pub use options::{Flags, Fragility, GhostPolicy};
+pub use options::{batches, disposed, resilience};
 pub use site::Site;
 pub use status::{Failure, Ghosted, Status};
 pub use value::NodeValue;
@@ -64,6 +63,4 @@ pub mod __private {
     pub mod model {
         pub use crate::exec::model::{ModelScope, quiet, reset, run_one, work_until};
     }
-
-    pub use crate::options::consts;
 }

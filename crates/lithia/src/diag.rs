@@ -178,7 +178,7 @@ fn power_of_ten(mut n: usize) -> bool {
 /// A diagnostic gathered under a scheduling lock, emitted once it is released.
 pub(crate) enum Diag {
     Cut { writer: &'static Site, is_unit: bool, written: Option<&'static Site> },
-    FragilityFailed { site: &'static Site, parent: String },
+    ParentsFailed { site: &'static Site, parent: String },
     Superseded { site: &'static Site, run: RunId },
     WholeEpochsBound { site: &'static Site },
 }
@@ -187,7 +187,7 @@ impl Diag {
     pub(crate) fn emit(self) {
         match self {
             Diag::Cut { writer, is_unit, written } => cut(writer, is_unit, written),
-            Diag::FragilityFailed { site, parent } => fragility_failed(site, &parent),
+            Diag::ParentsFailed { site, parent } => parents_failed(site, &parent),
             Diag::Superseded { site, run } => superseded(site, run),
             Diag::WholeEpochsBound { site } => whole_epochs_bound(site),
         }
@@ -205,7 +205,7 @@ fn cut(writer: &Site, is_unit: bool, written: Option<&'static Site>) {
     });
 }
 
-/// Sites already warned that a `WHOLE_EPOCHS` node ran before its epochs were whole.
+/// Sites already warned that a `batches = WHOLE` node ran before its epochs were whole.
 #[allow(clippy::disallowed_types)]
 static WHOLE_WARNED: parking_lot::Mutex<BTreeSet<SiteKey>> = parking_lot::Mutex::new(BTreeSet::new());
 
@@ -215,14 +215,14 @@ fn whole_epochs_bound(site: &'static Site) {
             tracing::warn!(
                 site = %site,
                 bound = crate::protocol::WHOLE_EPOCHS_BOUND,
-                "lithia: a WHOLE_EPOCHS node ran before every epoch reached it whole; input never paused"
+                "lithia: a `batches = WHOLE` node ran before every batch reached it whole; input never paused"
             )
         });
     }
 }
 
-fn fragility_failed(site: &Site, parent: &str) {
-    emit(|| tracing::debug!(site = %site, parent, "lithia: child failed through fragility"));
+fn parents_failed(site: &Site, parent: &str) {
+    emit(|| tracing::debug!(site = %site, parent, "lithia: node failed through its parents"));
 }
 
 /// A run created two nodes with equal keys at one site; they are matched in creation order.
@@ -235,8 +235,8 @@ pub(crate) fn key_outside_run(site: &Site) {
     emit(|| tracing::debug!(site = %site, "lithia: `key` has no effect outside a body; the node is created as usual"));
 }
 
-pub(crate) fn ghost_read(site: &Site, policy: crate::GhostPolicy) {
-    emit(|| tracing::debug!(site = %site, policy = ?policy, "lithia: read of a disposed node"));
+pub(crate) fn ghost_read(site: &Site, disposed: crate::disposed::Disposal) {
+    emit(|| tracing::debug!(site = %site, disposed = ?disposed, "lithia: read of a disposed node"));
 }
 
 fn superseded(site: &Site, run: RunId) {

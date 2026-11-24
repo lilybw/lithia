@@ -136,7 +136,7 @@ async fn try_operations_report_ghosts() {
     assert_eq!(lithia::try_reflow(&n), Err(Ghosted));
     let read: std::thread::Result<Arc<u32>> = catch_unwind(AssertUnwindSafe(|| n.get()));
     let message: String = match read {
-        Ok(_) => panic!("reading a ghost under ON_GHOST_CAUSE_FAILURE must panic"),
+        Ok(_) => panic!("reading a ghost under `disposed = FAIL` must panic"),
         Err(payload) => payload.downcast_ref::<String>().cloned().unwrap_or_default(),
     };
     assert!(message.contains("values.rs"), "the panic names the site: {message}");
@@ -158,36 +158,14 @@ async fn equal_writes_do_not_reach_changes() {
 }
 
 #[lithia::test]
-async fn always_propagate_reruns_children_of_derived_nodes() {
-    let a: SourceNode<i32> = effect!(1);
-    let parity: DerivedNode<i32> = effect!(|a| *a.get() % 2, equals = lithia::eq, flags = ALWAYS_PROPAGATE);
-    let runs: SourceNode<u32> = effect!(0);
-    let _child: DerivedNode<()> = effect!(|parity| runs.update(|n: &u32| n + 1));
-    lithia::flush().await;
-    let before: Arc<i32> = parity.get();
-    a.set(3);
-    lithia::flush().await;
-    assert!(Arc::ptr_eq(&before, &parity.get()));
-    assert_eq!(*runs.get(), 2);
-}
-
-#[lithia::test]
-async fn always_propagate_without_equals_changes_nothing() {
-    let flags: lithia::Flags = lithia::ALWAYS_PROPAGATE;
-    let literal: SourceNode<u32> = effect!(1, flags = ALWAYS_PROPAGATE);
-    let computed: SourceNode<u32> = effect!(1, flags = flags);
-    let runs: SourceNode<u32> = effect!(0);
-    let _child: DerivedNode<()> = effect!(|literal, computed| {
-        let _ = (literal.get(), computed.get());
-        runs.update(|n: &u32| n + 1);
-    });
-    lithia::flush().await;
-    literal.set(1);
-    lithia::flush().await;
-    computed.set(1);
-    lithia::flush().await;
-    // Without `equals` nothing compares, so every write propagates, flag or not.
-    assert_eq!(*runs.get(), 3);
+async fn an_option_value_may_be_any_expression_of_its_type() {
+    let mask: lithia::disposed::Disposal = lithia::disposed::MASK;
+    let literal: SourceNode<u32> = effect!(1, disposed = MASK);
+    let computed: SourceNode<u32> = effect!(2, disposed = mask);
+    lithia::dispose(&literal);
+    lithia::dispose(&computed);
+    assert_eq!((*literal.get(), *computed.get()), (1, 2));
+    assert_eq!(format!("{mask:?} {:?}", lithia::resilience::NONE), "disposed::MASK resilience::NONE");
 }
 
 #[lithia::test]
@@ -249,7 +227,7 @@ async fn a_write_before_the_first_item_keeps_the_block_from_running() {
 }
 
 #[lithia::test]
-async fn a_fragile_child_whose_parent_recovers_unchanged_is_restored_without_running() {
+async fn a_non_resilient_child_whose_parent_recovers_unchanged_is_restored_without_running() {
     let n: SourceNode<i32> = effect!(1);
     let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get(), equals = lithia::eq);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
@@ -258,7 +236,7 @@ async fn a_fragile_child_whose_parent_recovers_unchanged_is_restored_without_run
             runs.fetch_add(1, Ordering::SeqCst);
             *inv.get() + 1
         },
-        fragility = FRAGILE
+        resilience = NONE
     );
     lithia::flush().await;
     n.set(0); // `inv` fails, and `strict` with it, without running

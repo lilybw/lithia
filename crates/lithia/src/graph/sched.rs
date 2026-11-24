@@ -46,14 +46,14 @@ pub(crate) struct Sched {
     pub(crate) closed: bool,
     /// A stopped run's generation is being released; the node is not quiet until it is.
     pub(crate) releasing: bool,
-    /// Failed through fragility rather than its own panic.
-    pub(crate) failed_by_fragility: bool,
+    /// Failed through its parents rather than its own panic.
+    pub(crate) failed_by_parents: bool,
     /// Nodes this node created that wait for it to decide them before they run.
     pub(crate) gated: Vec<(NodeId, WeakNodeRef)>,
     /// Epochs whose writes by this node's lineage its next run leaves alone, as a cut writer's
     /// rerun does (spec §7.4); read when that run starts, so writes recorded after the cut count.
     pub(crate) suppress_in: Epochs,
-    /// Epochs that became ready while a `WHOLE_EPOCHS` node waited, since its last run started.
+    /// Epochs that became ready while a `batches = WHOLE` node waited, since its last run started.
     pub(crate) whole_deferred: u32,
     /// Run starts in the current window, for the rerun-rate warning (spec §12).
     pub(crate) rate: crate::diag::RateWindow,
@@ -129,7 +129,7 @@ impl Sched {
             holdover: KeyedSet::default(),
             closed: false,
             releasing: false,
-            failed_by_fragility: false,
+            failed_by_parents: false,
             gated: Vec::new(),
             suppress_in: Vec::new(),
             whole_deferred: 0,
@@ -370,7 +370,7 @@ bitflags::bitflags! {
         const FIRST = 1;
         /// A `lithia::reflow` is due in this epoch.
         const REFLOW = 1 << 1;
-        /// Run whatever the versions say (fragility recovery, ghost parent).
+        /// Run whatever the versions say (recovery from failed parents, ghost parent).
         const FORCE = 1 << 2;
         /// The writer check refused the node in this epoch.
         const CUT = 1 << 3;

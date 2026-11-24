@@ -356,7 +356,7 @@ async fn a_cut_writer_s_rerun_leaves_alone_what_it_wrote() {
     assert_eq!(writes.load(Ordering::SeqCst), 2);
 }
 
-async fn reads_of_a_join(flags: lithia::Flags) -> Vec<(u32, u32)> {
+async fn reads_of_a_join(batches: lithia::batches::Batches) -> Vec<(u32, u32)> {
     let a: SourceNode<u32> = effect!(0);
     let b: SourceNode<u32> = effect!(0);
     // `slow` holds `b`'s epoch at the gate until `a`'s epoch has reached the join.
@@ -375,14 +375,14 @@ async fn reads_of_a_join(flags: lithia::Flags) -> Vec<(u32, u32)> {
             let pair: (u32, u32) = (*a.get(), *slow.get());
             seen.lock().unwrap().push(pair);
         },
-        flags = flags
+        batches = batches
     );
     lithia::flush().await;
     b.set(1);
     tokio::task::yield_now().await; // delivers `b`'s epoch, which frames the join and waits in `slow`
     a.set(1);
     tokio::task::yield_now().await;
-    if !flags.contains(lithia::WHOLE_EPOCHS) {
+    if batches == lithia::batches::PARTIAL {
         // `a`'s epoch runs the join while `b`'s is still held.
         while seen.lock().unwrap().len() < 2 {
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -395,11 +395,11 @@ async fn reads_of_a_join(flags: lithia::Flags) -> Vec<(u32, u32)> {
 }
 
 #[lithia::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_join_reads_across_epochs_unless_it_takes_whole_epochs() {
-    // Without the flag, `a`'s epoch runs the join while `b`'s is still on its way through `slow`.
-    assert_eq!(reads_of_a_join(lithia::Flags::empty()).await, [(0, 0), (1, 0), (1, 10)]);
-    // With it, the join waits for `b`'s epoch too, and runs once for both.
-    assert_eq!(reads_of_a_join(lithia::WHOLE_EPOCHS).await, [(0, 0), (1, 10)]);
+async fn a_join_reads_across_batches_unless_it_takes_whole_batches() {
+    // On partial batches, `a`'s runs the join while `b`'s is still on its way through `slow`.
+    assert_eq!(reads_of_a_join(lithia::batches::PARTIAL).await, [(0, 0), (1, 0), (1, 10)]);
+    // On whole batches, the join waits for `b`'s too, and runs once for both.
+    assert_eq!(reads_of_a_join(lithia::batches::WHOLE).await, [(0, 0), (1, 10)]);
 }
 
 #[lithia::test(flavor = "multi_thread", worker_threads = 3)]

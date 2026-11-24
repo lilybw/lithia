@@ -100,12 +100,12 @@ async fn case_d_optimistic_async() {
     assert_eq!(*seen.get(), vec![String::new(), "user-7".to_string()]); // prior value, then the async result
 }
 
-// Case E: panic, recovery and fragility.
+// Case E: panic, recovery and resilience.
 #[lithia::test]
-async fn case_e_panic_and_fragility() {
+async fn case_e_panic_and_resilience() {
     let n: SourceNode<i32> = effect!(1);
     let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get());
-    let strict: DerivedNode<i32> = effect!(|inv| *inv.get() + 1, fragility = FRAGILE);
+    let strict: DerivedNode<i32> = effect!(|inv| *inv.get() + 1, resilience = NONE);
     let lenient: DerivedNode<i32> = effect!(|inv| *inv.get() + 2);
     lithia::flush().await;
 
@@ -128,7 +128,7 @@ async fn case_f_ghosts_and_views() {
     let s: SourceNode<i32> = effect!(1);
     let reader: Accessor<i32> = s.accessor();
     let writer: Setter<i32> = s.setter();
-    let t: SourceNode<i32> = effect!(5, ghost = ON_GHOST_EMIT_LATEST);
+    let t: SourceNode<i32> = effect!(5, disposed = MASK);
     let child: DerivedNode<i32> = effect!(|s| *s.get() * 2);
     // effect!(|writer| 0) would not compile: `Setter` does not implement `Readable`
     lithia::flush().await;
@@ -536,14 +536,14 @@ async fn case_aa_spawn_blocking_from_a_body() {
     assert_eq!((*result.get(), *runs.get()), (9, 1)); // the write-back is attributed, so `work` is cut
 }
 
-// Case AB: SEMI_FRAGILE fails only when every parent has failed.
+// Case AB: `resilience = PARTIAL` fails only when every parent has failed.
 #[lithia::test]
-async fn case_ab_semi_fragile() {
+async fn case_ab_partial_resilience() {
     let a: SourceNode<i32> = effect!(1);
     let b: SourceNode<i32> = effect!(1);
     let inv_a: DerivedNode<i32> = effect!(|a| 100 / *a.get());
     let inv_b: DerivedNode<i32> = effect!(|b| 100 / *b.get());
-    let sum: DerivedNode<i32> = effect!(|inv_a, inv_b| *inv_a.get() + *inv_b.get(), fragility = SEMI_FRAGILE);
+    let sum: DerivedNode<i32> = effect!(|inv_a, inv_b| *inv_a.get() + *inv_b.get(), resilience = PARTIAL);
     lithia::flush().await;
     a.set(0); // one parent fails
     lithia::flush().await;
@@ -557,7 +557,7 @@ async fn case_ab_semi_fragile() {
 #[lithia::test]
 async fn case_ac_ghost_with_a_surviving_child() {
     let kept: SourceNode<i32> = effect!(1);
-    let doomed: SourceNode<i32> = effect!(10, ghost = ON_GHOST_SET_AS_PENDING);
+    let doomed: SourceNode<i32> = effect!(10, disposed = PEND);
     let both: DerivedNode<i32> = effect!(|kept, doomed| *kept.get() + *doomed.get());
     lithia::flush().await;
     lithia::dispose(&doomed); // `both` survives through `kept` (10.4)
@@ -569,18 +569,21 @@ async fn case_ac_ghost_with_a_surviving_child() {
     assert!(matches!(lithia::status(&both), Status::Ready)); // a pending parent fails nobody
 }
 
-// Case AD: ALWAYS_PROPAGATE.
+// Case AD: a ghost under `disposed = MASK` or `disposed = PEND` fails no child, whatever its resilience.
 #[lithia::test]
-async fn case_ad_always_propagate() {
-    let a: SourceNode<i32> = effect!(1, equals = lithia::eq, flags = ALWAYS_PROPAGATE);
-    let runs: SourceNode<u32> = effect!(0);
-    let _child: DerivedNode<()> = effect!(|a| runs.update(|n: &u32| n + 1));
+async fn case_ad_kept_ghosts_fail_no_child() {
+    let masked: SourceNode<i32> = effect!(1, disposed = MASK);
+    let pending: SourceNode<i32> = effect!(2, disposed = PEND);
+    let k: SourceNode<i32> = effect!(10);
+    let strict: DerivedNode<i32> =
+        effect!(|masked, pending, k| *masked.get() + *pending.get() + *k.get(), resilience = NONE);
     lithia::flush().await;
-    let before: Arc<i32> = a.get();
-    a.set(1); // equal: the old value is kept...
+    lithia::dispose(&masked);
+    lithia::dispose(&pending); // `strict` survives through `k` (10.4)
+    k.set(20);
     lithia::flush().await;
-    assert!(Arc::ptr_eq(&before, &a.get()));
-    assert_eq!(*runs.get(), 2); // ...but the child reruns anyway (6.4)
+    assert_eq!(*strict.get(), 23); // both ghosts read their last values
+    assert!(matches!(lithia::status(&strict), Status::Ready));
 }
 
 // Case AE: a panicking body still propagates its writes.

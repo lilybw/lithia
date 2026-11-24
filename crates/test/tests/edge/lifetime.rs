@@ -35,7 +35,7 @@ async fn changes_end_when_the_node_is_freed() {
 
 #[lithia::test]
 async fn changes_on_a_ghost_end_at_once() {
-    let n: SourceNode<u32> = effect!(1, ghost = ON_GHOST_EMIT_LATEST);
+    let n: SourceNode<u32> = effect!(1, disposed = MASK);
     lithia::dispose(&n);
     let mut stream: Changes<u32> = n.changes();
     assert!(stream.next().await.is_none());
@@ -43,8 +43,8 @@ async fn changes_on_a_ghost_end_at_once() {
 }
 
 #[lithia::test]
-async fn children_of_an_emit_latest_ghost_keep_working() {
-    let frozen: SourceNode<i32> = effect!(5, ghost = ON_GHOST_EMIT_LATEST);
+async fn children_of_a_masked_ghost_keep_working() {
+    let frozen: SourceNode<i32> = effect!(5, disposed = MASK);
     let k: SourceNode<i32> = effect!(1);
     let child: DerivedNode<i32> = effect!(|frozen, k| *frozen.get() + *k.get());
     lithia::flush().await;
@@ -69,10 +69,10 @@ async fn children_of_an_emit_latest_ghost_keep_working() {
 }
 
 #[lithia::test]
-async fn a_cause_failure_ghost_fails_fragile_children() {
+async fn a_failing_ghost_fails_non_resilient_children() {
     let doomed: SourceNode<i32> = effect!(1);
     let k: SourceNode<i32> = effect!(1);
-    let strict: DerivedNode<i32> = effect!(|doomed, k| *k.get(), fragility = FRAGILE);
+    let strict: DerivedNode<i32> = effect!(|doomed, k| *k.get(), resilience = NONE);
     let lenient: DerivedNode<i32> = effect!(|doomed, k| *k.get());
     lithia::flush().await;
     lithia::dispose(&doomed);
@@ -87,7 +87,7 @@ async fn a_cause_failure_ghost_fails_fragile_children() {
     }
     assert!(matches!(lithia::status(&lenient), Status::Ready), "the body never reads the ghost");
     // New children behave as the surviving ones do.
-    let late_strict: DerivedNode<i32> = effect!(|doomed, k| *k.get(), fragility = FRAGILE);
+    let late_strict: DerivedNode<i32> = effect!(|doomed, k| *k.get(), resilience = NONE);
     let late_lenient: DerivedNode<i32> = effect!(|doomed, k| *k.get());
     let late_reader: DerivedNode<i32> = effect!(|doomed, k| *doomed.get() + *k.get());
     lithia::flush().await;
