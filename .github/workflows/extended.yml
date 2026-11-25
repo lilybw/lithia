@@ -19,8 +19,9 @@ on:
 permissions:
   contents: read
 
+# A push cancels the run of an older push, but not a weekly or manual run, which mutation-tests for hours.
 concurrency:
-  group: extended-${{ github.ref }}
+  group: extended-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
