@@ -28,6 +28,31 @@ fn dispose_during_a_run_settles() {
     });
 }
 
+/// A write frames through a node another thread disposes of: the ghost's retire may release its
+/// surviving child before the write's walk reaches the child, which then skips the ghost (spec §10.4).
+#[test]
+fn a_write_frames_through_a_node_being_disposed() {
+    check(|| {
+        let scope: ModelScope = ModelScope::new();
+        let (x, m, c): (SourceNode<u32>, DerivedNode<u32>, DerivedNode<u32>) = scope.batch(|| {
+            let x: SourceNode<u32> = effect!(1);
+            let m: DerivedNode<u32> = effect!(|x| *x.get() + 1);
+            // Reading the ghost fails, so the survivor's rerun counts it as 0.
+            let c: DerivedNode<u32> = effect!(|x, m| *x.get() + m.try_get().map_or(0, |v: std::sync::Arc<u32>| *v));
+            (x, m, c)
+        });
+        scope.flush();
+        let doomed: DerivedNode<u32> = m.clone();
+        let disposer: loom::thread::JoinHandle<()> = loom::thread::spawn(move || lithia::dispose(&doomed));
+        scope.batch(|| x.set(2));
+        disposer.join().unwrap();
+        scope.flush();
+        assert!(matches!(lithia::status(&m), Status::Ghost));
+        assert_eq!(*c.get(), 2);
+        assert!(model::quiet(&x));
+    });
+}
+
 /// A last-handle drop on one thread races a top-level creation on the same node on another;
 /// both nodes are freed whichever lands first (spec §10.1, §11.4 step 1).
 #[test]

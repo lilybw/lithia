@@ -258,3 +258,49 @@ async fn a_generators_return_type_is_the_type_of_its_items() {
     lithia::test::settled(&n).await;
     assert_eq!(std::any::type_name_of_val(&*items.get()), "u64");
 }
+
+#[lithia::test]
+async fn a_failure_after_the_first_suspension_reaches_strict_children() {
+    let input: SourceNode<i32> = effect!(1);
+    let slow: DerivedNode<i32> = effect!(async |input| {
+        let value: i32 = *input.get();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(value != 0, "the poll after the release fails");
+        value
+    });
+    let strict: DerivedNode<i32> = effect!(|slow| *slow.get() + 1, resilience = NONE);
+    let partial: DerivedNode<i32> = effect!(|slow, strict| *slow.get() + *strict.get(), resilience = PARTIAL);
+    let lenient: DerivedNode<i32> = effect!(|slow| *slow.get() + 2);
+    lithia::test::settled(&slow).await;
+    input.set(0);
+    lithia::test::settled(&slow).await;
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Failed(_)));
+    assert!(matches!(lithia::status(&strict), Status::Failed(_)), "the late failure reached the strict child");
+    assert!(matches!(lithia::status(&partial), Status::Failed(_)), "and then the child failing through both");
+    assert!(matches!(lithia::status(&lenient), Status::Ready));
+
+    input.set(2);
+    lithia::test::settled(&slow).await;
+    lithia::flush().await;
+    assert_eq!((*strict.get(), *partial.get()), (3, 5));
+    assert!(matches!(lithia::status(&strict), Status::Ready));
+}
+
+#[lithia::test]
+async fn a_generator_failing_after_an_item_fails_its_strict_children() {
+    let input: SourceNode<u32> = effect!(1);
+    let items: DerivedNode<u32> = effect!(async |input| {
+        let value: u32 = *input.get();
+        yield value;
+        assert!(value != 0, "the poll after the item fails");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    });
+    let strict: DerivedNode<u32> = effect!(|items| *items.get() + 1, resilience = NONE);
+    lithia::test::settled(&items).await;
+    input.set(0);
+    lithia::test::settled(&items).await;
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&items), Status::Failed(_)));
+    assert!(matches!(lithia::status(&strict), Status::Failed(_)));
+}

@@ -136,7 +136,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [MCSupersede, MCAsyncChain, MCWriteBack, MCBinding, MCAbsorb, MCReturn, MCWriter, MCGeneration, MCScoped]
+        model:
+          - MCSupersede
+          - MCAsyncChain
+          - MCWriteBack
+          - MCBinding
+          - MCAbsorb
+          - MCRecover
+          - MCResilience
+          - MCGenerator
+          - MCCreator
+          - MCReflow
+          - MCReflowBack
+          - MCDispose
+          - MCReturn
+          - MCWriter
+          - MCGeneration
+          - MCScoped
+          - MCKeyed
+          - MCDisposal
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

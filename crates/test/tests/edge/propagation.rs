@@ -229,6 +229,51 @@ async fn flush_waits_for_the_run_that_absorbed_its_write() {
 }
 
 #[lithia::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flush_waits_for_the_successor_of_the_run_that_absorbed_its_write() {
+    let x: SourceNode<u32> = effect!(1);
+    let y: SourceNode<u32> = effect!(0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    // A slow child of `x` that never changes: `joined` waits for it in `x`'s epoch.
+    let slow: DerivedNode<bool> = effect!(
+        |x| {
+            let large: bool = *x.get() > 100;
+            tokio::task::block_in_place(|| std::thread::sleep(Duration::from_millis(300)));
+            large
+        },
+        equals = lithia::eq
+    );
+    let joined: DerivedNode<u32> = effect!(
+        |x, y, slow| {
+            let value: u32 = *x.get() + *y.get() * 10 + u32::from(*slow.get()) * 100;
+            runs.fetch_add(1, Ordering::SeqCst);
+            tokio::task::block_in_place(|| std::thread::sleep(Duration::from_millis(100)));
+            value
+        },
+        batches = WHOLE
+    );
+    lithia::flush().await;
+    let before: u32 = runs.load(Ordering::SeqCst);
+    // `x`'s batch waits for this poll to end. Meanwhile a write from another thread starts a run of
+    // `joined`, which reads `x` = 4, and a second write supersedes it; its successor waits for `x`'s
+    // epoch, which `slow` holds, and `x`'s entry then finds only the handover the run left.
+    x.set(4);
+    let (y2, seen): (SourceNode<u32>, Arc<AtomicU32>) = (y.clone(), runs.clone());
+    let writer: std::thread::JoinHandle<()> = std::thread::spawn(move || {
+        y2.set(1);
+        while seen.load(Ordering::SeqCst) == before {
+            std::hint::spin_loop();
+        }
+        y2.set(2);
+    });
+    while runs.load(Ordering::SeqCst) == before {
+        std::hint::spin_loop();
+    }
+    lithia::flush().await;
+    assert_eq!(*joined.get(), 24, "flush returned before the run that includes x = 4");
+    writer.join().unwrap();
+}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_writers_reach_eventual_consistency() {
     let sources: Vec<SourceNode<u64>> = (0..8).map(|_| effect!(0u64)).collect();
     let (s0, s1, s2, s3, s4, s5, s6, s7): (

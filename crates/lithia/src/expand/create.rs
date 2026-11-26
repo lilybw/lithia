@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicUsize, Mutex};
+use crate::sync::{ArcCell, AtomicBool, AtomicU32, AtomicUsize, Mutex, MutexGuard};
 use tokio::runtime::Handle;
 
 use crate::context;
@@ -287,8 +287,17 @@ fn new_node<K: NodeValue>(
     }
     drop(creator_node);
     if supportable {
-        *erased.header().lifetime.support.lock() = Some(erased.clone());
-        crate::diag::support_held(site);
+        // Teardown takes support's reference under this lock once the node is a ghost, so a node
+        // disposed of while it is created is not held (spec §10.4).
+        let mut slot: MutexGuard<'_, Option<NodeRef>> = erased.header().lifetime.support.lock();
+        let held: bool = !erased.header().is_ghost();
+        if held {
+            *slot = Some(erased.clone());
+        }
+        drop(slot);
+        if held {
+            crate::diag::support_held(site);
+        }
     }
     // Once the node is held, so that its writer edges find it supported.
     if !targets.is_empty() {

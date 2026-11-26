@@ -12,7 +12,7 @@ commands to run them, and [`known_bugs.md`](known_bugs.md) lists what they have 
 | Compile errors (spec §4.6), one case per row; `effect!`'s expansions, one snapshot per body form | `crates/validation/tests/ui`; `crates/macro/snapshots` | `ci.yml` |
 | Edge-case tests, one module per area, and the random differential test | `crates/test/tests/edge` | `ci.yml` |
 | Loom models of the real engine, one module per area | `crates/test/tests/loom` | `ci.yml` at bound 3, `extended.yml` at bound 4 |
-| TLA+ models of scheduling and lifetimes | `docs/tla` | `ci.yml`; the two largest in `extended.yml`, `MCDiamond` for 270 minutes |
+| TLA+ models of scheduling and lifetimes | `docs/tla` | `ci.yml`; the three largest in `extended.yml`, `MCDiamond` for 270 minutes |
 | Kept mutations, cargo-mutants | `.github/scripts/mutations.py` | `extended.yml`; cargo-mutants weekly |
 | Stress runs of every test binary | `.github/scripts/stress.sh` | `extended.yml`, on Linux x86-64 and ARM and macOS |
 | Miri | `extended.yml` | unit tests, validation cases and edge-case tests |
@@ -41,7 +41,7 @@ runs the real engine: the main thread delivers batches and polls runs, worker th
 it, and the model checks the final values once everything settles. Lifetime models also check each
 scope's live count.
 
-- Models: 51, in `crates/test/tests/loom/`. Each one's doc comment says what it races and which case
+- Models: 52, in `crates/test/tests/loom/`. Each one's doc comment says what it races and which case
   it covers.
 - Paths: every model runs with the fast path and again with `LITHIA_LOOM_FAST_PATH=off`, which gives
   every ready run a task of its own.
@@ -151,7 +151,7 @@ These make nothing fail, and are harmless:
 ## Mutations
 
 `.github/scripts/mutations.py` keeps each mutation as code, applies it to a copy of the workspace and
-runs the test named for it, which must fail; `--list` names them. W1–W4 cover the protocol, F1–F5 the
+runs the test named for it, which must fail; `--list` names them. W1–W7 cover the protocol, F1–F5 the
 fast path, S1–S3 support's walks, and K1–K3 the wakes that end a stopped, retired or freed run. Two survive, both equivalent to the original: W3 releases a
 write to a child linked after the write's framing, which waits on the written node only through an
 entry, run or handover of that node that releases it as well, so the child reads the same value

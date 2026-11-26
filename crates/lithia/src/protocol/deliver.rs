@@ -87,7 +87,7 @@ pub(crate) fn deliver_into(
         }
         for (node, _) in &writes {
             let children: Children = node.header().subscribers();
-            frame(node.header().id, &children, epoch, &mut work);
+            frame(node.header(), &children, epoch, &mut work);
             counted.push(children);
         }
         for (node, stamp) in &reflows {
@@ -95,13 +95,13 @@ pub(crate) fn deliver_into(
                 seed_reflow(node, epoch, &chain, *stamp, &mut work);
             } else {
                 let children: Children = node.header().subscribers();
-                frame(node.header().id, &children, epoch, &mut work);
+                frame(node.header(), &children, epoch, &mut work);
                 counted.push(children);
             }
         }
         if let Some(item) = &own {
             let children: Children = item.node.header().subscribers();
-            frame(item.node.header().id, &children, epoch, &mut work);
+            frame(item.node.header(), &children, epoch, &mut work);
             counted.push(children);
         }
     }
@@ -163,23 +163,25 @@ pub(crate) fn deliver_outside_deferred(batch: Batch, scope: &Arc<Scope>) -> Toke
     tokens
 }
 
-/// Delivers a run's later batch as one child epoch per epoch it serves; returns them still
-/// holding their guard token, which the caller closes.
+/// Delivers a run's later batch as one child epoch per epoch it serves, with the node's item if it
+/// has a stamp or the node failed; returns them still holding their guard token, which the caller closes.
 pub(crate) fn deliver_children(
     node: &NodeRef,
     served: &[(Arc<Epoch>, WriterSet)],
     batch: Batch,
     own_stamp: Stamp,
+    failed: bool,
 ) -> Tokens {
     let mut tokens: Tokens = Tokens::new();
-    if batch.is_empty() && !own_stamp.is_some() {
+    if batch.is_empty() && !own_stamp.is_some() && !failed {
         return tokens;
     }
     let children: Targets = served
         .iter()
         .map(|(epoch, writers): &(Arc<Epoch>, WriterSet)| (Epoch::child(epoch), writers.clone()))
         .collect();
-    let own: Option<OwnItem<'_>> = own_stamp.is_some().then_some(OwnItem { node, stamp: own_stamp });
+    // A failure reaches the children as an item that changed nothing: each checks its resilience.
+    let own: Option<OwnItem<'_>> = (own_stamp.is_some() || failed).then_some(OwnItem { node, stamp: own_stamp });
     deliver_into(batch, &children, Some(node.header().writer), own);
     for (epoch, _) in children {
         tokens.push(epoch);
@@ -222,7 +224,7 @@ fn served_by(run: &Arc<RunControl>) -> Option<(NodeRef, ServedEpochs)> {
 fn deliver_for_run(run: &Arc<RunControl>, batch: Batch) -> Epochs {
     match served_by(run) {
         Some((node, served)) => {
-            let tokens: Tokens = deliver_children(&node, &served, batch, Stamp::NONE);
+            let tokens: Tokens = deliver_children(&node, &served, batch, Stamp::NONE, false);
             drop(node);
             let epochs: Epochs = tokens.epochs();
             tokens.close();

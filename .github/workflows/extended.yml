@@ -144,7 +144,7 @@ jobs:
           path: target/stress
           if-no-files-found: ignore
 
-  # The two models too large for ci.yml; the others run there. MCDiamond takes about four hours and
+  # The models too large for ci.yml; the others run there. MCDiamond takes about four hours and
   # runners differ in speed, so it stops after 270 minutes: every state up to the depth reached is
   # checked, and only a violation fails the job.
   tla:
@@ -154,6 +154,7 @@ jobs:
       matrix:
         include:
           - model: MCSharedTarget
+          - model: MCWhole
           - model: MCDiamond
             limit: 270m
     runs-on: ubuntu-latest

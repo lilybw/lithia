@@ -133,6 +133,24 @@ MUTATIONS: list[Mutation] = [
         "            slot.shared.cancel();\n",
         "loom", "freeing_a_node_wakes_its_parked_run",
     ),
+    Mutation(
+        "W5", "A run failing after its release telling no child", "crates/lithia/src/protocol/lifecycle.rs",
+        "    let tells: bool = failed && !first;\n",
+        "    let tells: bool = false;\n",
+        "edge", "a_failure_after_the_first_suspension_reaches_strict_children",
+    ),
+    Mutation(
+        "W6", "An absorbed change settling beside a superseded run's handover", "crates/lithia/src/protocol/propagate.rs",
+        "        None => &sched.handover,\n",
+        "        None => return false,\n",
+        "edge", "flush_waits_for_the_successor_of_the_run_that_absorbed_its_write",
+    ),
+    Mutation(
+        "W7", "A framing walk opening entries below a ghost", "crates/lithia/src/protocol/propagate.rs",
+        "                Some(_) if header.is_ghost() || parent.is_ghost() => None,\n",
+        "                Some(_) if header.is_ghost() => None,\n",
+        "loom", "a_write_frames_through_a_node_being_disposed",
+    ),
 ]
 
 SUITES: dict[str, list[str]] = {

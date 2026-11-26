@@ -18,20 +18,20 @@ pub(super) struct CutRerun {
 
 /// Opens an entry on every node downstream of `root` in `epoch`, through `children`, the subscribers
 /// its obligation captured, so each wait counted here is one its parent's release will meet.
-pub(crate) fn frame(root: NodeId, children: &[NodeRef], epoch: &Arc<Epoch>, work: &mut Work) {
+pub(crate) fn frame(root: &Header, children: &[NodeRef], epoch: &Arc<Epoch>, work: &mut Work) {
     let mut stack: Vec<(NodeRef, Children)> = Vec::new();
     frame_level(root, children, epoch, &mut stack);
     while let Some((parent, children)) = stack.pop() {
-        frame_level(parent.header().id, &children, epoch, &mut stack);
+        frame_level(parent.header(), &children, epoch, &mut stack);
         work.keep.push(parent);
         work.keep.extend(children);
     }
 }
 
-/// Frames `children` of `parent_id` in `epoch`; those it opens an entry on go on `stack` with
-/// their subscribers, unless a run of theirs still owes the epoch.
+/// Frames `children` of `parent` in `epoch` unless either is a ghost; those it opens an entry on go
+/// on `stack` with their subscribers, unless a run of theirs still owes the epoch.
 pub(super) fn frame_level(
-    parent_id: NodeId,
+    parent: &Header,
     children: &[NodeRef],
     epoch: &Arc<Epoch>,
     stack: &mut Vec<(NodeRef, Children)>,
@@ -41,9 +41,10 @@ pub(super) fn frame_level(
             let header: &Header = child.header();
             let mut guard: SchedGuard<'_> = header.lock_sched();
             let sched: &mut Sched = &mut guard;
-            match header.parent_index(parent_id) {
+            match header.parent_index(parent.id) {
                 None => None,
-                Some(_) if header.is_ghost() => None,
+                // A ghost parent's release may have gone by already; disposal reruns its survivors.
+                Some(_) if header.is_ghost() || parent.is_ghost() => None,
                 Some(index) => {
                     let (entry, framed): (&mut Entry, Option<Children>) = sched.open_entry(epoch);
                     entry.waiting.add(index);
@@ -230,8 +231,8 @@ pub(super) fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &m
     let changed: bool = entry.newest > ran_at;
     if !(entry.due.intersects(Due::FIRST | Due::FORCE | Due::REFLOW) || changed) {
         if entry.newest.is_some() {
-            // A run started after this change absorbed it: the epoch waits for that run's item.
-            if join_run(sched, epoch, work) {
+            // A run started after this change absorbed it: the epoch waits for its item, or its successor's.
+            if join_run(node, sched, epoch, work) {
                 return;
             }
             // That run has released, or ended: the children test the node's current version.
@@ -274,12 +275,30 @@ pub(super) fn decide(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &m
     }
 }
 
-/// Hands an entry over to the run in flight, if that run has not released yet: the run then releases
-/// the entry's epoch with its first item, or when it ends (spec §7.2). True if it did.
-pub(super) fn join_run(sched: &mut Sched, epoch: EpochId, work: &mut Work) -> bool {
-    let unreleased: bool =
-        sched.run.as_ref().is_some_and(|slot: &RunSlot| slot.served.iter().any(|served: &Served| !served.released));
-    if !unreleased {
+/// The last epoch a `batches = WHOLE` node waited for has left: the run a handover or the other
+/// entries made due starts.
+fn queue_whole(node: &NodeRef, sched: &mut Sched, work: &mut Work) {
+    if node.header().shape.whole_batches()
+        && sched.run.is_none()
+        && !sched.queued
+        && !whole_epochs_wait(node.header(), sched)
+        && (!sched.handover.is_empty() || sched.entries.values().any(|entry: &Entry| entry.due.contains(Due::RUNNABLE)))
+    {
+        sched.take_generation(&mut work.released);
+        sched.queued = true;
+        work.spawns.push(node.clone());
+    }
+}
+
+/// Hands an entry over to the run in flight, or to the handover a superseded run left, if that has
+/// not released yet: it is then released with the first item of that run or its successor, or when that
+/// run ends (spec §7.2). True if it did.
+pub(super) fn join_run(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &mut Work) -> bool {
+    let owed: &ServedList = match sched.run.as_ref() {
+        Some(slot) => &slot.served,
+        None => &sched.handover,
+    };
+    if !owed.iter().any(|served: &Served| !served.released) {
         return false;
     }
     let Some(entry) = sched.entries.remove(&epoch) else {
@@ -290,9 +309,12 @@ pub(super) fn join_run(sched: &mut Sched, epoch: EpochId, work: &mut Work) -> bo
     }
     wake_gated(sched, work);
     let Entry { epoch, writers, carry, .. } = entry;
-    if let Some(slot) = sched.run.as_mut() {
-        merge_served(&mut slot.served, Served { epoch, writers, tokens: 1, released: false, carry });
+    let record: Served = Served { epoch, writers, tokens: 1, released: false, carry };
+    match sched.run.as_mut() {
+        Some(slot) => merge_served(&mut slot.served, record),
+        None => merge_served(&mut sched.handover, record),
     }
+    queue_whole(node, sched, work);
     true
 }
 
@@ -305,17 +327,7 @@ pub(super) fn settle(node: &NodeRef, sched: &mut Sched, epoch: EpochId, work: &m
         sched.whole_deferred = 0;
     }
     wake_gated(sched, work);
-    // The last epoch a `batches = WHOLE` node waited for settled: the run the others made due starts.
-    if node.header().shape.whole_batches()
-        && sched.run.is_none()
-        && !sched.queued
-        && !whole_epochs_wait(node.header(), sched)
-        && sched.entries.values().any(|entry: &Entry| entry.due.contains(Due::RUNNABLE))
-    {
-        sched.take_generation(&mut work.released);
-        sched.queued = true;
-        work.spawns.push(node.clone());
-    }
+    queue_whole(node, sched, work);
     match sched.owed_mut(epoch) {
         Some(served) => {
             served.carry = served.carry.max(entry.carry);
@@ -386,7 +398,7 @@ pub(super) fn seed(node: &NodeRef, epoch: &Arc<Epoch>, writers: &WriterSet, kind
         framed
     };
     if let Some(children) = created {
-        frame(header.id, &children, epoch, work);
+        frame(header, &children, epoch, work);
         work.keep.extend(children);
     }
 }
@@ -410,7 +422,7 @@ pub(super) fn seed_reflow(node: &NodeRef, epoch: &Arc<Epoch>, chain: &WriterSet,
         framed
     };
     if let Some(children) = created {
-        frame(header.id, &children, epoch, work);
+        frame(header, &children, epoch, work);
         work.keep.extend(children);
     }
 }

@@ -166,6 +166,7 @@ pub(crate) fn after_poll(
         shared.id() <= header.runs.load(Ordering::Relaxed),
         "lithia: a run's id is ahead of its node's count"
     );
+    let mut failed: bool = false;
     if let Outcome::Panicked(message) = outcome {
         diag::run_panicked(header.site, message);
         // Only the current run fails the node, as only it publishes: writes and run starts are held off.
@@ -177,11 +178,14 @@ pub(crate) fn after_poll(
             && guard.run.as_ref().is_some_and(|slot: &RunSlot| slot.id == shared.id());
         if current {
             header.fail(Failure::new(message.clone(), *header.site));
+            failed = true;
         }
     }
     let first: bool = !shared.first_done();
+    // A run that fails after releasing its epochs tells its children through child epochs (spec §9.2).
+    let tells: bool = failed && !first;
     // The served epochs are copied only when there is something to deliver into them.
-    let delivers: bool = !batch.is_empty() || (!first && own_stamp.is_some());
+    let delivers: bool = !batch.is_empty() || (!first && (own_stamp.is_some() || tells));
     let snapshot: Option<(ServedEpochs, ServedEpochs, bool)> = {
         let guard: SchedGuard<'_> = header.lock_sched();
         match &guard.run {
@@ -216,11 +220,11 @@ pub(crate) fn after_poll(
         deliver_into(batch, &served, Some(header.writer), None);
         if !released.is_empty() {
             // A published item reaches the children of epochs released already as a later item does.
-            pending.append(deliver_children(node, &released, Batch::default(), own_stamp));
+            pending.append(deliver_children(node, &released, Batch::default(), own_stamp, false));
         }
     } else {
         // A published item is delivered even if the run was superseded since it published.
-        pending.append(deliver_children(node, &served, batch, own_stamp));
+        pending.append(deliver_children(node, &served, batch, own_stamp, tells));
     }
     if matches!(outcome, Outcome::Yielded) && !cancelled {
         protect_ends(node, shared);
