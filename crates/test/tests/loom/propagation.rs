@@ -12,9 +12,9 @@ fn concurrent_outside_writes_converge() {
     check(|| {
         let scope: ModelScope = ModelScope::new();
         let (a, b, sum): (SourceNode<i32>, SourceNode<i32>, DerivedNode<i32>) = scope.batch(|| {
-            let a: SourceNode<i32> = effect!(0);
-            let b: SourceNode<i32> = effect!(0);
-            let sum: DerivedNode<i32> = effect!(|a, b| *a.get() + *b.get());
+            let a: SourceNode<i32> = node!(0);
+            let b: SourceNode<i32> = node!(0);
+            let sum: DerivedNode<i32> = node!(|a, b| *a.get() + *b.get());
             (a, b, sum)
         });
         scope.flush();
@@ -47,8 +47,8 @@ fn a_write_during_a_run_is_never_lost() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, doubled): (SourceNode<i32>, DerivedNode<i32>) = scope.batch(|| {
-                let a: SourceNode<i32> = effect!(1);
-                let doubled: DerivedNode<i32> = effect!(|a| *a.get() * 2);
+                let a: SourceNode<i32> = node!(1);
+                let doubled: DerivedNode<i32> = node!(|a| *a.get() * 2);
                 (a, doubled)
             });
             scope.batch(|| a.set(2));
@@ -67,9 +67,9 @@ fn an_inline_chain_races_a_second_write() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, m1, m2): (SourceNode<i32>, DerivedNode<i32>, DerivedNode<i32>) = scope.batch(|| {
-                let a: SourceNode<i32> = effect!(1);
-                let m1: DerivedNode<i32> = effect!(|a| *a.get() + 1);
-                let m2: DerivedNode<i32> = effect!(|m1| *m1.get() * 10);
+                let a: SourceNode<i32> = node!(1);
+                let m1: DerivedNode<i32> = node!(|a| *a.get() + 1);
+                let m2: DerivedNode<i32> = node!(|m1| *m1.get() * 10);
                 (a, m1, m2)
             });
             scope.batch(|| a.set(2));
@@ -90,12 +90,12 @@ fn two_runs_write_one_source_in_one_epoch() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, f): (SourceNode<i32>, DerivedNode<i32>) = scope.batch(|| {
-                let a: SourceNode<i32> = effect!(0);
-                let t: SourceNode<i32> = effect!(0);
-                let _b: DerivedNode<()> = effect!(|a| t.set(*a.get()));
-                let _c: DerivedNode<()> = effect!(|a| t.set(*a.get()));
-                let d: DerivedNode<i32> = effect!(|t| *t.get() + 1);
-                let f: DerivedNode<i32> = effect!(|d| *d.get() * 10);
+                let a: SourceNode<i32> = node!(0);
+                let t: SourceNode<i32> = node!(0);
+                let _b: DerivedNode<()> = node!(|a| t.set(*a.get()));
+                let _c: DerivedNode<()> = node!(|a| t.set(*a.get()));
+                let d: DerivedNode<i32> = node!(|t| *t.get() + 1);
+                let f: DerivedNode<i32> = node!(|d| *d.get() * 10);
                 (a, f)
             });
             scope.flush();
@@ -115,9 +115,9 @@ fn a_change_published_before_a_supersede_reaches_the_children() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, c): (SourceNode<i32>, DerivedNode<i32>) = scope.batch(|| {
-                let a: SourceNode<i32> = effect!(0);
-                let b: DerivedNode<i32> = effect!(|a| *a.get() % 2, equals = lithia::eq);
-                let c: DerivedNode<i32> = effect!(|b| *b.get() + 100);
+                let a: SourceNode<i32> = node!(0);
+                let b: DerivedNode<i32> = node!(|a| *a.get() % 2, equals = lithia::eq);
+                let c: DerivedNode<i32> = node!(|b| *b.get() + 100);
                 (a, c)
             });
             scope.flush();
@@ -137,14 +137,14 @@ fn a_generator_child_ends_on_the_last_item() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (tick, last, _log): (DerivedNode<u32>, SourceNode<u32>, DerivedNode<()>) = scope.batch(|| {
-                let count_to: SourceNode<u32> = effect!(2);
-                let tick: DerivedNode<u32> = effect!(|count_to| {
+                let count_to: SourceNode<u32> = node!(2);
+                let tick: DerivedNode<u32> = node!(|count_to| {
                     for i in 1..=*count_to.get() {
                         yield i;
                     }
                 });
-                let last: SourceNode<u32> = effect!(0);
-                let log: DerivedNode<()> = effect!(|tick| last.set(*tick.get()));
+                let last: SourceNode<u32> = node!(0);
+                let log: DerivedNode<()> = node!(|tick| last.set(*tick.get()));
                 (tick, last, log)
             });
             scope.flush();
@@ -162,8 +162,8 @@ fn a_replacement_run_is_not_replaced_before_its_item() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (input, slow): (SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
-                let input: SourceNode<u32> = effect!(0);
-                let slow: DerivedNode<u32> = effect!(async |input| {
+                let input: SourceNode<u32> = node!(0);
+                let slow: DerivedNode<u32> = node!(async |input| {
                     let value: u32 = *input.get();
                     SuspendOnce(false).await;
                     value * 10
@@ -186,9 +186,9 @@ fn a_cut_writer_reruns_after_its_epoch() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (x, over): (SourceNode<i32>, DerivedNode<bool>) = scope.batch(|| {
-                let x: SourceNode<i32> = effect!(0);
-                let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
-                let over: DerivedNode<bool> = effect!(|doubled| {
+                let x: SourceNode<i32> = node!(0);
+                let doubled: DerivedNode<i32> = node!(|x| *x.get() * 2);
+                let over: DerivedNode<bool> = node!(|doubled| {
                     let over: bool = *doubled.get() > 20;
                     if over {
                         x.set(10);
@@ -214,10 +214,10 @@ fn a_whole_batches_join_converges_under_concurrent_writes() {
         let scope: ModelScope = ModelScope::new();
         let seen: std::sync::Arc<std::sync::Mutex<Vec<(i32, i32)>>> = Default::default();
         let (s, join): (SourceNode<i32>, DerivedNode<()>) = scope.batch(|| {
-            let s: SourceNode<i32> = effect!(0);
-            let ones: DerivedNode<i32> = effect!(|s| *s.get());
-            let tens: DerivedNode<i32> = effect!(|s| *s.get() * 10);
-            let join: DerivedNode<()> = effect!(
+            let s: SourceNode<i32> = node!(0);
+            let ones: DerivedNode<i32> = node!(|s| *s.get());
+            let tens: DerivedNode<i32> = node!(|s| *s.get() * 10);
+            let join: DerivedNode<()> = node!(
                 |ones, tens| {
                     let pair: (i32, i32) = (*ones.get(), *tens.get());
                     seen.lock().unwrap().push(pair);

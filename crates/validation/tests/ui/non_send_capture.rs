@@ -3,10 +3,10 @@
 
 use std::rc::Rc;
 
-use lithia::{effect, DerivedNode, SourceNode};
+use lithia::{node, DerivedNode, SourceNode};
 
 fn main() {
-    let n: SourceNode<u32> = effect!(1);
+    let n: SourceNode<u32> = node!(1);
     let shared: Rc<u32> = Rc::new(2);
-    let _uses: DerivedNode<u32> = effect!(|n| *n.get() + **shared);
+    let _uses: DerivedNode<u32> = node!(|n| *n.get() + **shared);
 }

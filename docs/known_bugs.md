@@ -29,5 +29,7 @@ None.
   runtime shutdown, `defer` and the rerun rate. `MCDiamond` has finished once in CI (26 147 949 states, depth 109, 3 h 57 min, no error); runners differ in speed,
   so CI stops it after 270 minutes and passes it if it found no error by then. The loom models (`crates/test/tests/loom/`) run with at
   most three preemptions on each push and four on nightly.
-- cargo-mutants has run over the engine only as a local sample (29 mutants of `support.rs`); it
-  runs over all of it weekly from v0.5.0.
+- cargo-mutants has run over the whole engine once, on ec53abb: of 1 584 mutants, 848 were caught,
+  293 did not build and 37 timed out. The 406 that survived are not yet sorted into gaps in the tests
+  and mutants that change nothing; the 44 in the loom executor cannot be caught, since cargo-mutants
+  runs no loom models.

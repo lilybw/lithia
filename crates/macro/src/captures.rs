@@ -533,7 +533,7 @@ impl Captures {
         let name: String =
             mac.path.segments.last().map(|segment: &syn::PathSegment| segment.ident.to_string()).unwrap_or_default();
         let known: bool = match name.as_str() {
-            "effect" => match syn::parse2::<crate::effect::EffectInput>(mac.tokens.clone()) {
+            "node" => match syn::parse2::<crate::node::NodeInput>(mac.tokens.clone()) {
                 Ok(nested) => {
                     nested.visit_captures(self);
                     true
@@ -1039,8 +1039,8 @@ mod tests {
 
     #[test]
     fn sees_into_nested_effects() {
-        assert_eq!(captured("Some(effect!(|n| n.update(|v: &u32| v + 1)))"), vec!["n"]);
-        assert_eq!(captured("effect!(async |id| { cache.set(id.get()); })"), vec!["id", "cache"]);
+        assert_eq!(captured("Some(node!(|n| n.update(|v: &u32| v + 1)))"), vec!["n"]);
+        assert_eq!(captured("node!(async |id| { cache.set(id.get()); })"), vec!["id", "cache"]);
     }
 
     #[test]
@@ -1053,10 +1053,10 @@ mod tests {
     fn sees_keys_of_nested_effects() {
         // A key closure's parameters name variables of the enclosing body, read by reference.
         assert_eq!(
-            captured("effect!(|tick| *tick.get(), key = |row, user| (row.id, user.0))"),
+            captured("node!(|tick| *tick.get(), key = |row, user| (row.id, user.0))"),
             vec!["tick", "row", "user"]
         );
-        assert_eq!(captured("effect!(title.clone(), key = row.id)"), vec!["title", "row"]);
+        assert_eq!(captured("node!(title.clone(), key = row.id)"), vec!["title", "row"]);
     }
 
     fn classes(src: &str) -> Vec<(String, Class)> {
@@ -1100,7 +1100,7 @@ mod tests {
         assert_eq!(classes("items.get(0).unwrap().set(5)"), vec![("items".into(), write.clone())]);
         assert_eq!(classes("my_macro!(a.get())"), vec![("a".into(), write)]);
         assert_eq!(classes("vec![a.get()]"), vec![("a".into(), read.clone())]);
-        assert_eq!(classes("effect!(|a| b.get())"), vec![("a".into(), read.clone()), ("b".into(), read)]);
+        assert_eq!(classes("node!(|a| b.get())"), vec![("a".into(), read.clone()), ("b".into(), read)]);
     }
 
     #[test]

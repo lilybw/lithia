@@ -12,11 +12,11 @@ fn case_a_nested_creation() {
             let scope: ModelScope = ModelScope::new();
             let (array, callcount, _expansion): (SourceNode<Vec<SourceNode<i32>>>, SourceNode<i32>, DerivedNode<()>) =
                 scope.batch(|| {
-                    let array: SourceNode<Vec<SourceNode<i32>>> = effect!(Vec::new());
-                    let callcount: SourceNode<i32> = effect!(0);
-                    let expansion: DerivedNode<()> = effect!(|array| {
+                    let array: SourceNode<Vec<SourceNode<i32>>> = node!(Vec::new());
+                    let callcount: SourceNode<i32> = node!(0);
+                    let expansion: DerivedNode<()> = node!(|array| {
                         callcount.update(|n: &i32| n + 1);
-                        let c: SourceNode<i32> = effect!(42);
+                        let c: SourceNode<i32> = node!(42);
                         array.update(|old: &Vec<SourceNode<i32>>| {
                             let mut v: Vec<SourceNode<i32>> = old.clone();
                             v.push(c.clone());
@@ -40,11 +40,11 @@ fn case_b_diamond() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, d, runs): (SourceNode<i32>, DerivedNode<i32>, SourceNode<u32>) = scope.batch(|| {
-                let a: SourceNode<i32> = effect!(1);
-                let b: DerivedNode<i32> = effect!(|a| *a.get() + 1);
-                let c: DerivedNode<i32> = effect!(|a| *a.get() * 10);
-                let runs: SourceNode<u32> = effect!(0);
-                let d: DerivedNode<i32> = effect!(|b, c| {
+                let a: SourceNode<i32> = node!(1);
+                let b: DerivedNode<i32> = node!(|a| *a.get() + 1);
+                let c: DerivedNode<i32> = node!(|a| *a.get() * 10);
+                let runs: SourceNode<u32> = node!(0);
+                let d: DerivedNode<i32> = node!(|b, c| {
                     runs.update(|n: &u32| n + 1);
                     *b.get() + *c.get()
                 });
@@ -66,9 +66,9 @@ fn case_c_clamp_cycle() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (x, runs, _clamp): (SourceNode<i32>, SourceNode<u32>, DerivedNode<()>) = scope.batch(|| {
-                let x: SourceNode<i32> = effect!(0);
-                let runs: SourceNode<u32> = effect!(0);
-                let clamp: DerivedNode<()> = effect!(|x| {
+                let x: SourceNode<i32> = node!(0);
+                let runs: SourceNode<u32> = node!(0);
+                let clamp: DerivedNode<()> = node!(|x| {
                     runs.update(|n: &u32| n + 1);
                     if *x.get() > 10 {
                         x.set(10);
@@ -90,11 +90,11 @@ fn case_h_cycle_sibling() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (x, shown, _clamp): (SourceNode<i32>, DerivedNode<i32>, DerivedNode<()>) = scope.batch(|| {
-                let x: SourceNode<i32> = effect!(0);
-                let clamp: DerivedNode<()> = effect!(|x| if *x.get() > 10 {
+                let x: SourceNode<i32> = node!(0);
+                let clamp: DerivedNode<()> = node!(|x| if *x.get() > 10 {
                     x.set(10);
                 });
-                let shown: DerivedNode<i32> = effect!(|x| *x.get());
+                let shown: DerivedNode<i32> = node!(|x| *x.get());
                 x.set(15);
                 (x, shown, clamp)
             });
@@ -111,9 +111,9 @@ fn case_m_clamp_through_memo() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (x, doubled, _clamp): (SourceNode<i32>, DerivedNode<i32>, DerivedNode<()>) = scope.batch(|| {
-                let x: SourceNode<i32> = effect!(0);
-                let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
-                let clamp: DerivedNode<()> = effect!(|doubled| if *doubled.get() > 20 {
+                let x: SourceNode<i32> = node!(0);
+                let doubled: DerivedNode<i32> = node!(|x| *x.get() * 2);
+                let clamp: DerivedNode<()> = node!(|doubled| if *doubled.get() > 20 {
                     x.set(10);
                 });
                 x.set(15);
@@ -139,17 +139,17 @@ fn case_n_created_mid_propagation() {
                 DerivedNode<i32>,
                 DerivedNode<()>,
             ) = scope.batch(|| {
-                let a: SourceNode<i32> = effect!(1);
-                let slow: DerivedNode<i32> = effect!(|a| {
+                let a: SourceNode<i32> = node!(1);
+                let slow: DerivedNode<i32> = node!(|a| {
                     started.store(true, Ordering::SeqCst);
                     wait_for(go); // still running while `m` is created
                     *a.get()
                 });
-                let holder: SourceNode<Option<DerivedNode<i32>>> = effect!(None);
-                let m_runs: SourceNode<u32> = effect!(0);
-                let maker: DerivedNode<()> = effect!(|a| {
+                let holder: SourceNode<Option<DerivedNode<i32>>> = node!(None);
+                let m_runs: SourceNode<u32> = node!(0);
+                let maker: DerivedNode<()> = node!(|a| {
                     wait_for(started);
-                    holder.set(Some(effect!(|slow| {
+                    holder.set(Some(node!(|slow| {
                         m_runs.update(|n: &u32| n + 1);
                         *slow.get() + 1
                     })));
@@ -172,9 +172,9 @@ fn case_p_unconditional_writeback() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (x, doubled, _back): (SourceNode<i32>, DerivedNode<i32>, DerivedNode<()>) = scope.batch(|| {
-                let x: SourceNode<i32> = effect!(0);
-                let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
-                let back: DerivedNode<()> = effect!(|doubled| x.set(*doubled.get() / 2 + 1));
+                let x: SourceNode<i32> = node!(0);
+                let doubled: DerivedNode<i32> = node!(|x| *x.get() * 2);
+                let back: DerivedNode<()> = node!(|doubled| x.set(*doubled.get() / 2 + 1));
                 x.set(5);
                 (x, doubled, back)
             });
@@ -191,10 +191,10 @@ fn case_r_equal_parent_stops_propagation() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, runs, _e): (SourceNode<i32>, SourceNode<u32>, DerivedNode<()>) = scope.batch(|| {
-                let a: SourceNode<i32> = effect!(1);
-                let parity: DerivedNode<i32> = effect!(|a| *a.get() % 2, equals = lithia::eq);
-                let runs: SourceNode<u32> = effect!(0);
-                let e: DerivedNode<()> = effect!(|parity| runs.update(|n: &u32| n + 1));
+                let a: SourceNode<i32> = node!(1);
+                let parity: DerivedNode<i32> = node!(|a| *a.get() % 2, equals = lithia::eq);
+                let runs: SourceNode<u32> = node!(0);
+                let e: DerivedNode<()> = node!(|parity| runs.update(|n: &u32| n + 1));
                 (a, runs, e)
             });
             scope.flush();
@@ -213,17 +213,17 @@ fn case_t_cut_writer_releases_children() {
             let scope: ModelScope = ModelScope::new();
             let (x, y, shown, _clamp): (SourceNode<i32>, SourceNode<i32>, DerivedNode<i32>, DerivedNode<bool>) = scope
                 .batch(|| {
-                    let x: SourceNode<i32> = effect!(0);
-                    let y: SourceNode<i32> = effect!(0);
-                    let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
-                    let clamp: DerivedNode<bool> = effect!(|doubled| {
+                    let x: SourceNode<i32> = node!(0);
+                    let y: SourceNode<i32> = node!(0);
+                    let doubled: DerivedNode<i32> = node!(|x| *x.get() * 2);
+                    let clamp: DerivedNode<bool> = node!(|doubled| {
                         let over: bool = *doubled.get() > 20;
                         if over {
                             x.set(10);
                         }
                         over
                     });
-                    let shown: DerivedNode<i32> = effect!(|clamp, y| *y.get());
+                    let shown: DerivedNode<i32> = node!(|clamp, y| *y.get());
                     x.set(15);
                     (x, y, shown, clamp)
                 });
@@ -242,9 +242,9 @@ fn case_v_reflow() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, runs, _child): (SourceNode<i32>, SourceNode<u32>, DerivedNode<()>) = scope.batch(|| {
-                let a: SourceNode<i32> = effect!(1, equals = lithia::eq);
-                let runs: SourceNode<u32> = effect!(0);
-                let child: DerivedNode<()> = effect!(|a| runs.update(|n: &u32| n + 1));
+                let a: SourceNode<i32> = node!(1, equals = lithia::eq);
+                let runs: SourceNode<u32> = node!(0);
+                let child: DerivedNode<()> = node!(|a| runs.update(|n: &u32| n + 1));
                 (a, runs, child)
             });
             scope.flush();
@@ -271,11 +271,11 @@ fn case_w_reflow_from_its_own_body() {
                 DerivedNode<u32>,
                 DerivedNode<()>,
             ) = scope.batch(|| {
-                let me: SourceNode<Option<DerivedNode<u32>>> = effect!(None);
-                let tick: SourceNode<u32> = effect!(0);
-                let body_runs: SourceNode<u32> = effect!(0);
-                let child_runs: SourceNode<u32> = effect!(0);
-                let node: DerivedNode<u32> = effect!(
+                let me: SourceNode<Option<DerivedNode<u32>>> = node!(None);
+                let tick: SourceNode<u32> = node!(0);
+                let body_runs: SourceNode<u32> = node!(0);
+                let child_runs: SourceNode<u32> = node!(0);
+                let node: DerivedNode<u32> = node!(
                     |tick| {
                         body_runs.update(|n: &u32| n + 1);
                         if let Some(handle) = &*me.get() {
@@ -285,7 +285,7 @@ fn case_w_reflow_from_its_own_body() {
                     },
                     equals = lithia::eq
                 );
-                let child: DerivedNode<()> = effect!(|node| child_runs.update(|n: &u32| n + 1));
+                let child: DerivedNode<()> = node!(|node| child_runs.update(|n: &u32| n + 1));
                 (me, tick, body_runs, child_runs, node, child)
             });
             scope.flush();
@@ -314,13 +314,13 @@ fn case_j_an_effect_lives_while_its_parent_can_change() {
                 SourceNode<u32>,
                 DerivedNode<()>,
             ) = scope.batch(|| {
-                let count: SourceNode<i32> = effect!(0);
-                let runs: SourceNode<u32> = effect!(0);
-                let local: SourceNode<i32> = effect!(0);
-                let scoped_runs: SourceNode<u32> = effect!(0);
-                effect!(|count| runs.update(|n: &u32| n + 1));
-                effect!(|local| runs.update(|n: &u32| n + 1));
-                let scoped: DerivedNode<()> = effect!(|count| scoped_runs.update(|n: &u32| n + 1)).scoped();
+                let count: SourceNode<i32> = node!(0);
+                let runs: SourceNode<u32> = node!(0);
+                let local: SourceNode<i32> = node!(0);
+                let scoped_runs: SourceNode<u32> = node!(0);
+                node!(|count| runs.update(|n: &u32| n + 1));
+                node!(|local| runs.update(|n: &u32| n + 1));
+                let scoped: DerivedNode<()> = node!(|count| scoped_runs.update(|n: &u32| n + 1)).scoped();
                 (count, runs, local, scoped_runs, scoped)
             });
             scope.flush();
@@ -343,10 +343,10 @@ fn case_e_failure_follows_a_failing_parent() {
             let scope: ModelScope = ModelScope::new();
             let (n, inv, strict, lenient): (SourceNode<i32>, DerivedNode<i32>, DerivedNode<i32>, DerivedNode<i32>) =
                 scope.batch(|| {
-                    let n: SourceNode<i32> = effect!(1);
-                    let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get());
-                    let strict: DerivedNode<i32> = effect!(|inv| *inv.get() + 1, resilience = NONE);
-                    let lenient: DerivedNode<i32> = effect!(|inv| *inv.get() + 2);
+                    let n: SourceNode<i32> = node!(1);
+                    let inv: DerivedNode<i32> = node!(|n| 100 / *n.get());
+                    let strict: DerivedNode<i32> = node!(|inv| *inv.get() + 1, resilience = NONE);
+                    let lenient: DerivedNode<i32> = node!(|inv| *inv.get() + 2);
                     (n, inv, strict, lenient)
                 });
             scope.flush();
@@ -370,9 +370,9 @@ fn case_x_defer_feeds_back_once() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (x, runs, _bump): (SourceNode<u32>, SourceNode<u32>, DerivedNode<()>) = scope.batch(|| {
-                let x: SourceNode<u32> = effect!(0);
-                let runs: SourceNode<u32> = effect!(0);
-                let bump: DerivedNode<()> = effect!(|x| {
+                let x: SourceNode<u32> = node!(0);
+                let runs: SourceNode<u32> = node!(0);
+                let bump: DerivedNode<()> = node!(|x| {
                     runs.update(|n: &u32| n + 1);
                     if *x.get() == 0 {
                         let later: SourceNode<u32> = x.clone();
@@ -396,14 +396,14 @@ fn case_d_a_write_supersedes_a_suspended_run() {
             let scope: ModelScope = ModelScope::new();
             let (id, name, seen, _view): (SourceNode<u32>, DerivedNode<String>, SourceNode<String>, DerivedNode<()>) =
                 scope.batch(|| {
-                    let id: SourceNode<u32> = effect!(7);
-                    let name: DerivedNode<String> = effect!(async |id| {
+                    let id: SourceNode<u32> = node!(7);
+                    let name: DerivedNode<String> = node!(async |id| {
                         let value: u32 = *id.get();
                         SuspendOnce(false).await;
                         format!("user-{value}")
                     });
-                    let seen: SourceNode<String> = effect!(String::new());
-                    let view: DerivedNode<()> = effect!(|name| seen.set((*name.get()).clone()));
+                    let seen: SourceNode<String> = node!(String::new());
+                    let view: DerivedNode<()> = node!(|name| seen.set((*name.get()).clone()));
                     (id, name, seen, view)
                 });
             model::run_one();
@@ -423,11 +423,11 @@ fn case_g_a_write_stops_an_async_source() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (slow, copy): (SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
-                let slow: SourceNode<u32> = effect!(async {
+                let slow: SourceNode<u32> = node!(async {
                     SuspendOnce(false).await;
                     1
                 });
-                let copy: DerivedNode<u32> = effect!(|slow| *slow.get());
+                let copy: DerivedNode<u32> = node!(|slow| *slow.get());
                 (slow, copy)
             });
             model::run_one();

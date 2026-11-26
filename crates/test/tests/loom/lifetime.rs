@@ -12,9 +12,9 @@ fn dispose_during_a_run_settles() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, d, tail): (SourceNode<i32>, DerivedNode<i32>, DerivedNode<i32>) = scope.batch(|| {
-                let a: SourceNode<i32> = effect!(1);
-                let d: DerivedNode<i32> = effect!(|a| *a.get() + 1);
-                let tail: DerivedNode<i32> = effect!(|d| *d.get() * 10);
+                let a: SourceNode<i32> = node!(1);
+                let d: DerivedNode<i32> = node!(|a| *a.get() + 1);
+                let tail: DerivedNode<i32> = node!(|d| *d.get() * 10);
                 (a, d, tail)
             });
             scope.batch(|| a.set(2));
@@ -35,10 +35,10 @@ fn a_write_frames_through_a_node_being_disposed() {
     check(|| {
         let scope: ModelScope = ModelScope::new();
         let (x, m, c): (SourceNode<u32>, DerivedNode<u32>, DerivedNode<u32>) = scope.batch(|| {
-            let x: SourceNode<u32> = effect!(1);
-            let m: DerivedNode<u32> = effect!(|x| *x.get() + 1);
+            let x: SourceNode<u32> = node!(1);
+            let m: DerivedNode<u32> = node!(|x| *x.get() + 1);
             // Reading the ghost fails, so the survivor's rerun counts it as 0.
-            let c: DerivedNode<u32> = effect!(|x, m| *x.get() + m.try_get().map_or(0, |v: std::sync::Arc<u32>| *v));
+            let c: DerivedNode<u32> = node!(|x, m| *x.get() + m.try_get().map_or(0, |v: std::sync::Arc<u32>| *v));
             (x, m, c)
         });
         scope.flush();
@@ -59,11 +59,11 @@ fn a_write_frames_through_a_node_being_disposed() {
 fn a_last_handle_drop_races_a_creation() {
     check(|| {
         let scope: ModelScope = ModelScope::new();
-        let (n, seen): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| (effect!(1), effect!(0)));
+        let (n, seen): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| (node!(1), node!(0)));
         let (other, seen_there): (SourceNode<u32>, SourceNode<u32>) = (n.clone(), seen.clone());
         let creator: loom::thread::JoinHandle<ModelScope> = loom::thread::spawn(move || {
             let there: ModelScope = ModelScope::new();
-            let made: DerivedNode<()> = there.batch(|| effect!(|other| seen_there.set(*other.get())));
+            let made: DerivedNode<()> = there.batch(|| node!(|other| seen_there.set(*other.get())));
             drop(other);
             drop(made);
             there
@@ -82,11 +82,11 @@ fn a_last_handle_drop_races_a_creation() {
 fn a_creation_races_the_disposal_of_its_only_parent() {
     check(|| {
         let scope: ModelScope = ModelScope::new();
-        let p: SourceNode<u32> = scope.batch(|| effect!(1));
+        let p: SourceNode<u32> = scope.batch(|| node!(1));
         let parent: SourceNode<u32> = p.clone();
         let creator: loom::thread::JoinHandle<(ModelScope, DerivedNode<u32>)> = loom::thread::spawn(move || {
             let there: ModelScope = ModelScope::new();
-            let orphan: DerivedNode<u32> = there.batch(|| effect!(|parent| *parent.get()));
+            let orphan: DerivedNode<u32> = there.batch(|| node!(|parent| *parent.get()));
             (there, orphan)
         });
         lithia::dispose(&p);
@@ -104,11 +104,11 @@ fn a_creation_races_the_disposal_of_one_parent() {
     check(|| {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
-            let (p, k): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| (effect!(1), effect!(2)));
+            let (p, k): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| (node!(1), node!(2)));
             let (parent, live): (SourceNode<u32>, SourceNode<u32>) = (p.clone(), k.clone());
             let creator: loom::thread::JoinHandle<(ModelScope, DerivedNode<u32>)> = loom::thread::spawn(move || {
                 let there: ModelScope = ModelScope::new();
-                let strict: DerivedNode<u32> = there.batch(|| effect!(|parent, live| *live.get(), resilience = NONE));
+                let strict: DerivedNode<u32> = there.batch(|| node!(|parent, live| *live.get(), resilience = NONE));
                 (there, strict)
             });
             lithia::dispose(&p);
@@ -132,11 +132,11 @@ fn a_moved_out_handle_drops_while_its_lease_ends() {
             let slot: std::sync::Arc<std::sync::Mutex<Option<SourceNode<u32>>>> = Default::default();
             let out: std::sync::Arc<std::sync::Mutex<Option<SourceNode<u32>>>> = slot.clone();
             let block: SourceNode<()> = scope.batch(|| {
-                let t: SourceNode<u32> = effect!(1);
-                effect!(|t| {
+                let t: SourceNode<u32> = node!(1);
+                node!(|t| {
                     let _ = t.get();
                 });
-                effect!(async move {
+                node!(async move {
                     *out.lock().unwrap() = Some(t);
                 })
             });
@@ -166,19 +166,19 @@ fn a_moved_out_handle_drops_while_its_lease_ends_and_support_has_let_go() {
                 Arc::new((loom::sync::Mutex::new(None), loom::sync::Condvar::new()));
             let out: Arc<(loom::sync::Mutex<Option<SourceNode<u32>>>, loom::sync::Condvar)> = slot.clone();
             let (y, z): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
-                let t: SourceNode<u32> = effect!(1);
-                let y: SourceNode<u32> = effect!(1);
-                let z: SourceNode<u32> = effect!(1);
-                let e: DerivedNode<u32> = effect!(|t| *t.get());
-                effect!(|e, y| {
+                let t: SourceNode<u32> = node!(1);
+                let y: SourceNode<u32> = node!(1);
+                let z: SourceNode<u32> = node!(1);
+                let e: DerivedNode<u32> = node!(|t| *t.get());
+                node!(|e, y| {
                     let _ = (e.get(), y.get());
                 });
-                let block: SourceNode<()> = effect!(async move {
+                let block: SourceNode<()> = node!(async move {
                     *out.0.lock().unwrap() = Some(t);
                     out.1.notify_one();
                 });
                 // Keeps the block alive without anchoring it, so support lets go of `e`.
-                effect!(|z| {
+                node!(|z| {
                     let _ = (z.get(), block.get());
                 });
                 (y, z)
@@ -210,8 +210,8 @@ fn a_parent_and_its_child_drop_their_last_handles_at_once() {
     check(|| {
         let scope: ModelScope = ModelScope::new();
         let (p, c): (SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
-            let p: SourceNode<u32> = effect!(1);
-            let c: DerivedNode<u32> = effect!(|p| *p.get());
+            let p: SourceNode<u32> = node!(1);
+            let c: DerivedNode<u32> = node!(|p| *p.get());
             (p, c)
         });
         scope.flush();
@@ -230,13 +230,13 @@ fn anchors_cross_zero_while_a_sweep_runs() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (s, trigger): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
-                let s: SourceNode<u32> = effect!(1);
-                let trigger: SourceNode<u32> = effect!(0);
-                let m: DerivedNode<u32> = effect!(|s| *s.get());
-                effect!(|m| {
+                let s: SourceNode<u32> = node!(1);
+                let trigger: SourceNode<u32> = node!(0);
+                let m: DerivedNode<u32> = node!(|s| *s.get());
+                node!(|m| {
                     let _ = m.get();
                 });
-                effect!(|trigger| {
+                node!(|trigger| {
                     let _ = trigger.get();
                     let _ = m.accessor(); // a temporary anchor on `m`
                 });
@@ -258,10 +258,10 @@ fn a_let_go_races_another_sweeps_walk() {
     check(|| {
         let scope: ModelScope = ModelScope::new();
         let (s, u): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
-            let s: SourceNode<u32> = effect!(1);
-            let u: SourceNode<u32> = effect!(2);
-            let m: DerivedNode<u32> = effect!(|s| *s.get());
-            effect!(|m, u| {
+            let s: SourceNode<u32> = node!(1);
+            let u: SourceNode<u32> = node!(2);
+            let m: DerivedNode<u32> = node!(|s| *s.get());
+            node!(|m, u| {
                 let _ = (m.get(), u.get());
             });
             (s, u)
@@ -283,12 +283,12 @@ fn a_sweep_inside_an_update_closure() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (x, held): (SourceNode<u32>, std::sync::Mutex<Option<SourceNode<u32>>>) = scope.batch(|| {
-                let x: SourceNode<u32> = effect!(0);
-                let t: SourceNode<u32> = effect!(1);
-                effect!(|x| {
+                let x: SourceNode<u32> = node!(0);
+                let t: SourceNode<u32> = node!(1);
+                node!(|x| {
                     let _ = x.get();
                 });
-                effect!(|t| {
+                node!(|t| {
                     let _ = t.get();
                 });
                 (x, std::sync::Mutex::new(Some(t)))
@@ -314,10 +314,10 @@ fn a_sweep_alongside_a_resilience_decision() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (n, k): (SourceNode<i32>, SourceNode<i32>) = scope.batch(|| {
-                let n: SourceNode<i32> = effect!(1);
-                let k: SourceNode<i32> = effect!(1);
-                let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get());
-                effect!(|inv, k| *inv.get() + *k.get(), resilience = NONE);
+                let n: SourceNode<i32> = node!(1);
+                let k: SourceNode<i32> = node!(1);
+                let inv: DerivedNode<i32> = node!(|n| 100 / *n.get());
+                node!(|inv, k| *inv.get() + *k.get(), resilience = NONE);
                 drop(inv);
                 (n, k)
             });
@@ -337,11 +337,11 @@ fn case_as_a_move_body_takes_the_only_handle() {
     check(|| {
         let scope: ModelScope = ModelScope::new();
         let (a, b, k, seen): (SourceNode<u32>, SourceNode<u32>, SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
-            let a: SourceNode<u32> = effect!(1);
-            let b: SourceNode<u32> = effect!(0);
-            let k: SourceNode<u32> = effect!(0);
-            let seen: SourceNode<u32> = effect!(0);
-            effect!(|b, k| {
+            let a: SourceNode<u32> = node!(1);
+            let b: SourceNode<u32> = node!(0);
+            let k: SourceNode<u32> = node!(0);
+            let seen: SourceNode<u32> = node!(0);
+            node!(|b, k| {
                 let _ = k.get();
                 seen.set(*b.get());
             });
@@ -351,7 +351,7 @@ fn case_as_a_move_body_takes_the_only_handle() {
         let other: loom::thread::JoinHandle<()> = loom::thread::spawn(move || drop(k));
         let from_a: SourceNode<u32> = a.clone();
         scope.batch(move || {
-            effect!(move |from_a| b.set(*from_a.get() * 2));
+            node!(move |from_a| b.set(*from_a.get() * 2));
         });
         other.join().unwrap();
         scope.flush();
@@ -369,10 +369,10 @@ fn case_at_a_scoped_nodes_last_handle_races_an_upstream_sweep() {
     check(|| {
         let scope: ModelScope = ModelScope::new();
         let (rates, input, price): (SourceNode<u32>, SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
-            let rates: SourceNode<u32> = effect!(2);
-            let input: SourceNode<u32> = effect!(3);
-            let price: DerivedNode<u32> = effect!(|input, rates| *input.get() * *rates.get()).scoped();
-            effect!(|price, rates| {
+            let rates: SourceNode<u32> = node!(2);
+            let input: SourceNode<u32> = node!(3);
+            let price: DerivedNode<u32> = node!(|input, rates| *input.get() * *rates.get()).scoped();
+            node!(|price, rates| {
                 let _ = (price.get(), rates.get());
             });
             (rates, input, price)

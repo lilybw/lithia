@@ -44,23 +44,22 @@ impl<'ast> Visit<'ast> for YieldScan {
     }
 
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
-        // A nested `effect!`'s yields are its own.
-        let nested: bool =
-            node.path.segments.last().is_some_and(|segment: &syn::PathSegment| segment.ident == "effect");
+        // A nested `node!`'s yields are its own.
+        let nested: bool = node.path.segments.last().is_some_and(|segment: &syn::PathSegment| segment.ident == "node");
         if !nested && self.in_macro.is_none() {
             self.in_macro = yield_in(node.tokens.clone());
         }
     }
 }
 
-/// The first `yield` in a macro's tokens, outside any `effect!` call in them.
+/// The first `yield` in a macro's tokens, outside any `node!` call in them.
 fn yield_in(tokens: TokenStream) -> Option<Span> {
     let trees: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
     let mut index: usize = 0;
     while index < trees.len() {
         match &trees[index] {
             proc_macro2::TokenTree::Ident(ident) if ident == "yield" => return Some(ident.span()),
-            proc_macro2::TokenTree::Ident(ident) if ident == "effect" => {
+            proc_macro2::TokenTree::Ident(ident) if ident == "node" => {
                 let bang: bool =
                     matches!(trees.get(index + 1), Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '!');
                 if bang {
@@ -86,11 +85,11 @@ pub(super) fn scan_yields(visit: impl FnOnce(&mut YieldScan)) -> syn::Result<boo
     visit(&mut scan);
     let mut errors: Option<syn::Error> = None;
     if let Some(span) = scan.nested {
-        let message: &str = "`yield` publishes the enclosing effect! body's items and only works directly in that body";
+        let message: &str = "`yield` publishes the enclosing node! body's items and only works directly in that body";
         combine(&mut errors, syn::Error::new(span, message));
     }
     if let Some(span) = scan.in_macro {
-        let message: &str = "effect! cannot see a `yield` inside a macro call such as `select!`; \
+        let message: &str = "node! cannot see a `yield` inside a macro call such as `select!`; \
                              yield what the macro returns, after it";
         combine(&mut errors, syn::Error::new(span, message));
     }

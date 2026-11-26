@@ -1,4 +1,4 @@
-// effect!(|n| *n.get() * factor, key = id)
+// node!(|n| *n.get() * factor, key = id)
 
 {
     fn __lithia_scope () {

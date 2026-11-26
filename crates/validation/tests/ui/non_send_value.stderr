@@ -1,8 +1,8 @@
 error[E0277]: `Rc<{integer}>` cannot be a node value: values must be `Send + Sync + 'static`
  --> tests/ui/non_send_value.rs:9:13
   |
-9 |     let _ = effect!(Rc::new(1));
-  |             ^^^^^^^^^^^^^^^^^^^ the trait `NodeValue` is not implemented for `Rc<{integer}>`
+9 |     let _ = node!(Rc::new(1));
+  |             ^^^^^^^^^^^^^^^^^ the trait `NodeValue` is not implemented for `Rc<{integer}>`
   |
   = note: replace `Rc` with `Arc`, and `RefCell` or `Cell` with `Mutex`, `RwLock` or an atomic
 note: required by a bound in `lithia::__private::source`
@@ -10,4 +10,4 @@ note: required by a bound in `lithia::__private::source`
   |
   | pub fn source<K: NodeValue>(site: &'static Site, value: K, options: Options<K>) -> SourceNode<K> {
   |                  ^^^^^^^^^ required by this bound in `source`
-  = note: this error originates in the macro `effect` (in Nightly builds, run with -Z macro-backtrace for more info)
+  = note: this error originates in the macro `node` (in Nightly builds, run with -Z macro-backtrace for more info)

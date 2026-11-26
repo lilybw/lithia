@@ -1,11 +1,11 @@
 error: `resilience` applies to derived nodes only; a source node has no parents
- --> tests/ui/parent_option_on_source.rs:7:24
+ --> tests/ui/parent_option_on_source.rs:7:22
   |
-7 |     let _ = effect!(0, resilience = NONE);
-  |                        ^^^^^^^^^^
+7 |     let _ = node!(0, resilience = NONE);
+  |                      ^^^^^^^^^^
 
 error: `batches` applies to derived nodes only; a source node has no parents
- --> tests/ui/parent_option_on_source.rs:8:34
+ --> tests/ui/parent_option_on_source.rs:8:32
   |
-8 |     let _ = effect!(async { 1 }, batches = WHOLE);
-  |                                  ^^^^^^^
+8 |     let _ = node!(async { 1 }, batches = WHOLE);
+  |                                ^^^^^^^

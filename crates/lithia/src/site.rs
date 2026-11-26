@@ -13,13 +13,13 @@ pub(crate) type SiteKey = usize;
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct Site {
-    /// Source file of the `effect!` call.
+    /// Source file of the `node!` call.
     pub file: &'static str,
-    /// Line of the `effect!` call.
+    /// Line of the `node!` call.
     pub line: u32,
-    /// Column of the `effect!` call.
+    /// Column of the `node!` call.
     pub column: u32,
-    /// Module path of the `effect!` call.
+    /// Module path of the `node!` call.
     pub module: &'static str,
     /// Path of the enclosing function, resolved on first call.
     pub function: fn() -> &'static str,
@@ -50,7 +50,7 @@ impl Default for SiteCounter {
 }
 
 impl Site {
-    /// Builds a site; only `effect!` does, so a field can be added without breaking callers.
+    /// Builds a site; only `node!` does, so a field can be added without breaking callers.
     #[doc(hidden)]
     pub const fn __new(
         file: &'static str,
@@ -84,7 +84,7 @@ impl fmt::Display for Site {
     }
 }
 
-/// Name of the marker function `effect!` declares to find its enclosing function.
+/// Name of the marker function `node!` declares to find its enclosing function.
 pub(crate) const SCOPE_MARKER: &str = "__lithia_scope";
 
 /// Trims the marker function's own name off a `type_name`, leaving the enclosing path.

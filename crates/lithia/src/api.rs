@@ -100,7 +100,7 @@ pub fn status<N: Readable>(node: &N) -> Status {
 }
 
 /// Comparator for the `equals` option, using `PartialEq`.
-/// `let n: SourceNode<i32> = effect!(0, equals = lithia::eq);`
+/// `let n: SourceNode<i32> = node!(0, equals = lithia::eq);`
 pub fn eq<K: PartialEq>(old: &K, new: &K) -> bool {
     old == new
 }

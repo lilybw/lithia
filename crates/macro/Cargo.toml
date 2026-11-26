@@ -1,6 +1,6 @@
 [package]
 name = "lithia-macro"
-description = "The effect! macro and the #[lithia::main] and #[lithia::test] attributes."
+description = "The node! macro and the #[lithia::main] and #[lithia::test] attributes."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

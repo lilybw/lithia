@@ -1,4 +1,4 @@
-// effect!(row.clone(), key = row.id)
+// node!(row.clone(), key = row.id)
 
 {
     fn __lithia_scope () {

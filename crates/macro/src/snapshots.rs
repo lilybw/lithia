@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! Snapshots of `effect!`'s expansions, one per body form, in `snapshots/`; a change to an
+//! Snapshots of `node!`'s expansions, one per body form, in `snapshots/`; a change to an
 //! expansion shows in review. `LITHIA_SNAPSHOTS=overwrite cargo test -p lithia-macro` rewrites them.
 
 use std::fmt::Write as _;
@@ -30,9 +30,9 @@ fn expansions_match_their_snapshots() {
     let dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("snapshots");
     let mut stale: Vec<&str> = Vec::new();
     for (name, input) in CASES {
-        let parsed: crate::effect::EffectInput = syn::parse_str(input).expect("a snapshot case parses");
-        let expansion: String = pretty(crate::effect::expand(parsed).expect("a snapshot case expands"));
-        let text: String = format!("// effect!({input})\n\n{expansion}");
+        let parsed: crate::node::NodeInput = syn::parse_str(input).expect("a snapshot case parses");
+        let expansion: String = pretty(crate::node::expand(parsed).expect("a snapshot case expands"));
+        let text: String = format!("// node!({input})\n\n{expansion}");
         let path: PathBuf = dir.join(format!("{name}.rs.txt"));
         if overwrite {
             std::fs::write(&path, &text).expect("the snapshot is written");

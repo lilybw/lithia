@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use lithia::{Changes, DerivedNode, SourceNode, Status, effect};
+use lithia::{Changes, DerivedNode, SourceNode, Status, node};
 
 /// A value that counts its drops; every two compare equal.
 struct Counted(Arc<AtomicUsize>);
@@ -26,7 +26,7 @@ impl PartialEq for Counted {
 
 #[lithia::test]
 async fn changes_end_when_the_node_is_freed() {
-    let n: SourceNode<u32> = effect!(1);
+    let n: SourceNode<u32> = node!(1);
     let mut stream: Changes<u32> = n.changes();
     assert_eq!(*stream.next().await.unwrap(), 1);
     drop(n);
@@ -35,7 +35,7 @@ async fn changes_end_when_the_node_is_freed() {
 
 #[lithia::test]
 async fn changes_on_a_ghost_end_at_once() {
-    let n: SourceNode<u32> = effect!(1, disposed = MASK);
+    let n: SourceNode<u32> = node!(1, disposed = MASK);
     lithia::dispose(&n);
     let mut stream: Changes<u32> = n.changes();
     assert!(stream.next().await.is_none());
@@ -44,9 +44,9 @@ async fn changes_on_a_ghost_end_at_once() {
 
 #[lithia::test]
 async fn children_of_a_masked_ghost_keep_working() {
-    let frozen: SourceNode<i32> = effect!(5, disposed = MASK);
-    let k: SourceNode<i32> = effect!(1);
-    let child: DerivedNode<i32> = effect!(|frozen, k| *frozen.get() + *k.get());
+    let frozen: SourceNode<i32> = node!(5, disposed = MASK);
+    let k: SourceNode<i32> = node!(1);
+    let child: DerivedNode<i32> = node!(|frozen, k| *frozen.get() + *k.get());
     lithia::flush().await;
     lithia::dispose(&frozen);
     lithia::flush().await;
@@ -55,14 +55,14 @@ async fn children_of_a_masked_ghost_keep_working() {
     lithia::flush().await;
     assert_eq!(*child.get(), 15);
     // A new child behaves as the surviving one does.
-    let late: DerivedNode<i32> = effect!(|frozen, k| *frozen.get() * *k.get());
+    let late: DerivedNode<i32> = node!(|frozen, k| *frozen.get() * *k.get());
     lithia::flush().await;
     assert_eq!(*late.get(), 50);
     k.set(2);
     lithia::flush().await;
     assert_eq!((*child.get(), *late.get()), (7, 10));
     // With only the ghost for a parent, it is disposed at once, as disposal would have done.
-    let orphan: DerivedNode<i32> = effect!(|frozen| *frozen.get());
+    let orphan: DerivedNode<i32> = node!(|frozen| *frozen.get());
     assert!(matches!(lithia::status(&orphan), Status::Ghost));
     lithia::flush().await;
     assert!(orphan.try_get().is_err());
@@ -70,10 +70,10 @@ async fn children_of_a_masked_ghost_keep_working() {
 
 #[lithia::test]
 async fn a_failing_ghost_fails_non_resilient_children() {
-    let doomed: SourceNode<i32> = effect!(1);
-    let k: SourceNode<i32> = effect!(1);
-    let strict: DerivedNode<i32> = effect!(|doomed, k| *k.get(), resilience = NONE);
-    let lenient: DerivedNode<i32> = effect!(|doomed, k| *k.get());
+    let doomed: SourceNode<i32> = node!(1);
+    let k: SourceNode<i32> = node!(1);
+    let strict: DerivedNode<i32> = node!(|doomed, k| *k.get(), resilience = NONE);
+    let lenient: DerivedNode<i32> = node!(|doomed, k| *k.get());
     lithia::flush().await;
     lithia::dispose(&doomed);
     lithia::flush().await;
@@ -87,9 +87,9 @@ async fn a_failing_ghost_fails_non_resilient_children() {
     }
     assert!(matches!(lithia::status(&lenient), Status::Ready), "the body never reads the ghost");
     // New children behave as the surviving ones do.
-    let late_strict: DerivedNode<i32> = effect!(|doomed, k| *k.get(), resilience = NONE);
-    let late_lenient: DerivedNode<i32> = effect!(|doomed, k| *k.get());
-    let late_reader: DerivedNode<i32> = effect!(|doomed, k| *doomed.get() + *k.get());
+    let late_strict: DerivedNode<i32> = node!(|doomed, k| *k.get(), resilience = NONE);
+    let late_lenient: DerivedNode<i32> = node!(|doomed, k| *k.get());
+    let late_reader: DerivedNode<i32> = node!(|doomed, k| *doomed.get() + *k.get());
     lithia::flush().await;
     match lithia::status(&late_strict) {
         Status::Failed(failure) => assert_eq!(failure.causes[0].message, "parent disposed"),
@@ -102,9 +102,9 @@ async fn a_failing_ghost_fails_non_resilient_children() {
 #[lithia::test]
 async fn live_nodes_counts_disposals_and_drops() {
     let base: usize = lithia::test::live_nodes().await;
-    let root: SourceNode<u32> = effect!(1);
-    let a: DerivedNode<u32> = effect!(|root| *root.get());
-    let b: DerivedNode<u32> = effect!(|a| *a.get());
+    let root: SourceNode<u32> = node!(1);
+    let a: DerivedNode<u32> = node!(|root| *root.get());
+    let b: DerivedNode<u32> = node!(|a| *a.get());
     lithia::flush().await;
     assert_eq!(lithia::test::live_nodes().await, base + 3);
     lithia::dispose(&root);
@@ -117,10 +117,10 @@ async fn live_nodes_counts_disposals_and_drops() {
 
 #[lithia::test]
 async fn a_node_created_in_a_body_is_freed_when_the_value_lets_go() {
-    let n: SourceNode<u32> = effect!(1);
+    let n: SourceNode<u32> = node!(1);
     let base: usize = lithia::test::live_nodes().await;
-    let holder: DerivedNode<Option<SourceNode<u32>>> = effect!(|n| {
-        let inner: SourceNode<u32> = effect!(*n.get());
+    let holder: DerivedNode<Option<SourceNode<u32>>> = node!(|n| {
+        let inner: SourceNode<u32> = node!(*n.get());
         if *n.get() == 1 { Some(inner) } else { None }
     });
     lithia::flush().await;
@@ -136,21 +136,21 @@ async fn a_node_created_in_a_body_is_freed_when_the_value_lets_go() {
 
 #[lithia::test]
 async fn effects_held_in_a_value_stop_with_it() {
-    let rows: SourceNode<Vec<SourceNode<String>>> = effect!(Vec::new());
-    let printed: SourceNode<u32> = effect!(0);
-    let _printers: DerivedNode<Vec<DerivedNode<()>>> = effect!(|rows| {
+    let rows: SourceNode<Vec<SourceNode<String>>> = node!(Vec::new());
+    let printed: SourceNode<u32> = node!(0);
+    let _printers: DerivedNode<Vec<DerivedNode<()>>> = node!(|rows| {
         rows.get()
             .iter()
             .map(|row: &SourceNode<String>| {
                 let row: SourceNode<String> = row.clone();
-                effect!(|row| {
+                node!(|row| {
                     let _ = row.get();
                     printed.update(|n: &u32| n + 1);
                 })
             })
             .collect()
     });
-    let first: SourceNode<String> = effect!("a".to_string());
+    let first: SourceNode<String> = node!("a".to_string());
     rows.set(vec![first.clone()]);
     lithia::flush().await;
     assert_eq!(*printed.get(), 1);
@@ -165,8 +165,8 @@ async fn effects_held_in_a_value_stop_with_it() {
 #[lithia::test]
 async fn a_returned_node_keeps_its_parents_alive() {
     fn make() -> DerivedNode<Arc<str>> {
-        let name: SourceNode<String> = effect!("lithia".to_string());
-        effect!(|name| Arc::from(name.get().as_str()))
+        let name: SourceNode<String> = node!("lithia".to_string());
+        node!(|name| Arc::from(name.get().as_str()))
     }
     let made: DerivedNode<Arc<str>> = make();
     lithia::flush().await;
@@ -175,12 +175,12 @@ async fn a_returned_node_keeps_its_parents_alive() {
 
 #[lithia::test]
 async fn a_creator_decides_its_children_before_they_run() {
-    let input: SourceNode<u32> = effect!(0);
+    let input: SourceNode<u32> = node!(0);
     let seen: Arc<std::sync::Mutex<Vec<(u32, u32)>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let _creator: DerivedNode<()> = effect!(|input| {
+    let _creator: DerivedNode<()> = node!(|input| {
         let made_at: u32 = *input.get();
         // Rebuilt on every run: the old child must not see the input that replaces it.
-        effect!(|input| seen.lock().unwrap().push((*made_at, *input.get())));
+        node!(|input| seen.lock().unwrap().push((*made_at, *input.get())));
     });
     lithia::flush().await;
     for value in 1..=3u32 {
@@ -194,11 +194,11 @@ async fn a_creator_decides_its_children_before_they_run() {
 
 #[lithia::test]
 async fn a_keyed_child_never_runs_with_the_captures_its_creator_replaces() {
-    let input: SourceNode<u32> = effect!(0);
+    let input: SourceNode<u32> = node!(0);
     let seen: Arc<std::sync::Mutex<Vec<(u32, u32)>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let _creator: DerivedNode<()> = effect!(|input| {
+    let _creator: DerivedNode<()> = node!(|input| {
         let label: u32 = *input.get();
-        effect!(|input| seen.lock().unwrap().push((*label, *input.get())), key = 0u8);
+        node!(|input| seen.lock().unwrap().push((*label, *input.get())), key = 0u8);
     });
     lithia::flush().await;
     for value in 1..=3u32 {
@@ -215,11 +215,11 @@ async fn replaced_values_from_one_step_all_drop_once() {
     // More nodes than one gathered parcel holds, all replaced in the same propagation.
     const NODES: usize = 150;
     let dropped: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
-    let tick: SourceNode<u64> = effect!(0);
+    let tick: SourceNode<u64> = node!(0);
     let nodes: Vec<DerivedNode<Counted>> = (0..NODES)
         .map(|_| {
             let counter: Arc<AtomicUsize> = dropped.clone();
-            effect!(
+            node!(
                 |tick| {
                     let _ = tick.get();
                     Counted(counter.clone())
@@ -244,11 +244,11 @@ async fn replaced_values_from_one_step_all_drop_once() {
 #[lithia::test]
 async fn values_equals_discards_drop_once() {
     let dropped: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
-    let kept: SourceNode<Counted> = effect!(Counted(dropped.clone()), equals = lithia::eq);
+    let kept: SourceNode<Counted> = node!(Counted(dropped.clone()), equals = lithia::eq);
     for _ in 0..100 {
         kept.set(Counted(dropped.clone())); // equal: discarded, and dropped off the writing thread
     }
-    let plain: SourceNode<u64> = effect!(5, equals = lithia::eq);
+    let plain: SourceNode<u64> = node!(5, equals = lithia::eq);
     for _ in 0..100 {
         plain.set(5); // no drop glue: dropped at once
     }
@@ -262,7 +262,7 @@ async fn values_equals_discards_drop_once() {
 
 #[lithia::test]
 async fn a_stream_started_late_or_across_disposal_sees_the_right_values() {
-    let n: SourceNode<u32> = effect!(1);
+    let n: SourceNode<u32> = node!(1);
     for value in 2..=5 {
         n.set(value); // no stream yet: nothing to notify
     }
@@ -281,8 +281,8 @@ async fn a_stream_started_late_or_across_disposal_sees_the_right_values() {
 #[lithia::test]
 async fn disposal_ends_a_run_parked_on_a_future_that_never_wakes_it() {
     let base: usize = lithia::test::live_nodes().await;
-    let a: SourceNode<u32> = effect!(1);
-    let waiting: DerivedNode<u32> = effect!(async |a| {
+    let a: SourceNode<u32> = node!(1);
+    let waiting: DerivedNode<u32> = node!(async |a| {
         let value: u32 = *a.get();
         std::future::pending::<()>().await;
         value
@@ -302,9 +302,9 @@ async fn disposal_ends_a_run_parked_on_a_future_that_never_wakes_it() {
 
 #[lithia::test]
 async fn a_ghost_reports_the_status_its_disposed_option_names() {
-    let failing: SourceNode<u32> = effect!(1);
-    let masked: SourceNode<u32> = effect!(2, disposed = MASK);
-    let pending: SourceNode<u32> = effect!(3, disposed = PEND);
+    let failing: SourceNode<u32> = node!(1);
+    let masked: SourceNode<u32> = node!(2, disposed = MASK);
+    let pending: SourceNode<u32> = node!(3, disposed = PEND);
     for node in [&failing, &masked, &pending] {
         lithia::dispose(node);
     }

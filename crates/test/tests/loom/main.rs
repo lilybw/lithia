@@ -15,7 +15,7 @@ mod propagation;
 mod wakes;
 
 use lithia::__private::model::{self, ModelScope};
-use lithia::{DerivedNode, SourceNode, Status, effect};
+use lithia::{DerivedNode, SourceNode, Status, node};
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicBool, Ordering};
 

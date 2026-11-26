@@ -1,4 +1,4 @@
-// effect!(0)
+// node!(0)
 
 {
     fn __lithia_scope () {

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! Parsing and expansion of `effect!` (spec §3.1, §3.2, §4).
+//! Parsing and expansion of `node!` (spec §3.1, §3.2, §4).
 
 use std::collections::HashSet;
 
@@ -21,7 +21,7 @@ mod options;
 mod parse;
 mod yields;
 
-pub(crate) use parse::EffectInput;
+pub(crate) use parse::NodeInput;
 
 use emit::*;
 use keyed::*;
@@ -29,7 +29,7 @@ use options::*;
 use parse::*;
 use yields::*;
 
-pub(crate) fn expand(input: EffectInput) -> syn::Result<TokenStream> {
+pub(crate) fn expand(input: NodeInput) -> syn::Result<TokenStream> {
     let form: Form<'_> = input.form()?;
     let resolved: Resolved = resolve_options(&input, &form)?;
     let site: TokenStream = site(&input.tokens);

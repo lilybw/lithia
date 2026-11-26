@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! Node creation, called by `effect!` expansions (spec §4.5, §11.4 step 7).
+//! Node creation, called by `node!` expansions (spec §4.5, §11.4 step 7).
 
 use std::future::Future;
 use std::sync::Arc;

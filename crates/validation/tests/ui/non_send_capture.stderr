@@ -1,8 +1,8 @@
-error[E0277]: `Rc<u32>` is captured by an effect! body but is not `Send + Sync + 'static`
-  --> tests/ui/non_send_capture.rs:11:60
+error[E0277]: `Rc<u32>` is captured by a node! body but is not `Send + Sync + 'static`
+  --> tests/ui/non_send_capture.rs:11:58
    |
-11 |     let _uses: DerivedNode<u32> = effect!(|n| *n.get() + **shared);
-   |                                                            ^^^^^^ captured here
+11 |     let _uses: DerivedNode<u32> = node!(|n| *n.get() + **shared);
+   |                                                          ^^^^^^ captured here
    |
    = help: the trait `lithia::__private::CaptureSend` is not implemented for `Rc<u32>`
    = note: a body runs on any worker thread: replace `Rc` with `Arc`, and `RefCell` or `Cell` with `Mutex`, `RwLock` or an atomic

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use lithia::{Accessor, DerivedNode, SourceNode, effect};
+use lithia::{Accessor, DerivedNode, SourceNode, node};
 
 /// xorshift64*: deterministic, so a seed names one graph and one sequence of writes per task.
 struct Rng(u64);
@@ -125,7 +125,7 @@ impl Graph {
     }
 
     fn build(rng: &mut Rng) -> Graph {
-        let sources: Vec<SourceNode<u64>> = (0..2 + rng.below(3)).map(|_| effect!(rng.below(64))).collect();
+        let sources: Vec<SourceNode<u64>> = (0..2 + rng.below(3)).map(|_| node!(rng.below(64))).collect();
         let mut graph: Graph = Graph { sources, derived: Vec::new(), alive: Arc::new(AtomicUsize::new(0)) };
         for _ in 0..6 + rng.below(9) {
             let count: usize = graph.sources.len() + graph.derived.len();
@@ -155,11 +155,11 @@ impl Graph {
             let child: Option<Arc<AtomicU64>> =
                 matches!(kind, Kind::Creator { .. }).then(|| Arc::new(AtomicU64::new(u64::MAX)));
             let out: Option<(SourceNode<u64>, Arc<AtomicU64>)> = matches!(kind, Kind::Writer).then(|| {
-                let target: SourceNode<u64> = effect!(u64::MAX);
+                let target: SourceNode<u64> = node!(u64::MAX);
                 let seen: Arc<AtomicU64> = Arc::new(AtomicU64::new(u64::MAX));
                 let (o, mine, last): (Accessor<u64>, Arc<Token>, Arc<AtomicU64>) =
                     (target.accessor(), Token::new(&graph.alive), seen.clone());
-                effect!(|o| {
+                node!(|o| {
                     let _ = &mine;
                     put(last, mix(&[*o.get(), 2]))
                 });
@@ -188,7 +188,7 @@ impl Graph {
             return match p.as_slice() {
                 [p0] => {
                     let p0: Accessor<u64> = p0.clone();
-                    effect!(|p0| {
+                    node!(|p0| {
                         let _ = &token;
                         let value: u64 = mix(&[*p0.get()]);
                         target.set(value);
@@ -197,7 +197,7 @@ impl Graph {
                 }
                 [p0, p1] => {
                     let (p0, p1): (Accessor<u64>, Accessor<u64>) = (p0.clone(), p1.clone());
-                    effect!(|p0, p1| {
+                    node!(|p0, p1| {
                         let _ = &token;
                         let value: u64 = mix(&[*p0.get(), *p1.get()]);
                         target.set(value);
@@ -210,10 +210,10 @@ impl Graph {
         match (kind, p.as_slice(), child) {
             (Kind::Creator { keyed: true }, [p0], Some(child)) => {
                 let p0: Accessor<u64> = p0.clone();
-                effect!(|p0| {
+                node!(|p0| {
                     let _ = &token;
                     let (child, mine): (Arc<AtomicU64>, Arc<Token>) = (child.clone(), Token::new(alive));
-                    effect!(
+                    node!(
                         |p0| {
                             let _ = &mine;
                             put(child, mix(&[*p0.get(), 1]))
@@ -225,10 +225,10 @@ impl Graph {
             }
             (Kind::Creator { keyed: false }, [p0], Some(child)) => {
                 let p0: Accessor<u64> = p0.clone();
-                effect!(|p0| {
+                node!(|p0| {
                     let _ = &token;
                     let (child, mine): (Arc<AtomicU64>, Arc<Token>) = (child.clone(), Token::new(alive));
-                    effect!(|p0| {
+                    node!(|p0| {
                         let _ = &mine;
                         put(child, mix(&[*p0.get(), 1]))
                     });
@@ -237,7 +237,7 @@ impl Graph {
             }
             (Kind::Async, [p0], None) => {
                 let p0: Accessor<u64> = p0.clone();
-                effect!(async |p0| {
+                node!(async |p0| {
                     let _ = &token;
                     tokio::task::yield_now().await;
                     put(slot, mix(&[*p0.get()]))
@@ -245,7 +245,7 @@ impl Graph {
             }
             (Kind::Async, [p0, p1], None) => {
                 let (p0, p1): (Accessor<u64>, Accessor<u64>) = (p0.clone(), p1.clone());
-                effect!(async |p0, p1| {
+                node!(async |p0, p1| {
                     let _ = &token;
                     tokio::task::yield_now().await;
                     put(slot, mix(&[*p0.get(), *p1.get()]))
@@ -253,7 +253,7 @@ impl Graph {
             }
             (Kind::Async, [p0, p1, p2], None) => {
                 let (p0, p1, p2): (Accessor<u64>, Accessor<u64>, Accessor<u64>) = (p0.clone(), p1.clone(), p2.clone());
-                effect!(async |p0, p1, p2| {
+                node!(async |p0, p1, p2| {
                     let _ = &token;
                     tokio::task::yield_now().await;
                     put(slot, mix(&[*p0.get(), *p1.get(), *p2.get()]))
@@ -261,7 +261,7 @@ impl Graph {
             }
             (Kind::Whole, [p0, p1], None) => {
                 let (p0, p1): (Accessor<u64>, Accessor<u64>) = (p0.clone(), p1.clone());
-                effect!(
+                node!(
                     |p0, p1| {
                         let _ = &token;
                         put(slot, mix(&[*p0.get(), *p1.get()]))
@@ -271,7 +271,7 @@ impl Graph {
             }
             (Kind::Whole, [p0, p1, p2], None) => {
                 let (p0, p1, p2): (Accessor<u64>, Accessor<u64>, Accessor<u64>) = (p0.clone(), p1.clone(), p2.clone());
-                effect!(
+                node!(
                     |p0, p1, p2| {
                         let _ = &token;
                         put(slot, mix(&[*p0.get(), *p1.get(), *p2.get()]))
@@ -281,21 +281,21 @@ impl Graph {
             }
             (_, [p0], None) => {
                 let p0: Accessor<u64> = p0.clone();
-                effect!(|p0| {
+                node!(|p0| {
                     let _ = &token;
                     put(slot, mix(&[*p0.get()]))
                 })
             }
             (_, [p0, p1], None) => {
                 let (p0, p1): (Accessor<u64>, Accessor<u64>) = (p0.clone(), p1.clone());
-                effect!(|p0, p1| {
+                node!(|p0, p1| {
                     let _ = &token;
                     put(slot, mix(&[*p0.get(), *p1.get()]))
                 })
             }
             (_, [p0, p1, p2], None) => {
                 let (p0, p1, p2): (Accessor<u64>, Accessor<u64>, Accessor<u64>) = (p0.clone(), p1.clone(), p2.clone());
-                effect!(|p0, p1, p2| {
+                node!(|p0, p1, p2| {
                     let _ = &token;
                     put(slot, mix(&[*p0.get(), *p1.get(), *p2.get()]))
                 })

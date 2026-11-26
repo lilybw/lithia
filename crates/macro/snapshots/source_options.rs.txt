@@ -1,4 +1,4 @@
-// effect!(0, equals = |a: &u32, b: &u32| a == b, disposed = MASK)
+// node!(0, equals = |a: &u32, b: &u32| a == b, disposed = MASK)
 
 {
     fn __lithia_scope () {

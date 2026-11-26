@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lithia::{DerivedNode, Readable, SourceNode, effect};
+use lithia::{DerivedNode, Readable, SourceNode, node};
 use tokio::sync::oneshot;
 use tracing::Level;
 
@@ -27,11 +27,11 @@ fn bump(n: &u32) -> u32 {
 /// Whether a handle-less watcher on `t` outlives `t`'s handle beside the node `make` starts on `k`
 /// capturing `t`: exactly when that node may write `t`.
 async fn keeps_watcher(make: impl FnOnce(&SourceNode<u32>, &SourceNode<u32>)) -> bool {
-    let k: SourceNode<u32> = effect!(0);
-    let seen: SourceNode<u32> = effect!(0);
+    let k: SourceNode<u32> = node!(0);
+    let seen: SourceNode<u32> = node!(0);
     let base: usize = lithia::test::live_nodes().await;
-    let t: SourceNode<u32> = effect!(1);
-    effect!(|t| seen.set(*t.get()));
+    let t: SourceNode<u32> = node!(1);
+    node!(|t| seen.set(*t.get()));
     make(&k, &t);
     lithia::flush().await;
     drop(t);
@@ -56,7 +56,7 @@ async fn reads_make_no_edge_and_other_uses_do() {
     assert!(
         !keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, t): (SourceNode<u32>, SourceNode<u32>) = (k.clone(), t.clone());
-            effect!(|k| {
+            node!(|k| {
                 let _ = (k.get(), t.get(), t.try_get(), t.accessor(), lithia::status(&t));
                 println!("{t:?} {:?}", t.get());
             });
@@ -67,7 +67,7 @@ async fn reads_make_no_edge_and_other_uses_do() {
     assert!(
         keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, t): (SourceNode<u32>, SourceNode<u32>) = (k.clone(), t.clone());
-            effect!(|k| {
+            node!(|k| {
                 let _ = k.get();
                 pass_along(t); // a function may write it
             });
@@ -78,7 +78,7 @@ async fn reads_make_no_edge_and_other_uses_do() {
     assert!(
         keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, t): (SourceNode<u32>, SourceNode<u32>) = (k.clone(), t.clone());
-            effect!(|k| {
+            node!(|k| {
                 let _ = k.get();
                 touch!(t); // a user macro may write it
             });
@@ -89,7 +89,7 @@ async fn reads_make_no_edge_and_other_uses_do() {
     assert!(
         keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, t): (SourceNode<u32>, SourceNode<u32>) = (k.clone(), t.clone());
-            effect!(|k| println!("{:?} {:?}", k.get(), t.set(1)));
+            node!(|k| println!("{:?} {:?}", k.get(), t.set(1)));
         })
         .await,
         "a write inside a formatting argument"
@@ -97,7 +97,7 @@ async fn reads_make_no_edge_and_other_uses_do() {
     assert!(
         keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, items): (SourceNode<u32>, Vec<SourceNode<u32>>) = (k.clone(), vec![t.clone()]);
-            effect!(|k| {
+            node!(|k| {
                 let _ = k.get();
                 let _ = items.get(0).map(|item: &SourceNode<u32>| *item.get()); // not a handle's `get`
             });
@@ -110,7 +110,7 @@ async fn reads_make_no_edge_and_other_uses_do() {
 /// A generic helper: `n` is not a dependency, so its capture may write.
 fn generic_reader<R: Readable<Value = u32> + Clone + Send + Sync + 'static>(k: &SourceNode<u32>, n: &R) {
     let (k, n): (SourceNode<u32>, R) = (k.clone(), n.clone());
-    effect!(|k| {
+    node!(|k| {
         let _ = (k.get(), n.get());
     });
 }
@@ -118,7 +118,7 @@ fn generic_reader<R: Readable<Value = u32> + Clone + Send + Sync + 'static>(k: &
 /// A generic dependency only read is a read-only capture.
 fn generic_dependency<R: Readable<Value = u32> + Clone + Send + Sync + 'static>(k: &SourceNode<u32>, n: &R) {
     let (k, n): (SourceNode<u32>, R) = (k.clone(), n.clone());
-    effect!(|k, n| {
+    node!(|k, n| {
         let _ = (k.get(), n.get());
     });
 }
@@ -142,7 +142,7 @@ async fn generic_code_self_and_field_paths() {
     assert!(
         !keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
-            effect!(|k| {
+            node!(|k| {
                 let _ = (k.get(), pair.t.get());
             });
         })
@@ -152,7 +152,7 @@ async fn generic_code_self_and_field_paths() {
     assert!(
         keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
-            effect!(|k| {
+            node!(|k| {
                 let _ = (k.get(), pair.t.get(), pair.label.len()); // `label` is not a handle
             });
         })
@@ -162,7 +162,7 @@ async fn generic_code_self_and_field_paths() {
     assert!(
         keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
-            effect!(|k| {
+            node!(|k| {
                 let _ = k.get();
                 let held: &Pair = pair; // a use of the name itself
                 let _ = held.t.get();
@@ -178,7 +178,7 @@ async fn move_bodies_classify_field_paths_too() {
     assert!(
         !keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
-            effect!(move |k| {
+            node!(move |k| {
                 let _ = (k.get(), pair.t.get());
             });
         })
@@ -188,7 +188,7 @@ async fn move_bodies_classify_field_paths_too() {
     assert!(
         keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
-            effect!(move |k| {
+            node!(move |k| {
                 let _ = k.get();
                 pair.t.set(1);
             });
@@ -199,7 +199,7 @@ async fn move_bodies_classify_field_paths_too() {
     assert!(
         keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
             let (k, pair): (SourceNode<u32>, Pair) = (k.clone(), Pair { t: t.clone(), label: "p".to_string() });
-            effect!(move |k| {
+            node!(move |k| {
                 let _ = (k.get(), pair.t.get(), pair.label.len()); // `label` is not a handle
             });
         })
@@ -225,8 +225,8 @@ struct AppState {
 async fn a_field_through_an_arc_compiles_and_its_guard_lives_with_the_effect() {
     let dropped: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let state: Arc<AppState> = Arc::new(AppState { hits: AtomicU32::new(0), _guard: Guard(dropped.clone()) });
-    let k: SourceNode<u32> = effect!(0);
-    let counter: DerivedNode<()> = effect!(|k| {
+    let k: SourceNode<u32> = node!(0);
+    let counter: DerivedNode<()> = node!(|k| {
         let _ = k.get();
         state.hits.fetch_add(1, Ordering::SeqCst);
     });
@@ -244,13 +244,13 @@ async fn a_field_through_an_arc_compiles_and_its_guard_lives_with_the_effect() {
 
 #[lithia::test]
 async fn handles_cloned_out_of_a_body_are_outside_handles() {
-    let k: SourceNode<u32> = effect!(0);
-    let seen: SourceNode<u32> = effect!(0);
+    let k: SourceNode<u32> = node!(0);
+    let seen: SourceNode<u32> = node!(0);
     let slot: Arc<Mutex<Option<SourceNode<u32>>>> = Arc::new(Mutex::new(None));
     let base: usize = lithia::test::live_nodes().await;
-    let t: SourceNode<u32> = effect!(4);
-    effect!(|t| seen.set(*t.get()));
-    let copier: DerivedNode<()> = effect!(|k| {
+    let t: SourceNode<u32> = node!(4);
+    node!(|t| seen.set(*t.get()));
+    let copier: DerivedNode<()> = node!(|k| {
         let _ = k.get();
         *slot.lock().unwrap() = Some(t.clone());
     });
@@ -265,15 +265,15 @@ async fn handles_cloned_out_of_a_body_are_outside_handles() {
 
 #[lithia::test]
 async fn a_handle_moved_out_of_an_async_move_block_counts_once_the_block_ends() {
-    let seen: SourceNode<u32> = effect!(0);
+    let seen: SourceNode<u32> = node!(0);
     let base: usize = lithia::test::live_nodes().await;
     let (tx, rx): (oneshot::Sender<SourceNode<u32>>, oneshot::Receiver<SourceNode<u32>>) = oneshot::channel();
-    let t: SourceNode<u32> = effect!(3);
-    let block: SourceNode<()> = effect!(async move {
+    let t: SourceNode<u32> = node!(3);
+    let block: SourceNode<()> = node!(async move {
         let _ = tx.send(t);
     });
     let moved: SourceNode<u32> = rx.await.unwrap(); // out of the block, which has ended
-    let watcher: DerivedNode<()> = effect!(|moved| seen.set(*moved.get()));
+    let watcher: DerivedNode<()> = node!(|moved| seen.set(*moved.get()));
     lithia::flush().await;
     assert_eq!(*seen.get(), 3);
     drop(block);
@@ -288,16 +288,16 @@ async fn a_handle_moved_out_of_an_async_move_block_counts_once_the_block_ends() 
 
 #[lithia::test]
 async fn a_handle_moved_out_of_a_finished_move_block_anchors_a_scoped_node() {
-    let seen: SourceNode<u32> = effect!(0);
+    let seen: SourceNode<u32> = node!(0);
     let (tx, rx): (oneshot::Sender<SourceNode<u32>>, oneshot::Receiver<SourceNode<u32>>) = oneshot::channel();
     // Scoped: only its own handles support it, not the block that writes it.
-    let t: SourceNode<u32> = effect!(3).scoped();
-    let block: SourceNode<()> = effect!(async move {
+    let t: SourceNode<u32> = node!(3).scoped();
+    let block: SourceNode<()> = node!(async move {
         let _ = tx.send(t);
     });
     let back: SourceNode<u32> = rx.await.unwrap();
     lithia::test::settled(&block).await;
-    effect!(|back| seen.set(*back.get()));
+    node!(|back| seen.set(*back.get()));
     lithia::flush().await;
     // A sweep starts at `t` if its anchor count crosses zero; `back` keeps it above.
     drop(back.clone());
@@ -310,16 +310,16 @@ async fn a_handle_moved_out_of_a_finished_move_block_anchors_a_scoped_node() {
 // One thread, so the block's run task cannot end the lease before disposal does.
 #[lithia::test(flavor = "current_thread")]
 async fn a_handle_moved_out_of_a_disposed_move_block_counts_at_once() {
-    let seen: SourceNode<u32> = effect!(0);
+    let seen: SourceNode<u32> = node!(0);
     let base: usize = lithia::test::live_nodes().await;
     let (tx, rx): (oneshot::Sender<SourceNode<u32>>, oneshot::Receiver<SourceNode<u32>>) = oneshot::channel();
-    let t: SourceNode<u32> = effect!(3);
-    let block: SourceNode<()> = effect!(async move {
+    let t: SourceNode<u32> = node!(3);
+    let block: SourceNode<()> = node!(async move {
         let _ = tx.send(t);
         std::future::pending::<()>().await;
     });
     let moved: SourceNode<u32> = rx.await.unwrap(); // out of the block, which still runs
-    effect!(|moved| seen.set(*moved.get()));
+    node!(|moved| seen.set(*moved.get()));
     lithia::flush().await;
     // Disposal ends the block's lease before support is recomputed, so `moved` anchors `t` in time.
     lithia::dispose(&block);
@@ -334,19 +334,19 @@ async fn a_handle_moved_out_of_a_disposed_move_block_counts_at_once() {
 
 #[lithia::test]
 async fn an_anchor_that_returns_holds_again_what_support_let_go_of() {
-    let go: SourceNode<u32> = effect!(0);
+    let go: SourceNode<u32> = node!(0);
     let slot: Arc<Mutex<Option<lithia::Accessor<u32>>>> = Arc::new(Mutex::new(None));
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let base: usize = lithia::test::live_nodes().await;
-    let p: SourceNode<u32> = effect!(1);
-    let d: DerivedNode<u32> = effect!(|p| *p.get());
-    let e: DerivedNode<()> = effect!(|d| {
+    let p: SourceNode<u32> = node!(1);
+    let d: DerivedNode<u32> = node!(|p| *p.get());
+    let e: DerivedNode<()> = node!(|d| {
         let _ = d.get();
         runs.fetch_add(1, Ordering::SeqCst);
     });
     // `w` keeps `d` and `e` alive through what its body reads, and can hand out `d` again;
     // scoped, it goes with its handle.
-    let w: DerivedNode<()> = effect!(|go| {
+    let w: DerivedNode<()> = node!(|go| {
         if *go.get() > 0 {
             *slot.lock().unwrap() = Some(d.accessor());
         }
@@ -369,24 +369,24 @@ async fn an_anchor_that_returns_holds_again_what_support_let_go_of() {
 #[lithia::test]
 async fn a_new_writer_holds_again_what_support_let_go_of() {
     let base: usize = lithia::test::live_nodes().await;
-    let go: SourceNode<u32> = effect!(2);
-    let x: SourceNode<u32> = effect!(0);
+    let go: SourceNode<u32> = node!(2);
+    let x: SourceNode<u32> = node!(0);
     let seen: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let e: DerivedNode<()> = effect!(|x| seen.store(*x.get(), Ordering::SeqCst));
+    let e: DerivedNode<()> = node!(|x| seen.store(*x.get(), Ordering::SeqCst));
     let (tx, rx): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
     let parent: SourceNode<u32> = go.clone();
     // Holds `x` only inside its body; once told to, its run creates a writer of `x` on `go`.
-    let block: SourceNode<()> = effect!(async move {
+    let block: SourceNode<()> = node!(async move {
         let _ = rx.await;
-        effect!(|parent| x.set(*parent.get() * 10));
+        node!(|parent| x.set(*parent.get() * 10));
         std::future::pending::<()>().await;
     });
     // Scoped, so each lives by its handle; their bodies keep `block` and `e` alive.
-    let keep_block: DerivedNode<()> = effect!(|go| {
+    let keep_block: DerivedNode<()> = node!(|go| {
         let _ = (go.get(), block.get());
     })
     .scoped();
-    let keep_e: DerivedNode<()> = effect!(|go| {
+    let keep_e: DerivedNode<()> = node!(|go| {
         let _ = (go.get(), e.get());
     })
     .scoped();
@@ -408,13 +408,13 @@ async fn a_new_writer_holds_again_what_support_let_go_of() {
 #[lithia::test]
 async fn a_scoped_node_that_is_an_anchor_again_holds_what_depends_on_it() {
     let base: usize = lithia::test::live_nodes().await;
-    let a: SourceNode<u32> = effect!(1);
-    let s: DerivedNode<u32> = effect!(|a| *a.get()).scoped();
+    let a: SourceNode<u32> = node!(1);
+    let s: DerivedNode<u32> = node!(|a| *a.get()).scoped();
     let seen: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let d: DerivedNode<()> = effect!(|s| seen.store(*s.get(), Ordering::SeqCst));
+    let d: DerivedNode<()> = node!(|s| seen.store(*s.get(), Ordering::SeqCst));
     let slot: Arc<Mutex<Option<DerivedNode<u32>>>> = Arc::new(Mutex::new(None));
     // Its body keeps `d` alive, and hands out `s` once `a` passes 1; scoped, it goes with its handle.
-    let w: DerivedNode<()> = effect!(|a| {
+    let w: DerivedNode<()> = node!(|a| {
         if *a.get() > 1 {
             *slot.lock().unwrap() = Some(s.clone());
         }
@@ -438,10 +438,10 @@ async fn a_scoped_node_that_is_an_anchor_again_holds_what_depends_on_it() {
 #[lithia::test]
 async fn scoped_on_a_node_support_let_go_of() {
     let base: usize = lithia::test::live_nodes().await;
-    let x: SourceNode<u32> = effect!(1);
-    let m: DerivedNode<u32> = effect!(|x| *x.get() * 2);
+    let x: SourceNode<u32> = node!(1);
+    let m: DerivedNode<u32> = node!(|x| *x.get() * 2);
     let (tx, rx): (oneshot::Sender<DerivedNode<u32>>, oneshot::Receiver<DerivedNode<u32>>) = oneshot::channel();
-    let block: SourceNode<()> = effect!(async move {
+    let block: SourceNode<()> = node!(async move {
         let _ = tx.send(m);
     });
     let m: DerivedNode<u32> = rx.await.unwrap(); // internal, so `m` anchors nothing
@@ -457,14 +457,14 @@ async fn scoped_on_a_node_support_let_go_of() {
 
 #[lithia::test]
 async fn a_sweep_inside_an_update_closure() {
-    let x: SourceNode<u32> = effect!(0);
-    let seen: SourceNode<u32> = effect!(0);
+    let x: SourceNode<u32> = node!(0);
+    let seen: SourceNode<u32> = node!(0);
     let base: usize = lithia::test::live_nodes().await;
-    let t: SourceNode<u32> = effect!(1);
-    let watch_x: DerivedNode<()> = effect!(|x| {
+    let t: SourceNode<u32> = node!(1);
+    let watch_x: DerivedNode<()> = node!(|x| {
         let _ = x.get();
     });
-    effect!(|t| seen.set(*t.get()));
+    node!(|t| seen.set(*t.get()));
     lithia::flush().await;
     let held: Mutex<Option<(SourceNode<u32>, DerivedNode<()>)>> = Mutex::new(Some((t, watch_x)));
     x.update(|v: &u32| {
@@ -478,19 +478,19 @@ async fn a_sweep_inside_an_update_closure() {
 #[lithia::test]
 async fn a_supported_starting_point_ends_its_sweep_at_once() {
     let _ = events();
-    let s: SourceNode<u32> = effect!(0);
-    let trigger: SourceNode<u32> = effect!(0);
-    let hub: DerivedNode<u32> = effect!(|s| *s.get());
+    let s: SourceNode<u32> = node!(0);
+    let trigger: SourceNode<u32> = node!(0);
+    let hub: DerivedNode<u32> = node!(|s| *s.get());
     let children: usize = if cfg!(miri) { 2_000 } else { 20_000 }; // 20 000 take Miri hours
     for _ in 0..children {
-        effect!(|hub| {
+        node!(|hub| {
             let _ = hub.get();
         });
     }
     fn helper(n: &lithia::Accessor<u32>) -> u32 {
         *n.get()
     }
-    effect!(|trigger| {
+    node!(|trigger| {
         let _ = trigger.get();
         helper(&hub.accessor()) // a temporary anchor on a supported node
     });
@@ -519,17 +519,17 @@ async fn blocking_work_creating_after_its_node_was_freed_warns() {
     let (go_tx, go_rx): (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) = std::sync::mpsc::channel();
     let go_rx: Arc<Mutex<std::sync::mpsc::Receiver<()>>> = Arc::new(Mutex::new(go_rx));
     let created: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    let other: SourceNode<u32> = effect!(0);
+    let other: SourceNode<u32> = node!(0);
     let line: u32 = line!() + 9;
     {
-        let k: SourceNode<u32> = effect!(0);
-        effect!(|k| {
+        let k: SourceNode<u32> = node!(0);
+        node!(|k| {
             let _ = k.get();
             let (go_rx, created, other): (Arc<Mutex<std::sync::mpsc::Receiver<()>>>, Arc<AtomicBool>, SourceNode<u32>) =
                 (go_rx.clone(), created.clone(), other.clone());
             lithia::spawn_blocking(move || {
                 let _ = go_rx.lock().unwrap().recv();
-                effect!(|other| {
+                node!(|other| {
                     let _ = other.get();
                 });
                 created.store(true, Ordering::SeqCst);
@@ -545,10 +545,10 @@ async fn blocking_work_creating_after_its_node_was_freed_warns() {
 #[lithia::test]
 async fn the_growth_warning_names_the_site() {
     let _ = events();
-    let k: SourceNode<u32> = effect!(0);
+    let k: SourceNode<u32> = node!(0);
     let line: u32 = line!() + 2;
     for _ in 0..1_000 {
-        effect!(|k| {
+        node!(|k| {
             let _ = k.get();
         });
     }
@@ -558,14 +558,14 @@ async fn the_growth_warning_names_the_site() {
 
 #[lithia::test]
 async fn live_nodes_drains_the_drops_it_raised() {
-    let rows: SourceNode<Vec<DerivedNode<()>>> = effect!(Vec::new());
-    let n: SourceNode<u32> = effect!(0);
+    let rows: SourceNode<Vec<DerivedNode<()>>> = node!(Vec::new());
+    let n: SourceNode<u32> = node!(0);
     let base: usize = lithia::test::live_nodes().await;
     rows.set(
         (0..20)
             .map(|_| {
                 let n: SourceNode<u32> = n.clone();
-                effect!(|n| {
+                node!(|n| {
                     let _ = n.get();
                 })
                 .scoped()
@@ -581,15 +581,15 @@ async fn live_nodes_drains_the_drops_it_raised() {
 #[lithia::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_last_handle_drop_races_a_creation_on_the_same_node() {
     let base: usize = lithia::test::live_nodes().await;
-    let seen: SourceNode<u32> = effect!(0);
+    let seen: SourceNode<u32> = node!(0);
     for _ in 0..200 {
-        let n: SourceNode<u32> = effect!(1);
+        let n: SourceNode<u32> = node!(1);
         let other: SourceNode<u32> = n.clone();
         let seen_there: SourceNode<u32> = seen.clone();
         let runtime: tokio::runtime::Handle = tokio::runtime::Handle::current();
         let creator: std::thread::JoinHandle<()> = std::thread::spawn(move || {
             let _entered: tokio::runtime::EnterGuard<'_> = runtime.enter();
-            let made: DerivedNode<()> = effect!(|other| seen_there.update(bump));
+            let made: DerivedNode<()> = node!(|other| seen_there.update(bump));
             drop(other);
             drop(made);
         });

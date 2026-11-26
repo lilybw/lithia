@@ -1,4 +1,4 @@
-// effect!(|n| -> u64 { yield u64::from(*n.get()); })
+// node!(|n| -> u64 { yield u64::from(*n.get()); })
 
 {
     fn __lithia_scope () {

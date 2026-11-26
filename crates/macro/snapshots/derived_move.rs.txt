@@ -1,4 +1,4 @@
-// effect!(move |n| tx.send(*n.get()))
+// node!(move |n| tx.send(*n.get()))
 
 {
     fn __lithia_scope () {

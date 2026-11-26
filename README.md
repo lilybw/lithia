@@ -1,6 +1,6 @@
 # lithia
 
-Thread-safe, fine-grained reactivity for Rust, after Solid 2.0's signals. One macro, `effect!`, makes
+Thread-safe, fine-grained reactivity for Rust, after Solid 2.0's signals. One macro, `node!`, makes
 every kind of node; tokio runs them across threads.
 
 **[Documentation](https://lilybw.com/lithia/)** · [API reference](https://lilybw.com/lithia/api/lithia/) ·
@@ -11,9 +11,9 @@ use lithia::{DerivedNode, SourceNode, effect};
 
 #[lithia::main]
 async fn main() {
-    let count: SourceNode<u32> = effect!(0);                          // source node
-    let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2); // derived node
-    let _log: DerivedNode<()> = effect!(|doubled| println!("{}", doubled.get())); // effect
+    let count: SourceNode<u32> = node!(0);                           // source node
+    let doubled: DerivedNode<u32> = node!(|count| *count.get() * 2); // derived node
+    let _log: DerivedNode<()> = node!(|doubled| println!("{}", doubled.get())); // effect
     count.set(3);
     lithia::flush().await;
     assert_eq!(*doubled.get(), 6);
@@ -22,7 +22,7 @@ async fn main() {
 
 ## What it does
 
-- `effect!(value)` makes a source node you write to. `effect!(|a, b| …)` makes a derived node that reruns
+- `node!(value)` makes a source node you write to. `node!(|a, b| …)` makes a derived node that reruns
   when `a` or `b` changes; one that returns `()` is an effect.
 - Handles are `Send + Sync`, and bodies run on tokio's worker threads. Within one batch of writes,
   propagation is glitch-free: a node reached along two paths runs once, with both inputs updated.

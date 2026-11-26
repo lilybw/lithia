@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! Option values for `effect!`: each option's constants live in a module of its name (spec §3.2).
+//! Option values for `node!`: each option's constants live in a module of its name (spec §3.2).
 
 use std::sync::Arc;
 
@@ -51,7 +51,7 @@ macro_rules! policy {
 
 policy! {
     /// Values of the `batches` option: whether a derived node runs on partly propagated batches
-    /// (spec §7.2). `effect!(|a, b| *a.get() + *b.get(), batches = WHOLE)`
+    /// (spec §7.2). `node!(|a, b| *a.get() + *b.get(), batches = WHOLE)`
     mod batches;
     /// When a derived node runs while batches are still reaching it; one of the constants beside it.
     struct Batches(Runs) default PARTIAL;
@@ -64,7 +64,7 @@ policy! {
 
 policy! {
     /// Values of the `resilience` option: whether failed parents fail a derived node (spec §9.2).
-    /// `effect!(|a, b| *a.get() + *b.get(), resilience = NONE)`
+    /// `node!(|a, b| *a.get() + *b.get(), resilience = NONE)`
     mod resilience;
     /// How many failed parents a derived node withstands; one of the constants beside it.
     struct Resilience(Fails) default COMPLETE;
@@ -78,7 +78,7 @@ policy! {
 
 policy! {
     /// Values of the `disposed` option: what readers and children see once a node is disposed
-    /// (spec §10.5). `effect!(0, disposed = MASK)`
+    /// (spec §10.5). `node!(0, disposed = MASK)`
     mod disposed;
     /// What a disposed node shows; one of the constants beside it.
     struct Disposal(Ghost) default FAIL;
@@ -137,7 +137,7 @@ impl Shape {
     }
 }
 
-/// Options of one node, as resolved by `effect!`.
+/// Options of one node, as resolved by `node!`.
 #[doc(hidden)]
 pub struct Options<K> {
     pub(crate) equals: Option<Equals<K>>,

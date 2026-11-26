@@ -1,4 +1,4 @@
-// effect!(async move { tx.send(1) })
+// node!(async move { tx.send(1) })
 
 {
     fn __lithia_scope () {

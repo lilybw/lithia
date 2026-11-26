@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! The input of `effect!`: its value or closure and its options (spec §3.1, §3.2).
+//! The input of `node!`: its value or closure and its options (spec §3.1, §3.2).
 
 use super::*;
 
@@ -11,14 +11,14 @@ pub(crate) struct OptionArg {
     pub(super) value: Expr,
 }
 
-/// The parsed input of `effect!`: a value or closure, then options.
-pub(crate) struct EffectInput {
+/// The parsed input of `node!`: a value or closure, then options.
+pub(crate) struct NodeInput {
     pub(super) value: Expr,
     pub(super) options: Vec<OptionArg>,
     pub(super) tokens: String,
 }
 
-impl Parse for EffectInput {
+impl Parse for NodeInput {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         reserved(input.cursor().token_stream())?;
         let tokens: String = input.cursor().token_stream().to_string();
@@ -38,13 +38,13 @@ impl Parse for EffectInput {
             let value: Expr = input.parse()?;
             options.push(OptionArg { name, value });
         }
-        Ok(EffectInput { value, options, tokens })
+        Ok(NodeInput { value, options, tokens })
     }
 }
 
 /// Attributes on a body's closure or block, which the expansion does not carry over.
 const DROPPED_ATTRIBUTE: &str =
-    "effect! does not carry attributes on its closure or block over; put them on the enclosing statement";
+    "node! does not carry attributes on its closure or block over; put them on the enclosing statement";
 
 /// Adds `error` to those found so far, so every error in the input is reported at once.
 pub(super) fn combine(errors: &mut Option<syn::Error>, error: syn::Error) {
@@ -62,19 +62,19 @@ pub(super) fn ungrouped(expr: &Expr) -> &Expr {
     }
 }
 
-/// What `effect!` creates.
+/// What `node!` creates.
 pub(super) enum Form<'a> {
     Source(&'a Expr),
     AsyncSource(&'a ExprAsync),
     Derived(&'a ExprClosure),
 }
 
-impl EffectInput {
+impl NodeInput {
     pub(super) fn form(&self) -> syn::Result<Form<'_>> {
         match &self.value {
             Expr::Closure(closure) if closure.inputs.is_empty() => Err(syn::Error::new_spanned(
                 closure,
-                "a source node is written `effect!(x)`; to store this closure as the value, \
+                "a source node is written `node!(x)`; to store this closure as the value, \
                  bind it to a name or wrap it in parentheses",
             )),
             Expr::Closure(closure) => {
@@ -100,14 +100,14 @@ impl EffectInput {
                 let right: String = assign.right.to_token_stream().to_string();
                 Err(syn::Error::new_spanned(
                     assign,
-                    format!("an assignment is not a value; write `effect!({right})`, or put options after a comma"),
+                    format!("an assignment is not a value; write `node!({right})`, or put options after a comma"),
                 ))
             }
             other => Ok(Form::Source(other)),
         }
     }
 
-    /// Records the identifiers a nested `effect!` captures from the enclosing body (spec §4.2).
+    /// Records the identifiers a nested `node!` captures from the enclosing body (spec §4.2).
     pub(crate) fn visit_captures(&self, captures: &mut Captures) {
         match &self.value {
             Expr::Closure(closure) => {
@@ -160,7 +160,7 @@ fn reserved(tokens: TokenStream) -> syn::Result<()> {
     for tree in tokens {
         match tree {
             proc_macro2::TokenTree::Ident(ident) if is_internal(&ident) => {
-                return Err(syn::Error::new(ident.span(), "names starting with `__lithia` are effect!'s own"));
+                return Err(syn::Error::new(ident.span(), "names starting with `__lithia` are node!'s own"));
             }
             proc_macro2::TokenTree::Group(group) => reserved(group.stream())?,
             _ => {}

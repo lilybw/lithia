@@ -20,7 +20,7 @@ Changes reach `nightly` and `release` through pull requests; the maintainer may 
 | Directory | Package | Holds |
 |---|---|---|
 | `crates/lithia` | `lithia` | The engine and its public API |
-| `crates/macro` | `lithia-macro` | `effect!`, `#[lithia::main]`, `#[lithia::test]` |
+| `crates/macro` | `lithia-macro` | `node!`, `#[lithia::main]`, `#[lithia::test]` |
 | `crates/validation` | `lithia-validation` | The spec's validation cases (§13), verbatim, and the compile-fail cases |
 | `crates/test` | `lithia-test` | The helpers the test crates share (`src/`), the edge-case tests (`tests/edge/`, one module per area, built as one binary), the deep-chain test and the loom models (`tests/loom/`, likewise) |
 | `crates/bench` | `lithia-bench` | The spec's benchmarks (§15) |
@@ -67,7 +67,7 @@ to the scheduling protocol or to lifetimes updates its TLA+ model in [`docs/tla`
 The compile-fail cases' expected errors depend on the compiler: CI uses the toolchain in
 `rust-toolchain.toml`, and
 `TRYBUILD=overwrite cargo test -p lithia-validation --test compile` updates them on that version. A
-change to `effect!`'s expansion shows in `crates/macro/snapshots`: review the diff, then
+change to `node!`'s expansion shows in `crates/macro/snapshots`: review the diff, then
 `LITHIA_SNAPSHOTS=overwrite cargo test -p lithia-macro` updates them.
 
 ## Conventions

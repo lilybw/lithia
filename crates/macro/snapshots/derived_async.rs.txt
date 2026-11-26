@@ -1,4 +1,4 @@
-// effect!(async |n| { tokio::task::yield_now().await; *n.get() })
+// node!(async |n| { tokio::task::yield_now().await; *n.get() })
 
 {
     fn __lithia_scope () {

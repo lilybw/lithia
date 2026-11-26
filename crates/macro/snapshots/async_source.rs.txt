@@ -1,4 +1,4 @@
-// effect!(async { lookup().await })
+// node!(async { lookup().await })
 
 {
     fn __lithia_scope () {

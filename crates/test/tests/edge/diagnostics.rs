@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lithia::{Changes, DerivedNode, Site, SourceNode, Status, effect};
+use lithia::{Changes, DerivedNode, Site, SourceNode, Status, node};
 use tracing::Level;
 
 use lithia_test::{Captured, events, find};
@@ -20,9 +20,9 @@ fn site_of(status: Status) -> Option<Site> {
 
 #[lithia::test]
 async fn a_site_records_where_the_node_was_created() {
-    let n: SourceNode<u32> = effect!(1);
+    let n: SourceNode<u32> = node!(1);
     let line: u32 = line!() + 1;
-    let failing: DerivedNode<u32> = effect!(|n| {
+    let failing: DerivedNode<u32> = node!(|n| {
         if *n.get() > 0 {
             panic!("site probe")
         }
@@ -41,8 +41,8 @@ async fn a_site_records_where_the_node_was_created() {
 #[lithia::test]
 async fn a_panicking_run_warns_with_its_site_and_message() {
     let _ = events();
-    let n: SourceNode<u32> = effect!(0);
-    let _boom: DerivedNode<u32> = effect!(|n| if *n.get() == 1 { panic!("warn-probe-7781") } else { 0 });
+    let n: SourceNode<u32> = node!(0);
+    let _boom: DerivedNode<u32> = node!(|n| if *n.get() == 1 { panic!("warn-probe-7781") } else { 0 });
     lithia::flush().await;
     n.set(1);
     lithia::flush().await;
@@ -55,7 +55,7 @@ async fn a_panicking_run_warns_with_its_site_and_message() {
 async fn a_node_freed_before_its_first_run_warns() {
     let _ = events();
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let _ = effect!(async { 7782u32 });
+    let _ = node!(async { 7782u32 });
     lithia::flush().await;
     let event: Option<Captured> =
         find(Level::WARN, &["freed before its first run", &line], Duration::from_secs(2)).await;
@@ -65,9 +65,9 @@ async fn a_node_freed_before_its_first_run_warns() {
 #[lithia::test]
 async fn cuts_warn_for_value_holders_and_debug_for_effects() {
     let _ = events();
-    let x: SourceNode<i32> = effect!(0);
+    let x: SourceNode<i32> = node!(0);
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let clamp: DerivedNode<bool> = effect!(|x| {
+    let clamp: DerivedNode<bool> = node!(|x| {
         let over: bool = *x.get() > 10;
         if over {
             x.set(10);
@@ -82,9 +82,9 @@ async fn cuts_warn_for_value_holders_and_debug_for_effects() {
     assert!(event.is_some());
     drop(clamp);
 
-    let y: SourceNode<i32> = effect!(0);
+    let y: SourceNode<i32> = node!(0);
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let _effect: DerivedNode<()> = effect!(|y| if *y.get() > 10 {
+    let _effect: DerivedNode<()> = node!(|y| if *y.get() > 10 {
         y.set(10);
     });
     y.set(15);
@@ -96,10 +96,10 @@ async fn cuts_warn_for_value_holders_and_debug_for_effects() {
 #[lithia::test]
 async fn an_unattributed_loop_triggers_the_rerun_rate_warning() {
     let _ = events();
-    let n: SourceNode<u32> = effect!(0);
+    let n: SourceNode<u32> = node!(0);
     // A task the body spawns writes with an empty writer set, so nothing attributes this loop.
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let holder: DerivedNode<()> = effect!(|n| {
+    let holder: DerivedNode<()> = node!(|n| {
         let again: SourceNode<u32> = (*n).clone();
         lithia::spawn(async move { again.update(|v: &u32| v + 1) });
     });
@@ -115,12 +115,12 @@ async fn an_unattributed_loop_triggers_the_rerun_rate_warning() {
 #[lithia::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_whole_batches_join_runs_once_input_has_kept_it_waiting_too_long() {
     let _ = events();
-    let a: SourceNode<u32> = effect!(0);
-    let b: SourceNode<u32> = effect!(0);
+    let a: SourceNode<u32> = node!(0);
+    let b: SourceNode<u32> = node!(0);
     // `slow` holds `b`'s epoch at the gate, so the join keeps waiting for it.
     let (open, gate): (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) = std::sync::mpsc::channel();
     let gate: Arc<Mutex<std::sync::mpsc::Receiver<()>>> = Arc::new(Mutex::new(gate));
-    let slow: DerivedNode<u32> = effect!(|b| {
+    let slow: DerivedNode<u32> = node!(|b| {
         let value: u32 = *b.get();
         if value > 0 {
             // Blocking hands the worker's queue on, or a run tokio queued behind this one waits too.
@@ -132,7 +132,7 @@ async fn a_whole_batches_join_runs_once_input_has_kept_it_waiting_too_long() {
     });
     let runs: Arc<std::sync::atomic::AtomicU32> = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let join: DerivedNode<u32> = effect!(
+    let join: DerivedNode<u32> = node!(
         |a, slow| {
             runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             *a.get() + *slow.get()
@@ -168,10 +168,10 @@ const UNREAD: &str = "nothing reads it";
 #[lithia::test]
 async fn a_memo_that_loses_its_last_child_warns_that_nothing_reads_it() {
     let _ = events();
-    let input: SourceNode<u32> = effect!(0);
+    let input: SourceNode<u32> = node!(0);
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let memo: DerivedNode<u32> = effect!(|input| *input.get() + 1);
-    let reader: DerivedNode<()> = effect!(|memo| {
+    let memo: DerivedNode<u32> = node!(|input| *input.get() + 1);
+    let reader: DerivedNode<()> = node!(|memo| {
         let _ = memo.get();
     });
     lithia::flush().await;
@@ -188,9 +188,9 @@ async fn a_memo_that_loses_its_last_child_warns_that_nothing_reads_it() {
 #[lithia::test]
 async fn a_memo_that_loses_its_last_stream_warns_that_nothing_reads_it() {
     let _ = events();
-    let input: SourceNode<u32> = effect!(0);
+    let input: SourceNode<u32> = node!(0);
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let memo: DerivedNode<u32> = effect!(|input| *input.get() + 1);
+    let memo: DerivedNode<u32> = node!(|input| *input.get() + 1);
     let stream: Changes<u32> = memo.changes();
     lithia::flush().await;
     drop(memo);
@@ -204,11 +204,11 @@ async fn a_memo_that_loses_its_last_stream_warns_that_nothing_reads_it() {
 #[lithia::test]
 async fn a_memo_that_loses_its_last_child_by_edge_alone_warns_too() {
     let _ = events();
-    let input: SourceNode<u32> = effect!(0);
+    let input: SourceNode<u32> = node!(0);
     let line: String = format!("diagnostics.rs:{}", line!() + 1);
-    let memo: DerivedNode<u32> = effect!(|input| *input.get() + 1);
+    let memo: DerivedNode<u32> = node!(|input| *input.get() + 1);
     // Its body never reads the memo, so only the edge makes it a reader.
-    let child: DerivedNode<()> = effect!(|memo| {});
+    let child: DerivedNode<()> = node!(|memo| {});
     lithia::flush().await;
     drop(memo);
     lithia::flush().await;
@@ -233,8 +233,8 @@ async fn a_panicking_subscriber_leaves_lithia_working() {
     let subscriber: tracing_subscriber::layer::Layered<PanickingLayer, tracing_subscriber::Registry> =
         tracing_subscriber::registry().with(PanickingLayer);
     let _default: tracing::subscriber::DefaultGuard = tracing::subscriber::set_default(subscriber);
-    let n: SourceNode<u32> = effect!(0);
-    let checked: DerivedNode<u32> = effect!(|n| {
+    let n: SourceNode<u32> = node!(0);
+    let checked: DerivedNode<u32> = node!(|n| {
         let value: u32 = *n.get();
         assert_ne!(value, 1, "the body refuses 1");
         value
@@ -262,9 +262,9 @@ impl Drop for PanicsOnDrop {
 #[lithia::test]
 async fn a_comparator_whose_drop_panics_is_reported_not_raised() {
     let _ = events();
-    let input: SourceNode<u32> = effect!(1);
+    let input: SourceNode<u32> = node!(1);
     let state: PanicsOnDrop = PanicsOnDrop;
-    let node: DerivedNode<u32> = effect!(
+    let node: DerivedNode<u32> = node!(
         |input| *input.get(),
         equals = move |a: &u32, b: &u32| {
             let _held: &PanicsOnDrop = &state;

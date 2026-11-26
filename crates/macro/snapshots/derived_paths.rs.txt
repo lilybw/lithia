@@ -1,4 +1,4 @@
-// effect!(|n| self.total.set(*n.get() + self.base))
+// node!(|n| self.total.set(*n.get() + self.base))
 
 {
     fn __lithia_scope () {

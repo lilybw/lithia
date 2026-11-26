@@ -34,11 +34,11 @@ pub(crate) mod phase {
 /// What created the node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
-    /// `effect!(value)`: written directly, no runs of its own.
+    /// `node!(value)`: written directly, no runs of its own.
     Source,
-    /// `effect!(async { … })`: a source fed by one async run.
+    /// `node!(async { … })`: a source fed by one async run.
     AsyncSource,
-    /// `effect!(|deps| …)`: runs a body on its parents.
+    /// `node!(|deps| …)`: runs a body on its parents.
     Derived,
 }
 

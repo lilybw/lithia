@@ -15,7 +15,7 @@ use crate::graph::node::{Commit, Displaced, Header, Kind, Node, NodeRef, TypedNo
 use crate::sync::MutexGuard;
 use crate::{Ghosted, NodeValue, Status, diag, protocol};
 
-/// Type-erased reference to a node, used by `effect!` and the free functions.
+/// Type-erased reference to a node, used by `node!` and the free functions.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct NodeHandle(pub(crate) NodeRef);
@@ -316,14 +316,14 @@ macro_rules! readable {
 }
 
 /// Node with no dependencies whose value is set directly; cheap to clone, `Send + Sync`.
-/// `let count: SourceNode<u32> = effect!(0); count.set(3);`
+/// `let count: SourceNode<u32> = node!(0); count.set(3);`
 pub struct SourceNode<K: NodeValue> {
     pub(crate) node: TypedNodeRef<K>,
     pub(crate) internal: HandleCount,
 }
 
 /// Node whose body produces its value from its dependencies; `DerivedNode<()>` is an effect.
-/// `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);`
+/// `let doubled: DerivedNode<u32> = node!(|count| *count.get() * 2);`
 pub struct DerivedNode<K: NodeValue> {
     pub(crate) node: TypedNodeRef<K>,
     pub(crate) internal: HandleCount,
@@ -612,7 +612,7 @@ impl<K: NodeValue> SourceNode<K> {
     }
 
     /// Lets this node live by its handles alone; nodes hanging off it stop with it.
-    /// Marks the node for every holder, for good. `let input: SourceNode<Req> = effect!(req).scoped();`
+    /// Marks the node for every holder, for good. `let input: SourceNode<Req> = node!(req).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self {
         let erased: NodeRef = self.node.clone();
@@ -629,7 +629,7 @@ impl<K: NodeValue> DerivedNode<K> {
     }
 
     /// Lets this node live by its handles alone; nodes hanging off it stop with it.
-    /// Marks the node for every holder, for good. `let price: DerivedNode<f64> = effect!(|input| calc(&input.get())).scoped();`
+    /// Marks the node for every holder, for good. `let price: DerivedNode<f64> = node!(|input| calc(&input.get())).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self {
         let erased: NodeRef = self.node.clone();

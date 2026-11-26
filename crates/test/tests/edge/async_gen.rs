@@ -7,14 +7,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use lithia::{Changes, DerivedNode, SourceNode, Status, effect};
+use lithia::{Changes, DerivedNode, SourceNode, Status, node};
 use tokio::sync::mpsc;
 
 #[lithia::test]
 async fn rapid_input_supersedes_async_runs_and_settles_on_the_last() {
-    let input: SourceNode<u32> = effect!(0);
-    let completed: SourceNode<u32> = effect!(0);
-    let slow: DerivedNode<u32> = effect!(async |input| {
+    let input: SourceNode<u32> = node!(0);
+    let completed: SourceNode<u32> = node!(0);
+    let slow: DerivedNode<u32> = node!(async |input| {
         let value: u32 = *input.get();
         tokio::time::sleep(Duration::from_millis(5)).await;
         completed.update(|n: &u32| n + 1);
@@ -31,8 +31,8 @@ async fn rapid_input_supersedes_async_runs_and_settles_on_the_last() {
 
 #[lithia::test]
 async fn a_derived_rerun_replaces_a_running_generator() {
-    let base: SourceNode<u32> = effect!(1);
-    let ticks: DerivedNode<u32> = effect!(async |base| {
+    let base: SourceNode<u32> = node!(1);
+    let ticks: DerivedNode<u32> = node!(async |base| {
         let mut i: u32 = 0;
         loop {
             i += 1;
@@ -60,13 +60,13 @@ async fn a_derived_rerun_replaces_a_running_generator() {
 
 #[lithia::test]
 async fn an_async_source_generator_feeds_items() {
-    let counter: SourceNode<u32> = effect!(async {
+    let counter: SourceNode<u32> = node!(async {
         for i in 1..=5u32 {
             yield i;
         }
     });
-    let seen: SourceNode<u32> = effect!(0);
-    let _sum: DerivedNode<()> = effect!(|counter| seen.update(|total: &u32| total.max(&*counter.get()).to_owned()));
+    let seen: SourceNode<u32> = node!(0);
+    let _sum: DerivedNode<()> = node!(|counter| seen.update(|total: &u32| total.max(&*counter.get()).to_owned()));
     lithia::test::settled(&counter).await;
     assert_eq!(*counter.get(), 5);
     assert_eq!(*seen.get(), 5);
@@ -76,7 +76,7 @@ async fn an_async_source_generator_feeds_items() {
 #[lithia::test]
 async fn a_stream_becomes_a_node_through_a_move_block() {
     let (tx, mut rx): (mpsc::Sender<u32>, mpsc::Receiver<u32>) = mpsc::channel(8);
-    let latest: SourceNode<u32> = effect!(async move {
+    let latest: SourceNode<u32> = node!(async move {
         while let Some(x) = rx.recv().await {
             yield x;
         }
@@ -92,7 +92,7 @@ async fn a_stream_becomes_a_node_through_a_move_block() {
 #[lithia::test]
 async fn a_write_stops_a_source_fed_by_a_stream() {
     let (tx, mut rx): (mpsc::Sender<u32>, mpsc::Receiver<u32>) = mpsc::channel(8);
-    let fed: SourceNode<u32> = effect!(async move {
+    let fed: SourceNode<u32> = node!(async move {
         while let Some(x) = rx.recv().await {
             yield x;
         }
@@ -112,8 +112,8 @@ async fn a_write_stops_a_source_fed_by_a_stream() {
 
 #[lithia::test]
 async fn a_pending_parent_never_blocks_its_children() {
-    let gate: SourceNode<u32> = effect!(0);
-    let never: DerivedNode<u32> = effect!(
+    let gate: SourceNode<u32> = node!(0);
+    let never: DerivedNode<u32> = node!(
         async |gate| {
             let _ = *gate.get();
             std::future::pending::<()>().await;
@@ -121,7 +121,7 @@ async fn a_pending_parent_never_blocks_its_children() {
         },
         init = 7
     );
-    let child: DerivedNode<u32> = effect!(|never| *never.get() + 1);
+    let child: DerivedNode<u32> = node!(|never| *never.get() + 1);
     lithia::flush().await;
     assert!(matches!(lithia::status(&never), Status::Pending));
     assert_eq!(*child.get(), 8, "the child ran on the prior value");
@@ -130,8 +130,8 @@ async fn a_pending_parent_never_blocks_its_children() {
 
 #[lithia::test]
 async fn flush_waits_through_a_synchronous_generator() {
-    let n: SourceNode<u32> = effect!(1000);
-    let last: DerivedNode<u32> = effect!(|n| {
+    let n: SourceNode<u32> = node!(1000);
+    let last: DerivedNode<u32> = node!(|n| {
         for i in 1..=*n.get() {
             yield i;
         }
@@ -142,10 +142,10 @@ async fn flush_waits_through_a_synchronous_generator() {
 
 #[lithia::test]
 async fn settled_follows_a_write_along_an_edge() {
-    let input: SourceNode<u32> = effect!(0);
-    let mirror: SourceNode<u32> = effect!(0);
-    let _writer: DerivedNode<()> = effect!(|input| mirror.set(*input.get()));
-    let slow: DerivedNode<u32> = effect!(async |mirror| {
+    let input: SourceNode<u32> = node!(0);
+    let mirror: SourceNode<u32> = node!(0);
+    let _writer: DerivedNode<()> = node!(|input| mirror.set(*input.get()));
+    let slow: DerivedNode<u32> = node!(async |mirror| {
         let value: u32 = *mirror.get();
         tokio::time::sleep(Duration::from_millis(30)).await;
         value
@@ -159,15 +159,15 @@ async fn settled_follows_a_write_along_an_edge() {
 
 #[lithia::test]
 async fn settled_follows_a_write_through_a_handle_read_from_a_value() {
-    let input: SourceNode<u32> = effect!(0);
-    let mirror: SourceNode<u32> = effect!(0);
-    let slot: SourceNode<Option<SourceNode<u32>>> = effect!(Some(mirror.clone()));
-    let _writer: DerivedNode<()> = effect!(|input, slot| {
+    let input: SourceNode<u32> = node!(0);
+    let mirror: SourceNode<u32> = node!(0);
+    let slot: SourceNode<Option<SourceNode<u32>>> = node!(Some(mirror.clone()));
+    let _writer: DerivedNode<()> = node!(|input, slot| {
         if let Some(target) = &*slot.get() {
             target.set(*input.get());
         }
     });
-    let slow: DerivedNode<u32> = effect!(async |mirror| {
+    let slow: DerivedNode<u32> = node!(async |mirror| {
         let value: u32 = *mirror.get();
         tokio::time::sleep(Duration::from_millis(30)).await;
         value
@@ -181,8 +181,8 @@ async fn settled_follows_a_write_through_a_handle_read_from_a_value() {
 
 #[lithia::test]
 async fn an_async_node_makes_progress_under_fast_input() {
-    let input: SourceNode<u32> = effect!(0);
-    let slow: DerivedNode<u32> = effect!(async |input| {
+    let input: SourceNode<u32> = node!(0);
+    let slow: DerivedNode<u32> = node!(async |input| {
         let value: u32 = *input.get();
         tokio::time::sleep(Duration::from_millis(8)).await;
         value
@@ -204,8 +204,8 @@ async fn an_async_node_makes_progress_under_fast_input() {
 
 #[lithia::test]
 async fn a_replacing_generator_is_superseded_after_its_first_item() {
-    let input: SourceNode<u32> = effect!(0);
-    let ticks: DerivedNode<u32> = effect!(|input| {
+    let input: SourceNode<u32> = node!(0);
+    let ticks: DerivedNode<u32> = node!(|input| {
         let base: u32 = *input.get() * 1000;
         let mut n: u32 = 0;
         loop {
@@ -232,7 +232,7 @@ async fn a_replacing_generator_is_superseded_after_its_first_item() {
 async fn a_write_outlives_the_panic_of_the_block_it_stopped() {
     let started: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let flag: Arc<AtomicBool> = started.clone();
-    let fed: SourceNode<u32> = effect!(async move {
+    let fed: SourceNode<u32> = node!(async move {
         yield 1;
         flag.store(true, Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(200));
@@ -250,8 +250,8 @@ async fn a_write_outlives_the_panic_of_the_block_it_stopped() {
 
 #[lithia::test]
 async fn a_generators_return_type_is_the_type_of_its_items() {
-    let n: SourceNode<u32> = effect!(1);
-    let items: DerivedNode<_> = effect!(|n| -> u64 {
+    let n: SourceNode<u32> = node!(1);
+    let items: DerivedNode<_> = node!(|n| -> u64 {
         yield 7;
         yield u64::from(*n.get());
     });
@@ -261,16 +261,16 @@ async fn a_generators_return_type_is_the_type_of_its_items() {
 
 #[lithia::test]
 async fn a_failure_after_the_first_suspension_reaches_strict_children() {
-    let input: SourceNode<i32> = effect!(1);
-    let slow: DerivedNode<i32> = effect!(async |input| {
+    let input: SourceNode<i32> = node!(1);
+    let slow: DerivedNode<i32> = node!(async |input| {
         let value: i32 = *input.get();
         tokio::time::sleep(Duration::from_millis(5)).await;
         assert!(value != 0, "the poll after the release fails");
         value
     });
-    let strict: DerivedNode<i32> = effect!(|slow| *slow.get() + 1, resilience = NONE);
-    let partial: DerivedNode<i32> = effect!(|slow, strict| *slow.get() + *strict.get(), resilience = PARTIAL);
-    let lenient: DerivedNode<i32> = effect!(|slow| *slow.get() + 2);
+    let strict: DerivedNode<i32> = node!(|slow| *slow.get() + 1, resilience = NONE);
+    let partial: DerivedNode<i32> = node!(|slow, strict| *slow.get() + *strict.get(), resilience = PARTIAL);
+    let lenient: DerivedNode<i32> = node!(|slow| *slow.get() + 2);
     lithia::test::settled(&slow).await;
     input.set(0);
     lithia::test::settled(&slow).await;
@@ -289,14 +289,14 @@ async fn a_failure_after_the_first_suspension_reaches_strict_children() {
 
 #[lithia::test]
 async fn a_generator_failing_after_an_item_fails_its_strict_children() {
-    let input: SourceNode<u32> = effect!(1);
-    let items: DerivedNode<u32> = effect!(async |input| {
+    let input: SourceNode<u32> = node!(1);
+    let items: DerivedNode<u32> = node!(async |input| {
         let value: u32 = *input.get();
         yield value;
         assert!(value != 0, "the poll after the item fails");
         tokio::time::sleep(Duration::from_millis(5)).await;
     });
-    let strict: DerivedNode<u32> = effect!(|items| *items.get() + 1, resilience = NONE);
+    let strict: DerivedNode<u32> = node!(|items| *items.get() + 1, resilience = NONE);
     lithia::test::settled(&items).await;
     input.set(0);
     lithia::test::settled(&items).await;

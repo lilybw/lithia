@@ -13,10 +13,10 @@ fn a_creator_reclaims_its_keyed_child_before_it_runs() {
             let scope: ModelScope = ModelScope::new();
             let seen: std::sync::Arc<std::sync::Mutex<Vec<(u32, u32)>>> = Default::default();
             let input: SourceNode<u32> = scope.batch(|| {
-                let input: SourceNode<u32> = effect!(0);
-                effect!(|input| {
+                let input: SourceNode<u32> = node!(0);
+                node!(|input| {
                     let label: u32 = *input.get();
-                    effect!(
+                    node!(
                         |input| {
                             let pair: (u32, u32) = (*label, *input.get());
                             seen.lock().unwrap().push(pair);
@@ -48,12 +48,12 @@ fn a_keyed_child_is_reclaimed_while_its_handle_drops() {
                 SourceNode<u32>,
                 DerivedNode<Option<DerivedNode<u32>>>,
             ) = scope.batch(|| {
-                let tick: SourceNode<u32> = effect!(0);
-                let k: SourceNode<u32> = effect!(1);
-                let runs: SourceNode<u32> = effect!(0);
-                let list: DerivedNode<Option<DerivedNode<u32>>> = effect!(|tick| {
+                let tick: SourceNode<u32> = node!(0);
+                let k: SourceNode<u32> = node!(1);
+                let runs: SourceNode<u32> = node!(0);
+                let list: DerivedNode<Option<DerivedNode<u32>>> = node!(|tick| {
                     let _ = tick.get();
-                    Some(effect!(
+                    Some(node!(
                         |k| {
                             runs.update(|n: &u32| n + 1);
                             *k.get()
@@ -83,11 +83,11 @@ fn a_creator_is_disposed_while_its_run_reclaims() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (tick, k, creator): (SourceNode<u32>, SourceNode<u32>, DerivedNode<()>) = scope.batch(|| {
-                let tick: SourceNode<u32> = effect!(0);
-                let k: SourceNode<u32> = effect!(1);
-                let creator: DerivedNode<()> = effect!(|tick| {
+                let tick: SourceNode<u32> = node!(0);
+                let k: SourceNode<u32> = node!(1);
+                let creator: DerivedNode<()> = node!(|tick| {
                     let _ = tick.get();
-                    effect!(
+                    node!(
                         |k| {
                             let _ = k.get();
                         },
@@ -122,12 +122,12 @@ fn a_superseded_creator_hands_its_keyed_child_on() {
             let created: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
             let (id, k, runs, _loader): (SourceNode<u32>, SourceNode<u32>, SourceNode<u32>, DerivedNode<()>) = scope
                 .batch(|| {
-                    let id: SourceNode<u32> = effect!(7);
-                    let k: SourceNode<u32> = effect!(1);
-                    let runs: SourceNode<u32> = effect!(0);
-                    let loader: DerivedNode<()> = effect!(|id| {
+                    let id: SourceNode<u32> = node!(7);
+                    let k: SourceNode<u32> = node!(1);
+                    let runs: SourceNode<u32> = node!(0);
+                    let loader: DerivedNode<()> = node!(|id| {
                         let _ = id.get();
-                        effect!(
+                        node!(
                             |k| {
                                 let _ = k.get();
                                 runs.update(|n: &u32| n + 1);

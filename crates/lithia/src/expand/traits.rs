@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! The hidden traits `effect!`'s expansions dispatch on: initial values, captures and moves (spec §4.2).
+//! The hidden traits `node!`'s expansions dispatch on: initial values, captures and moves (spec §4.2).
 
 /// Supplies the initial value of a node without `init`, through `Default`.
 #[doc(hidden)]
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no `Default`, so this node needs an initial value",
-    label = "add `init = …` to the effect! options",
+    label = "add `init = …` to the node! options",
     note = "derived nodes and async source nodes start with `init`, or `K::default()` when it is left out"
 )]
 pub trait InitDefault: Sized {
@@ -21,10 +21,10 @@ impl<T: Default> InitDefault for T {
     }
 }
 
-/// Bound on values an `effect!` body captures by cloning (spec §4.2).
+/// Bound on values a `node!` body captures by cloning (spec §4.2).
 #[doc(hidden)]
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` is captured by an effect! body but is not `Clone`",
+    message = "`{Self}` is captured by a node! body but is not `Clone`",
     label = "captured here",
     note = "wrap the part that is not `Clone` in `Arc` and capture node handles beside it, or write `move` and manage the capture yourself"
 )]
@@ -33,10 +33,10 @@ pub trait Capture: Clone {}
 #[diagnostic::do_not_recommend]
 impl<T: Clone> Capture for T {}
 
-/// Bound on values an `effect!` body captures: a body runs on any worker thread (spec §4.2).
+/// Bound on values a `node!` body captures: a body runs on any worker thread (spec §4.2).
 #[doc(hidden)]
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` is captured by an effect! body but is not `Send + Sync + 'static`",
+    message = "`{Self}` is captured by a node! body but is not `Send + Sync + 'static`",
     label = "captured here",
     note = "a body runs on any worker thread: replace `Rc` with `Arc`, and `RefCell` or `Cell` with `Mutex`, `RwLock` or an atomic"
 )]

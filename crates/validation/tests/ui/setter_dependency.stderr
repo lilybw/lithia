@@ -1,8 +1,8 @@
 error[E0277]: `Setter<i32>` cannot be read, so it cannot be a dependency
- --> tests/ui/setter_dependency.rs:9:45
+ --> tests/ui/setter_dependency.rs:9:43
   |
-9 |     let _child: DerivedNode<i32> = effect!(|writer| 0);
-  |                                             ^^^^^^ not `Readable`
+9 |     let _child: DerivedNode<i32> = node!(|writer| 0);
+  |                                           ^^^^^^ not `Readable`
   |
   = help: the trait `Readable` is not implemented for `Setter<i32>`
   = note: dependencies are nodes or `Accessor`s; a `Setter` is write-only, and being notified of changes would read it

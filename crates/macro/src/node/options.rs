@@ -17,7 +17,7 @@ pub(super) struct Resolved {
     pub(super) key: Option<KeyArg>,
 }
 
-pub(super) fn resolve_options(input: &EffectInput, form: &Form<'_>) -> syn::Result<Resolved> {
+pub(super) fn resolve_options(input: &NodeInput, form: &Form<'_>) -> syn::Result<Resolved> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut init: Option<Expr> = None;
     let mut shape: TokenStream = quote!(::lithia::__private::Shape::new());

@@ -1,4 +1,4 @@
-// effect!(|n| *n.get() + offset)
+// node!(|n| *n.get() + offset)
 
 {
     fn __lithia_scope () {

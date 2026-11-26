@@ -1,11 +1,11 @@
 error[E0425]: cannot find value `WHOLE` in this scope
- --> tests/ui/foreign_option_constant.rs:8:67
+ --> tests/ui/foreign_option_constant.rs:8:65
   |
-8 |     let _a: DerivedNode<u32> = effect!(|n| *n.get(), resilience = WHOLE);
-  |                                                                   ^^^^^ not found in this scope
+8 |     let _a: DerivedNode<u32> = node!(|n| *n.get(), resilience = WHOLE);
+  |                                                                 ^^^^^ not found in this scope
 
 error[E0308]: mismatched types
- --> tests/ui/foreign_option_constant.rs:9:64
+ --> tests/ui/foreign_option_constant.rs:9:62
   |
-9 |     let _b: DerivedNode<u32> = effect!(|n| *n.get(), batches = lithia::resilience::NONE);
-  |                                                                ^^^^^^^^^^^^^^^^^^^^^^^^ expected `Batches`, found `Resilience`
+9 |     let _b: DerivedNode<u32> = node!(|n| *n.get(), batches = lithia::resilience::NONE);
+  |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^ expected `Batches`, found `Resilience`

@@ -1,11 +1,11 @@
 error[E0308]: mismatched types
- --> tests/ui/annotated_param_type.rs:8:45
+ --> tests/ui/annotated_param_type.rs:8:43
   |
-8 |     let _wrong: DerivedNode<u32> = effect!(|count: SourceNode<i64>| 0);
-  |                                             ^^^^^^^---------------
-  |                                             |      |
-  |                                             |      expected due to this
-  |                                             expected `&SourceNode<i64>`, found `&SourceNode<u32>`
+8 |     let _wrong: DerivedNode<u32> = node!(|count: SourceNode<i64>| 0);
+  |                                           ^^^^^^^---------------
+  |                                           |      |
+  |                                           |      expected due to this
+  |                                           expected `&SourceNode<i64>`, found `&SourceNode<u32>`
   |
   = note: expected reference `&SourceNode<i64>`
              found reference `&SourceNode<u32>`

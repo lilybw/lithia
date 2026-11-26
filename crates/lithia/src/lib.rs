@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! lithia: a thread-safe, fine-grained reactive engine for Rust on tokio, after Solid 2.0's signals.
-//! `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);` creates a memo over `count`.
+//! `let doubled: DerivedNode<u32> = node!(|count| *count.get() * 2);` creates a memo over `count`.
 
 // One `unsafe` block, in `context::with_frame`, is allowed where it stands.
 #![deny(unsafe_code)]
@@ -28,7 +28,7 @@ mod value;
 pub use api::{defer, dispose, eq, flush, reflow, spawn, spawn_blocking, status, try_reflow};
 pub use changes::Changes;
 pub use handles::{Accessor, DerivedNode, Dispose, Readable, Reflow, Setter, SourceNode, Writable};
-pub use lithia_macro::{effect, main, test};
+pub use lithia_macro::{main, node, test};
 pub use options::{batches, disposed, resilience};
 pub use site::Site;
 pub use status::{Failure, Ghosted, Status};

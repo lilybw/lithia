@@ -9,7 +9,7 @@ and what is known to be wrong or missing in [`docs/known_bugs.md`](https://githu
 
 ## 1. Overview and scope
 
-lithia is a thread-safe, fine-grained reactive engine for Rust on tokio. It brings the core of Solid 2.0's signal model to Rust through one primitive, the `effect!` proc macro.
+lithia is a thread-safe, fine-grained reactive engine for Rust on tokio. It brings the core of Solid 2.0's signal model to Rust through one primitive, the `node!` proc macro.
 
 ### Goals
 
@@ -57,7 +57,7 @@ What Loud Failures cannot see, since no check can tell these mistakes from inten
 | Writes inside reactive scope are errors | Writes inside bodies are allowed |
 | Effects split into compute and effect phases | One body; the dependency list acts as the compute phase |
 | Owner tree disposes children | Reference counting and support, no hierarchy; a body's children are rebuilt on every run unless keyed, and `.scoped()` or `dispose` stops a node early |
-| `mapArray` keeps rows by identity | `key` on any `effect!` in a body reclaims that node by key, site and parents; a keyed collection is on the roadmap (16) |
+| `mapArray` keeps rows by identity | `key` on any `node!` in a body reclaims that node by key, site and parents; a keyed collection is on the roadmap (16) |
 | Reading a pending value suspends the computation | Children run optimistically on the prior value |
 | Promises cannot be cancelled | Superseded async runs are aborted |
 
@@ -67,8 +67,8 @@ Solid 2.0 behaviour as described in RFC 01: reactivity, batching and effects.
 
 | Term | Meaning |
 | --- | --- |
-| Node | A unit of reactive state created by `effect!`. Always holds exactly one value. |
-| Source node | A `SourceNode<K>`: no dependencies, created by `effect!(value)`. Each write to it starts a new run whose only item is the written value. |
+| Node | A unit of reactive state created by `node!`. Always holds exactly one value. |
+| Source node | A `SourceNode<K>`: no dependencies, created by `node!(value)`. Each write to it starts a new run whose only item is the written value. |
 | Derived node | A `DerivedNode<K>`: one or more dependencies, value produced by its body. Covers memos, and effects when `K = ()`. |
 | Parent | A node listed as a dependency of another node. |
 | Child (subscriber) | A node that lists another node as a dependency. |
@@ -103,7 +103,7 @@ Solid 2.0 behaviour as described in RFC 01: reactivity, batching and effects.
 | Let go | A holder dropping its reference; the node is freed only if nothing else holds it (10.1). |
 | Operation context | The thread-local context in which an operation drops references first and sweeps after (10.1). |
 | Closed | A disposed node, whose body creates under no creator from then on (10.4). |
-| Key | The value of `effect!`'s `key` option, which names a node among the nodes its creator makes at one site (3.2). |
+| Key | The value of `node!`'s `key` option, which names a node among the nodes its creator makes at one site (3.2). |
 | Keyed node | A node created with a key inside a body; its creator's next run can reclaim it (10.1, Keyed nodes). |
 | Reclaim | A creation taking over a keyed node its creator's previous run made, instead of creating a new one (10.1, Keyed nodes). |
 | Holdover | The keyed nodes of a creator's released generations, held until a run of the creator has had the chance to reclaim them (10.1, Keyed nodes). |
@@ -137,31 +137,31 @@ Solid 2.0 behaviour as described in RFC 01: reactivity, batching and effects.
 
 ## 3. Public API
 
-The whole surface is `effect!`, two node types, two views, the `Status`, `Failure`, `Site` and `Ghosted` types, the `Changes` stream, typed option constants (3.2), nine free functions, the `#[lithia::main]` and `#[lithia::test]` attributes, and the `lithia::test` module (3.5). Four sealed traits state what each handle may do, and `NodeValue` bounds every value (11.1). The validation cases of section 13 live in the `lithia-validation` crate, not in a public module.
+The whole surface is `node!`, two node types, two views, the `Status`, `Failure`, `Site` and `Ghosted` types, the `Changes` stream, typed option constants (3.2), nine free functions, the `#[lithia::main]` and `#[lithia::test]` attributes, and the `lithia::test` module (3.5). Four sealed traits state what each handle may do, and `NodeValue` bounds every value (11.1). The validation cases of section 13 live in the `lithia-validation` crate, not in a public module.
 
-### 3.1 effect!
+### 3.1 node!
 
-A closure with parameters creates a derived node that depends on them; any other expression creates a source node holding that value. Annotations are optional: `let count = effect!(0);` infers `SourceNode<i32>`.
+A closure with parameters creates a derived node that depends on them; any other expression creates a source node holding that value. Annotations are optional: `let count = node!(0);` infers `SourceNode<i32>`.
 
 ```rust
-let count: SourceNode<u32> = effect!(0);                                          // source node
-let guest: SourceNode<User> = effect!(async { fetch_user(7).await }, init = User::guest()); // async source node
-let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);                // derived node
-let id: SourceNode<u32> = effect!(7);
-let user: DerivedNode<User> = effect!(async |id| fetch_user(*id.get()).await, init = User::guest()); // async derived node
-let log: DerivedNode<()> = effect!(|count| println!("count = {}", count.get())); // effect
-let tick: DerivedNode<u32> = effect!(|count| { for i in 1..=*count.get() { yield i; } }); // generator
-let view: DerivedNode<Vec<DerivedNode<String>>> = effect!(|rows| rows.get().iter()
-    .map(|row: &Row| effect!(|suffix| format!("{}{}", row.title, suffix.get()), key = row.id))
+let count: SourceNode<u32> = node!(0);                                          // source node
+let guest: SourceNode<User> = node!(async { fetch_user(7).await }, init = User::guest()); // async source node
+let doubled: DerivedNode<u32> = node!(|count| *count.get() * 2);                // derived node
+let id: SourceNode<u32> = node!(7);
+let user: DerivedNode<User> = node!(async |id| fetch_user(*id.get()).await, init = User::guest()); // async derived node
+let log: DerivedNode<()> = node!(|count| println!("count = {}", count.get())); // effect
+let tick: DerivedNode<u32> = node!(|count| { for i in 1..=*count.get() { yield i; } }); // generator
+let view: DerivedNode<Vec<DerivedNode<String>>> = node!(|rows| rows.get().iter()
+    .map(|row: &Row| node!(|suffix| format!("{}{}", row.title, suffix.get()), key = row.id))
     .collect::<Vec<DerivedNode<String>>>()); // keyed children
 ```
 
 - Parameters are plain identifiers naming readable handles in scope: a node or an `Accessor`. Inside the body they refer to the same handles; nothing is shadowed.
 - A parameter may carry a type annotation, which the macro turns into a type check: `|count: SourceNode<i32>|` fails to compile when \`count\` is not a \`SourceNode\<i32>\`. Without one, the macro still checks the dependency through `Readable`.
 - A parameter may not repeat, and may not be a pattern, `ref`, `mut` or `_` binding (4.6).
-- A source node's value is an ordinary expression evaluated at the call site: a literal, a call, a block or a bound name. Normal Rust moves apply, so `effect!(my_vec)` moves `my_vec` into the node.
-- A closure stored as a value is bound to a name or wrapped in parentheses: `effect!(func)` or `effect!((|| 0))`. A bare `effect!(|| x)`, `effect!(async || x)` or `effect!(move || x)` is a compile error (4.6).
-- A tuple value is written in parentheses, `effect!((1, 2))`; `effect!(1, 2)` reads `2` as an option and fails to compile.
+- A source node's value is an ordinary expression evaluated at the call site: a literal, a call, a block or a bound name. Normal Rust moves apply, so `node!(my_vec)` moves `my_vec` into the node.
+- A closure stored as a value is bound to a name or wrapped in parentheses: `node!(func)` or `node!((|| 0))`. A bare `node!(|| x)`, `node!(async || x)` or `node!(move || x)` is a compile error (4.6).
+- A tuple value is written in parentheses, `node!((1, 2))`; `node!(1, 2)` reads `2` as an option and fails to compile.
 - An `async { … }` block creates a source node that stays `Pending` with its initial value until the block produces its first item (section 8).
 - A body that contains `yield` is a generator, written like Rust's `gen` blocks: each `yield` publishes an item, and the body returns `()` (3.6). A body without `yield` returns its single item.
 - An `async { … }` block that yields feeds a source node item by item.
@@ -173,7 +173,7 @@ let view: DerivedNode<Vec<DerivedNode<String>>> = effect!(|rows| rows.get().iter
 Named options follow the closure:
 
 ```rust
-let total: DerivedNode<i32> = effect!(|a, b| *a.get() + *b.get(),
+let total: DerivedNode<i32> = node!(|a, b| *a.get() + *b.get(),
     init = 0, equals = lithia::eq, resilience = NONE, disposed = MASK);
 ```
 
@@ -198,11 +198,11 @@ Each node is created as a `SourceNode<K>` or a `DerivedNode<K>`. Views are thin,
 
 ```rust
 /// Node with no dependencies whose value is set directly; cheap to clone, `Send + Sync`.
-/// `let count: SourceNode<u32> = effect!(0); count.set(3);`
+/// `let count: SourceNode<u32> = node!(0); count.set(3);`
 pub struct SourceNode<K: NodeValue> { … }
 
 /// Node whose body produces its value from its dependencies; `DerivedNode<()>` is an effect.
-/// `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);`
+/// `let doubled: DerivedNode<u32> = node!(|count| *count.get() * 2);`
 pub struct DerivedNode<K: NodeValue> { … }
 
 /// Read-only view of a node.
@@ -228,7 +228,7 @@ impl<K: NodeValue> SourceNode<K> {
     /// Write-only view of this node.
     pub fn setter(&self) -> Setter<K>;
     /// Lets this node live by its handles alone; nodes hanging off it stop with it.
-    /// Marks the node for every holder, for good. `let input: SourceNode<Req> = effect!(req).scoped();`
+    /// Marks the node for every holder, for good. `let input: SourceNode<Req> = node!(req).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self;
 }
@@ -237,7 +237,7 @@ impl<K: NodeValue> DerivedNode<K> {
     /// Read-only view of this node.
     pub fn accessor(&self) -> Accessor<K>;
     /// Lets this node live by its handles alone; nodes hanging off it stop with it.
-    /// Marks the node for every holder, for good. `let price: DerivedNode<f64> = effect!(|input| calc(&input.get())).scoped();`
+    /// Marks the node for every holder, for good. `let price: DerivedNode<f64> = node!(|input| calc(&input.get())).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self;
 }
@@ -298,7 +298,7 @@ Handles state how a node is reached, not how long it lives: a node with a body n
 - Only nodes can `dispose`. Disposal is destructive, so a view must not be able to free the node it was handed.
 - Views are full references. A view keeps its node alive like any other handle, and is cheap to clone. An `Accessor` to a plain source node anchors nothing, since only a writer can change that node (10.1).
 - No upgrades. A view cannot be turned back into a node or into the other view.
-- Enforced by the compiler. Passing a `Setter` as a dependency, e.g. `effect!(|writer| …)`, fails to compile with a message naming `Readable` (4.6).
+- Enforced by the compiler. Passing a `Setter` as a dependency, e.g. `node!(|writer| …)`, fails to compile with a message naming `Readable` (4.6).
 
 ### 3.4 Status
 
@@ -354,7 +354,7 @@ pub fn defer(f: impl FnOnce() + Send + 'static);
 pub fn status<N: Readable>(node: &N) -> Status;
 
 /// Comparator for the `equals` option, using `PartialEq`.
-/// `let n: SourceNode<i32> = effect!(0, equals = lithia::eq);`
+/// `let n: SourceNode<i32> = node!(0, equals = lithia::eq);`
 pub fn eq<K: PartialEq>(old: &K, new: &K) -> bool;
 
 /// Spawns a task that roots its own scope and whose polls form batches; it starts with an empty writer set.
@@ -387,13 +387,13 @@ Both attributes require an `async fn` and accept tokio's runtime arguments: `fla
 Every node is a stream of items, and its value is its latest item. A body publishes items with `yield`, exactly as in Rust's `gen` blocks; ordinary async code observes a node with `changes()`.
 
 ```rust
-let page: DerivedNode<Fetch> = effect!(async |url| {
+let page: DerivedNode<Fetch> = node!(async |url| {
     yield Fetch::Loading;                      // published; the run goes on
     let body: Page = fetch(&url.get()).await;
     yield Fetch::Done(body);
 }, init = Fetch::Loading);
 
-let tick: DerivedNode<u32> = effect!(|count| {
+let tick: DerivedNode<u32> = node!(|count| {
     for i in 1..=*count.get() { yield i; }    // each item may propagate on its own
 });
 
@@ -405,13 +405,13 @@ while let Some(f) = updates.next().await { render(&f); } // may skip values; nev
 - A generator body returns `()`, like a `gen` block. A body without `yield` behaves exactly as before: its return value is its only item.
 - A run that ends without yielding leaves the latest item in place, so a node that has a value always keeps one (Case O).
 - `yield` works only directly in the body. Inside a nested closure, async block or item it is a compile error (4.6), which is also how Rust's own generators treat it.
-- An existing `Stream` becomes a node with a short loop in an async source block, written with `move` so the stream is moved in rather than cloned (4.2): `effect!(async move { while let Some(x) = s.next().await { yield x; } })`.
+- An existing `Stream` becomes a node with a short loop in an async source block, written with `move` so the stream is moved in rather than cloned (4.2): `node!(async move { while let Some(x) = s.next().await { yield x; } })`.
 - Items from a superseded run are discarded by the run counter.
 - `changes()` behaves like `tokio::sync::watch`: a slow consumer sees the latest value, not every value. A source node's reflow sends nothing to `changes()`, since the value did not change (8).
 
 ## 4. Macro expansion
 
-`effect!` resolves everything it can at compile time: the dependency list, the captures, the site and the initial value. The runtime only receives a ready-made registration.
+`node!` resolves everything it can at compile time: the dependency list, the captures, the site and the initial value. The runtime only receives a ready-made registration.
 
 ### 4.1 Dependencies
 
@@ -425,9 +425,9 @@ while let Some(f) = updates.next().await { render(&f); } // may skip values; nev
 
 Rule: a body, or an async source block, captures a clone of everything it references. The clones are internal handles (10.1), recorded with whether the body may write them.
 
-- The macro walks the body with a scope-aware `syn` visitor and collects free identifiers: lowercase, in expression position, not bound inside the body by a `let`, a pattern, a closure parameter or an item, a `use` included. A name is lowercase when its first character after any leading underscores is a lowercase letter or a digit, so `_LIMIT` is a constant and `_count` a variable. A macro call that stands as a statement binds for the statements after it, as `tokio::pin!` does. Each is cloned once, inside the expansion, before a `move` closure, so the outer handles stay usable; a capture of a capture, as in a nested `effect!` inside an async body, clones the value, not the reference.
+- The macro walks the body with a scope-aware `syn` visitor and collects free identifiers: lowercase, in expression position, not bound inside the body by a `let`, a pattern, a closure parameter or an item, a `use` included. A name is lowercase when its first character after any leading underscores is a lowercase letter or a digit, so `_LIMIT` is a constant and `_count` a variable. A macro call that stands as a statement binds for the statements after it, as `tokio::pin!` does. Each is cloned once, inside the expansion, before a `move` closure, so the outer handles stay usable; a capture of a capture, as in a nested `node!` inside an async body, clones the value, not the reference.
 - Left alone: uppercase names (constants, statics, types, variants), path segments, method and field names, macro names, and identifiers in call position, such as `max` in `max(a, b)`: functions never need capturing, and a local closure called that way is moved instead, which fails loudly if it is used afterwards. `self` is captured as `__self`, and each use of it in the body is renamed, `{self}` in a format string included; `self::` paths, and nested items and `use` declarations, which have their own `self`, are left alone. The expansion's own names start with `__lithia` and resolve at the macro's definition (mixed-site hygiene), so a body cannot see them, and an input that names one is an error; a body passed in through a `macro_rules!` macro resolves as it does written out.
-- Formatting macros (`print!`, `format!`, `write!`, `panic!`, the `assert!` family, `anyhow!`, `bail!` and their kin) get their format string, and only that, scanned for `{name}`, `{name:…}` and width and precision arguments, and their arguments count as reads; a named argument, `format!("{x}", x = 1)`, is not captured, its right-hand side is. Any other macro whose arguments are expressions gets its first string literal scanned the same way. Nested `effect!` calls are parsed: their parameters and free identifiers are captured by the outer body, and a `yield` inside one belongs to the nested node only. `matches!` and `select!` are parsed with their patterns, which bind for their guards and handlers, and `tracing`'s event and span macros with their fields, whose `%` and `?` values count as reads.
+- Formatting macros (`print!`, `format!`, `write!`, `panic!`, the `assert!` family, `anyhow!`, `bail!` and their kin) get their format string, and only that, scanned for `{name}`, `{name:…}` and width and precision arguments, and their arguments count as reads; a named argument, `format!("{x}", x = 1)`, is not captured, its right-hand side is. Any other macro whose arguments are expressions gets its first string literal scanned the same way. Nested `node!` calls are parsed: their parameters and free identifiers are captured by the outer body, and a `yield` inside one belongs to the nested node only. `matches!` and `select!` are parsed with their patterns, which bind for their guards and handlers, and `tracing`'s event and span macros with their fields, whose `%` and `?` values count as reads.
 - Inside any other macro, every identifier is a use that may write, and when its arguments parse as neither expressions nor statements, every lowercase name in its tokens that is not a field, method, path segment, label or keyword is taken for one. A wrong guess is then a capture too many, which fails to compile if no such variable exists, rather than a missed write.
 - Captured values must be `Clone + Send + Sync`, by the bounds rule below; one that is not `Clone` is a compile error (4.6). The fix is to wrap the part that is not `Clone` in an `Arc` and capture node handles beside it, or to write `move`. Handles inside an `Arc` are not cloned, so they stay outside handles and anchor their nodes for as long as the body lives (10.1, Self-support). lithia never wraps a value in `Arc` on its own.
 - A wrong guess is usually caught: a missed identifier is moved, so later outer use fails to compile, and a wrongly captured one is cloned or fails to compile. A clone can still change behaviour unnoticed; a cloned `mpsc::Sender` keeps its channel open. Such values belong outside the body, or inside one written with `move`.
@@ -440,27 +440,27 @@ Rule: a body, or an async source block, captures a clone of everything it refere
 **Read-only captures.** A capture is read-only when it is a handle and the body only reads it.
 
 - It is a handle when it is a dependency, checked through `Readable` so that generic code works too, or when it is a name or field path whose type at the capture site is a concrete handle type.
-- The body only reads it when every use is a call of `get`, `try_get`, `changes` or `accessor` on it, `lithia::status` on it, the bare name or such a call as an argument of a formatting macro, or a dependency of a nested `effect!` whose body only reads it.
+- The body only reads it when every use is a call of `get`, `try_get`, `changes` or `accessor` on it, `lithia::status` on it, the bare name or such a call as an argument of a formatting macro, or a dependency of a nested `node!` whose body only reads it.
 - Every other use counts as a possible write: passing it to a function, any other expression inside a formatting macro, and every use inside a macro other than the formatting macros, `vec!` and `dbg!`. Every node reached through a container, such as `items.get(0)` on a captured `Vec`, a value captured whole or generic code that is not a dependency, counts as possibly written too. This errs on the safe side: a missed write would free watchers that a living writer still feeds.
 
-**Field paths classify; they do not split.** A captured value is still captured whole. A field path is a captured name, or `self`, followed by named fields only, as in `self.theme` or `app.user`. When every use of a name is such a path and every path's value is a handle, each handle is classified by its own uses, and a handle no path reaches gets no edge. Any other use of the name, such as `self.notify(…)`, `&pair`, a field that is not a handle or passing it whole, makes every handle inside it a possible write. To stay precise, bind the fields the body needs before the `effect!`: `let (total, theme, tx) = (&self.total, &self.theme, &self.tx);` and then `notify(&tx, …)` in the body (Case AY).
+**Field paths classify; they do not split.** A captured value is still captured whole. A field path is a captured name, or `self`, followed by named fields only, as in `self.theme` or `app.user`. When every use of a name is such a path and every path's value is a handle, each handle is classified by its own uses, and a handle no path reaches gets no edge. Any other use of the name, such as `self.notify(…)`, `&pair`, a field that is not a handle or passing it whole, makes every handle inside it a possible write. To stay precise, bind the fields the body needs before the `node!`: `let (total, theme, tx) = (&self.total, &self.theme, &self.tx);` and then `notify(&tx, …)` in the body (Case AY).
 
-**`move`** means one thing in every form, `effect!(move |a| …)`, `effect!(async move |a| …)`, `effect!(move |a| { … yield … })` for generators and `effect!(async move { … })`: the outer values a body names are moved into it instead of cloned. It opts out of cloning, not out of the analysis:
+**`move`** means one thing in every form, `node!(move |a| …)`, `node!(async move |a| …)`, `node!(move |a| { … yield … })` for generators and `node!(async move { … })`: the outer values a body names are moved into it instead of cloned. It opts out of cloning, not out of the analysis:
 
 - A body that runs more than once still sees what it moved by reference. An async source block runs once, so a `move` block owns what it moved in and can consume it: send a `oneshot::Sender`, own a stream that is neither `Clone` nor `Sync`.
 - Each moved handle of a concrete handle type, or dependency, is flagged internal and classified as above; the value is then moved as written, so a binding keeps the `mut` it may need. The handle keeps its count until the creation has registered the node's edges, so no sweep can run between the two.
 - Each handle flagged this way is leased to the expansion. When an async source block ends, by completing, by being dropped, or by its node being disposed, freed or refreshed, it ends its lease: every leased handle still alive counts as an outside handle from then on, before the support that changes with it (10.1). A handle a block moves out, into a channel, a task or its result, therefore anchors its node once the block has ended (Case BP).
 - Classification works by name and by concrete type, so a handle inside a moved container, a handle reached only through a reference, or a non-dependency of generic type stays an outside handle: the node can hold itself through it (10.1, Self-support).
 
-**Async outputs.** An async body's output type is inferred from its tail. One that ends in a `loop` it can never leave has its output typed `()`, so `effect!(async |cfg| loop { … })` creates a `DerivedNode<()>`. An explicit `-> T` on an async closure types its output.
+**Async outputs.** An async body's output type is inferred from its tail. One that ends in a `loop` it can never leave has its output typed `()`, so `node!(async |cfg| loop { … })` creates a `DerivedNode<()>`. An explicit `-> T` on an async closure types its output.
 
 ### 4.3 Site
 
 `Site` is defined in 3.4.
 
-- `file!()`, `line!()` and `column!()` emitted by the proc macro report the user's `effect!` call, since they resolve to the outermost macro invocation.
+- `file!()`, `line!()` and `column!()` emitted by the proc macro report the user's `node!` call, since they resolve to the outermost macro invocation.
 - `function` comes from the type name of a marker function declared inside the expansion, resolved when `function` is called; inside closures the path contains `{{closure}}`.
-- `tokens` is the start of the macro input, stringified at compile time and cut at 80 characters; it is empty in builds without debug assertions, so a release binary holds no body source. `Site` is `#[non_exhaustive]`: only `effect!` builds one.
+- `tokens` is the start of the macro input, stringified at compile time and cut at 80 characters; it is empty in builds without debug assertions, so a release binary holds no body source. `Site` is `#[non_exhaustive]`: only `node!` builds one.
 - `Site` implements `Debug` by hand, so the function path is printed rather than a function pointer, and `Display` as `file:line:column in function`.
 
 ### 4.4 Initial value
@@ -471,18 +471,18 @@ Rule: a body, or an async source block, captures a clone of everything it refere
 
 ### 4.5 Expansion
 
-`effect!` expands into a block that declares the call site's `Site` static, gathers the dependencies through `Readable`, takes each capture inside a capture session (4.2), and calls a private constructor with the site, the dependencies, the recorded captures, the initial value, the body and the options. The body is a `move` closure that rebinds each capture by reference at the top of every run; an async or generator body bundles its captures into one `Arc` that each run clones, and a generator's direct `yield x` becomes an await on a yielder that publishes the item (3.6, 16). The options that shape how a node behaves, `batches`, `resilience` and `disposed`, build a `Shape`; each value is wrapped in a block that glob-imports its own option's module (3.2), and `equals` is added to the options after it. `cargo expand` shows the full expansion of any call.
+`node!` expands into a block that declares the call site's `Site` static, gathers the dependencies through `Readable`, takes each capture inside a capture session (4.2), and calls a private constructor with the site, the dependencies, the recorded captures, the initial value, the body and the options. The body is a `move` closure that rebinds each capture by reference at the top of every run; an async or generator body bundles its captures into one `Arc` that each run clones, and a generator's direct `yield x` becomes an await on a yielder that publishes the item (3.6, 16). The options that shape how a node behaves, `batches`, `resilience` and `disposed`, build a `Shape`; each value is wrapped in a block that glob-imports its own option's module (3.2), and `equals` is added to the options after it. `cargo expand` shows the full expansion of any call.
 
 ### 4.6 Compile errors
 
-Each of these inputs gets a dedicated message instead of a generic parse or trait error, pointing at the token at fault, and every such error in one input is reported, not only the first. Every row is covered by a compile-fail test in `lithia-validation` (`tests/ui`), which also fixed which message rustc shows where the spec left it open; a pass test (`tests/pass`) checks that a bare `effect!(…);` statement compiles under `#![deny(warnings)]`.
+Each of these inputs gets a dedicated message instead of a generic parse or trait error, pointing at the token at fault, and every such error in one input is reported, not only the first. Every row is covered by a compile-fail test in `lithia-validation` (`tests/ui`), which also fixed which message rustc shows where the spec left it open; a pass test (`tests/pass`) checks that a bare `node!(…);` statement compiles under `#![deny(warnings)]`.
 
 | Input | Message |
 | --- | --- |
-| `effect!(\|\| x)`, `effect!(async \|\| x)`, `effect!(move \|\| x)` | "a source node is written `effect!(x)`; to store this closure as the value, bind it to a name or wrap it in parentheses" |
-| `effect!(1, 2)` | "expected `name = value`; wrap tuple values in parentheses" |
-| `effect!(a = 3)` | "an assignment is not a value; write `effect!(3)`, or put options after a comma" |
-| `yield` inside a nested closure, async block or item | "`yield` publishes the enclosing effect! body's items and only works directly in that body" |
+| `node!(\|\| x)`, `node!(async \|\| x)`, `node!(move \|\| x)` | "a source node is written `node!(x)`; to store this closure as the value, bind it to a name or wrap it in parentheses" |
+| `node!(1, 2)` | "expected `name = value`; wrap tuple values in parentheses" |
+| `node!(a = 3)` | "an assignment is not a value; write `node!(3)`, or put options after a comma" |
+| `yield` inside a nested closure, async block or item | "`yield` publishes the enclosing node! body's items and only works directly in that body" |
 | A value type that is not `Send + Sync + 'static` | "`T` cannot be a node value: values must be `Send + Sync + 'static`", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell` (11.1). rustc shows this `NodeValue` message, once even when both `Send` and `Sync` are missing. |
 | An unknown option | "unknown option `x`; expected one of init, equals, key, batches, resilience, disposed" |
 | A repeated option | "option `x` is given twice" |
@@ -490,11 +490,11 @@ Each of these inputs gets a dedicated message instead of a generic parse or trai
 | `batches` or `resilience` on any source node | "`x` applies to derived nodes only; a source node has no parents" |
 | Another option's constant, or a value of another option's type | rustc's "cannot find value" or mismatched-types error at the value |
 | A parameter that is not a plain identifier, or one named twice | "dependencies are named by plain identifiers, each once" |
-| `init` missing where `K` has no `Default` | "`T` has no `Default`, so this node needs an initial value", labelled "add `init = …` to the effect! options". rustc shows this `InitDefault` message. |
+| `init` missing where `K` has no `Default` | "`T` has no `Default`, so this node needs an initial value", labelled "add `init = …` to the node! options". rustc shows this `InitDefault` message. |
 | A `Setter` as a dependency | "`Setter<K>` cannot be read, so it cannot be a dependency", noting that dependencies are nodes or `Accessor`s |
-| A captured value that is not `Clone` | "`T` is captured by an effect! body but is not `Clone`", labelled "captured here", with the fix as a note: wrap the part that is not `Clone` in `Arc` and capture node handles beside it, or write `move` (4.2) |
+| A captured value that is not `Clone` | "`T` is captured by a node! body but is not `Clone`", labelled "captured here", with the fix as a note: wrap the part that is not `Clone` in `Arc` and capture node handles beside it, or write `move` (4.2) |
 | An annotated parameter of the wrong type | rustc's mismatched-types error at the annotation |
-| A bare `effect!(…).scoped();` | the `#[must_use]` lint: "a scoped node lives only while its handles do; bind this one" |
+| A bare `node!(…).scoped();` | the `#[must_use]` lint: "a scoped node lives only while its handles do; bind this one" |
 | Moving a captured handle out of an async source block | rustc's mismatched-types error, `&SourceNode<K>` found, with its suggestion to clone (4.2) |
 | A key whose type is not `Hash + Eq + Send + Sync + 'static` | "`T` cannot be a node key", labelled "used as `key` here" on the key expression or the closure's body, noting that a key must be `Hash + Eq + Send + Sync + 'static`, like a `HashMap` key shared across threads. rustc shows this `KeyValue` message once per key. |
 | An `async` or `move` key closure | "a `key` closure names variables in scope and runs at once; write it without `async` or `move`" |
@@ -503,15 +503,15 @@ Each of these inputs gets a dedicated message instead of a generic parse or trai
 | An unknown attribute argument | "unknown argument `x`; expected flavor, worker\_threads or start\_paused" |
 | `worker_threads = 0` | "worker\_threads is at least 1" |
 | `start_paused` without lithia's `test-util` feature | "`start_paused` needs lithia's `test-util` feature" |
-| A closure whose body is an async block, `effect!(\|c\| async move { … })` | "a closure that returns an async block makes a node whose value is a future; write `async \|…\| { … }` or `async move \|…\| { … }` for an async body" |
-| An attribute on the body's closure or async block | "effect! does not carry attributes on its closure or block over; put them on the enclosing statement" |
-| `yield` inside a macro call in a body, such as `select!` | "effect! cannot see a `yield` inside a macro call such as `select!`; yield what the macro returns, after it" |
-| A name starting with `__lithia` | "names starting with `__lithia` are effect!'s own" |
-| A capture that is not `Send + Sync + 'static` | "`T` is captured by an effect! body but is not `Send + Sync + 'static`", labelled "captured here", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell`. rustc shows only this message. |
+| A closure whose body is an async block, `node!(\|c\| async move { … })` | "a closure that returns an async block makes a node whose value is a future; write `async \|…\| { … }` or `async move \|…\| { … }` for an async body" |
+| An attribute on the body's closure or async block | "node! does not carry attributes on its closure or block over; put them on the enclosing statement" |
+| `yield` inside a macro call in a body, such as `select!` | "node! cannot see a `yield` inside a macro call such as `select!`; yield what the macro returns, after it" |
+| A name starting with `__lithia` | "names starting with `__lithia` are node!'s own" |
+| A capture that is not `Send + Sync + 'static` | "`T` is captured by a node! body but is not `Send + Sync + 'static`", labelled "captured here", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell`. rustc shows only this message. |
 
 ### 4.7 Keyed creation
 
-A keyed `effect!` looks its key up before it creates anything, and compares the captures of what it would create against what the node it finds has kept, so reclaiming a node whose captures are equal costs a lookup and a comparison: no clone, no body and no run.
+A keyed `node!` looks its key up before it creates anything, and compares the captures of what it would create against what the node it finds has kept, so reclaiming a node whose captures are equal costs a lookup and a comparison: no clone, no body and no run.
 
 - Probes. Each capture, `self` included, and each dependency is borrowed into a probe before anything is cloned or moved. Autoref specialization picks the first comparison that applies to the capture's type: a handle compares by its node; a `PartialEq + Clone` value compares by value and keeps a clone; an `Arc` whose target has no `PartialEq` compares by pointer and keeps the `Arc`; anything else is opaque, keeps nothing and always counts as changed, so a keyed node that captures one reruns whenever its creator does, as an unkeyed child is rebuilt (Case BK). A plain source node has one probe, its new value, which is compared against the node's current value instead of kept inputs.
 - Lookup. The creation asks the creator's holdover for a node that meets the conditions of 10.1, Keyed nodes, its shape included. Candidates are chosen by key hash, site, kind, value type and shape under the creator's scheduling lock; their keys, which run the key type's `PartialEq`, are compared after it is released, and a candidate taken meanwhile is looked for again. The answer is `Same` when every probe matches that node's inputs, `Changed` when one does not, and `Fresh` when no node was found.
@@ -602,8 +602,8 @@ Use it when a write must deliberately happen after the current propagation, inst
 By default every write propagates. The `equals` option lets each node decide which new values count as changes:
 
 ```rust
-let name: SourceNode<String> = effect!(String::new(), equals = lithia::eq);
-let user: SourceNode<User> = effect!(User::guest(),
+let name: SourceNode<String> = node!(String::new(), equals = lithia::eq);
+let user: SourceNode<User> = node!(User::guest(),
     equals = |a: &User, b: &User| a.id == b.id && a.version == b.version);
 ```
 
@@ -705,7 +705,7 @@ Every run is asynchronous in principle; a synchronous body is simply one that re
 - A write cycle stops at the first writer that would run twice on one chain. An async node that does not write is not a writer, so it reruns once and its value catches up.
 - Supersession: works as in 7.3, item 4, so a node whose input outpaces its body still makes progress: the run that replaced another finishes, or yields its first item, before new input replaces it (Case BS).
 
-**Async source nodes (`effect!(async { … })`)**
+**Async source nodes (`node!(async { … })`)**
 
 - An async block or generator is the source node's first run (3.6). The run is registered when the node is created, so the node is `Pending` from that moment, with `init` or `K::default()`, until the run produces an item; a panic marks it `Failed`.
 - Every write starts a new run (7.3, item 5), so a write supersedes the block by the ordinary rule, even before the block has started: the block is aborted, or never starts, and any late items are discarded (Case G). A single write therefore stops a source fed by a stream for good. An equal write is no run, so it leaves the block running (6.4).
@@ -769,8 +769,8 @@ A node lives while anything holds it. Handles, children and captures hold nodes 
 There is no owner hierarchy, no declaration and no process-wide owner. Outside any run, the graph is the implicit root: support starts where something outside lithia holds the graph and flows the way changes flow. One opt-in, `.scoped()`, returns a node to the plain reference-counting rule (10.2).
 
 ```rust
-let parent: SourceNode<i32> = effect!(5);
-effect!(|parent| println!("Value is: {}", parent.get())); // runs for as long as `parent` can change
+let parent: SourceNode<i32> = node!(5);
+node!(|parent| println!("Value is: {}", parent.get())); // runs for as long as `parent` can change
 ```
 
 ### 10.1 Reference counting
@@ -794,12 +794,12 @@ effect!(|parent| println!("Value is: {}", parent.get())); // runs for as long as
 
 - Created while a run is being polled, or by blocking work that a run started: that run's generation, whatever kind of node it is, plain source nodes included.
 - Created anywhere else, such as the top of `main`, a lithia task, a plain tokio task, a thread, a `Drop` or a `defer` closure. This spec calls these nodes top-level.
-  - With parents, that is a closure form of `effect!`: support.
+  - With parents, that is a closure form of `node!`: support.
   - Without parents, a plain source node or an async source block: neither. It lives by its handles, children and captures alone, so the two kinds of source node behave alike everywhere.
 - Created by a run whose node has been disposed, or by blocking work whose run's node is gone: neither (Generations, below).
 - Scoped with `.scoped()`: neither, from then on (10.2).
 
-The line is drawn by syntax, so neither a trailing semicolon nor a generic `K` changes how long a node lives. A closure form of `effect!` always has parents: `effect!(|| …)` is a compile error (4.6).
+The line is drawn by syntax, so neither a trailing semicolon nor a generic `K` changes how long a node lives. A closure form of `node!` always has parents: `node!(|| …)` is a compile error (4.6).
 
 | Holder | Lets go of a node when |
 | --- | --- |
@@ -824,7 +824,7 @@ A release drops the generation's references and then sweeps once (Sweeps, below)
 
 Blocking work started with `lithia::spawn_blocking` keeps a weak reference to its run's node and creates into that node's current generation. A creation whose creator is closed or already freed has no creator: neither a generation nor support holds it, and it lives by its handles. If a handle holds it, it is seeded normally, so its epoch tokens close and `flush` returns; if nothing does, it is freed at once and never runs, with the first-run warning (12) when its creator was freed. A disposed node's body, still running, therefore creates nothing that runs afterwards unless it hands the node to a holder (Case AR).
 
-A body's children are rebuilt on every run unless they are keyed: each run of `effect!(|a| effect!(|b| …))` creates new nodes, and the previous run's are released (Case AL). Creator order (7.2) keeps the previous run's children from running on the input that replaces them, and a superseded run's creations wait for the restart, which lets go of them (Case BR).
+A body's children are rebuilt on every run unless they are keyed: each run of `node!(|a| node!(|b| …))` creates new nodes, and the previous run's are released (Case AL). Creator order (7.2) keeps the previous run's children from running on the input that replaces them, and a superseded run's creations wait for the restart, which lets go of them (Case BR).
 
 #### Keyed nodes
 
@@ -862,9 +862,9 @@ A node is supported when an anchor reaches it along these edges, with two except
 In practice:
 
 - In the example above, `parent`'s handle is the anchor, so the effect keeps printing for as long as that handle lives, under `#[lithia::main]`, `#[tokio::main]` or any thread that has entered a tokio runtime (Case AI).
-- Support flows only downstream, so nothing a body writes extends its own life. `effect!(|local| hits.update(…))` is freed with `local`, however long `hits` lives (Case J), and an effect that only reads `temp` beside a long-lived `clock` gives `temp`'s other watchers nothing (Case AK). A handle a body hands out, into its value, an `Arc`, a task or a channel, is an outside handle and anchors its node like any other (Case AV).
+- Support flows only downstream, so nothing a body writes extends its own life. `node!(|local| hits.update(…))` is freed with `local`, however long `hits` lives (Case J), and an effect that only reads `temp` beside a long-lived `clock` gives `temp`'s other watchers nothing (Case AK). A handle a body hands out, into its value, an `Arc`, a task or a channel, is an outside handle and anchors its node like any other (Case AV).
 - A writer keeps its targets' watchers alive while it lives: while an effect on a held `a` writes `x`, a handle-less watcher of `x` lives, whether or not anything still holds `x` (Case AJ), unless `x` is scoped.
-- An async source block lives by its handles, exactly like a plain source node. A discarded one is freed before it runs, with the first-run warning (Case AN). A loop or loader meant to last without a binding takes the state it serves as a parent, as in `effect!(async |cfg| loop { … })`, which lives while `cfg` can change and restarts when it does; otherwise it is bound, yields into its own node, or goes to `tokio::spawn`, whose handles are outside handles.
+- An async source block lives by its handles, exactly like a plain source node. A discarded one is freed before it runs, with the first-run warning (Case AN). A loop or loader meant to last without a binding takes the state it serves as a parent, as in `node!(async |cfg| loop { … })`, which lives while `cfg` can change and restarts when it does; otherwise it is bound, yields into its own node, or goes to `tokio::spawn`, whose handles are outside handles.
 - A node that support does not reach, such as an effect whose parents' handles are all gone, is freed when its own handles go, with the first-run warning if its first run had not got under way (Case AU). Outside lithia tasks, how far it got depends on timing, and the warning reports when it had not.
 - A top-level node on long-lived state lives as long as that state: a per-request memo or a per-connection effect runs until it is scoped, disposed or its state goes (Case AT). The unread-memo and growth warnings (12) flag such nodes.
 
@@ -872,7 +872,7 @@ In practice:
 
 - Support can be lost when an anchor or an edge goes: a node's last anchoring handle drops, a generation releases nodes, a node is disposed, or a node that may write others is freed. The last trigger matters because a writer held only in memory, by another body's capture or by a child, can go without any of the others.
 - Every operation that drops references, whether a release, a let-go, a disposal or a plain drop, runs in a thread-local operation context. It first drops them, with a node's `Drop` adding its starting points to the context instead of sweeping; then it runs one sweep from every starting point raised, and repeats with whatever that sweep's own let-go raises, until none remain. A release therefore sweeps once, after the released nodes that nothing else holds are gone, and freeing never recurses.
-- A node that support does not hold and that has no outgoing edges needs no sweep, since nothing can lose support through it. This keeps the common case cheap: a nested `effect!` that only reads, whose temporary handle drops at the end of its statement.
+- A node that support does not hold and that has no outgoing edges needs no sweep, since nothing can lose support through it. This keeps the common case cheap: a nested `node!` that only reads, whose temporary handle drops at the end of its statement.
 - A sweep first checks each starting point by an exact search backward to an anchor, which trusts nothing and gives up after 64 nodes. A starting point that is still supported loses nothing downstream, since support flows only forward, so a temporary anchor on a supported node, such as a helper's `&x.accessor()`, ends its sweep at once.
 - From the starting points that lost support, or whose check gave up, the sweep walks downstream, stopping at anchors, and computes support over the region it walked as a least fixpoint. At the region's border, a node held by support counts as supported, since only nodes downstream of a starting point can have lost support; any other node feeding in is checked by a search backward to an anchor (Case AV). Answers are remembered for the rest of the sweep. Neither search passes a scoped node that has no outside handles.
 - The sweep lets go of every node held by support that it walked and found unsupported. Letting go drops the self-reference, and the node is then freed if nothing else holds it.
@@ -884,7 +884,7 @@ In practice:
 #### Cycles and self-support
 
 - Write cycles, such as clamps and two-way bindings, live while an anchor reaches them and are freed once none does (Case AS). So are a creator and a child that may write the creator's input (Case AX), since a generation is an edge, not an anchor.
-- Self-support: a top-level node whose own value, or an `Arc` its body captured, holds an outside handle to a node upstream of it supports itself until it is scoped or disposed. Two patterns hit it: a selector memo that returns one of its parents' handles, such as `effect!(|a, b| if *a.get() > 0 { a.clone() } else { b.clone() })`, and a captured `Arc` of a struct that holds the effect's parent, such as a connection. `.scoped()` on the node avoids it; `lithia::test::live_nodes` and the growth warning catch it (Case AW). A task or channel a body hands a handle to holds only while it lives.
+- Self-support: a top-level node whose own value, or an `Arc` its body captured, holds an outside handle to a node upstream of it supports itself until it is scoped or disposed. Two patterns hit it: a selector memo that returns one of its parents' handles, such as `node!(|a, b| if *a.get() > 0 { a.clone() } else { b.clone() })`, and a captured `Arc` of a struct that holds the effect's parent, such as a connection. `.scoped()` on the node avoids it; `lithia::test::live_nodes` and the growth warning catch it (Case AW). A task or channel a body hands a handle to holds only while it lives.
 - Value cycles stay as they were: a source node whose value holds a handle to one of its own subscribers is a leak that only `lithia::test::live_nodes` catches (Case AF).
 
 **Consequences**
@@ -900,24 +900,24 @@ In practice:
 An effect needs no handle. It runs for as long as something outside lithia can still make it run: while its parents can change, or while a living writer feeds them.
 
 ```rust
-let count: SourceNode<u32> = effect!(0);
-effect!(|count| println!("{}", count.get())); // for as long as `count` can change
+let count: SourceNode<u32> = node!(0);
+node!(|count| println!("{}", count.get())); // for as long as `count` can change
 
-let rows: SourceNode<Vec<SourceNode<String>>> = effect!(Vec::new());
-effect!(|rows| {
+let rows: SourceNode<Vec<SourceNode<String>>> = node!(Vec::new());
+node!(|rows| {
     for row in rows.get().iter() {
         let row: SourceNode<String> = row.clone();
-        effect!(|row| println!("{}", row.get())); // rebuilt on every run of the outer effect
+        node!(|row| println!("{}", row.get())); // rebuilt on every run of the outer effect
     }
 });
 ```
 
 - For as long as its state can change: write the effect and let it go. Nested effects are rebuilt on every run of their creator, and the previous ones are freed (10.1). With a `key`, a rerun reclaims them instead and runs only those whose captures changed (10.1, Keyed nodes).
 - For the life of a value: return the effects as part of a derived node's value, or store them in a node, a struct field or a collection. They live at least as long as that value. When the next run replaces the value and nothing else holds the old one, the old effects are dropped (10.3); created by a run, they are also released with its generation.
-- Loops and loaders: an async block that should run without a binding takes the state it serves as a parent, `effect!(async |cfg| loop { … })`, and restarts when that state changes (Case AN). A discarded async source block is freed before it runs.
+- Loops and loaders: an async block that should run without a binding takes the state it serves as a parent, `node!(async |cfg| loop { … })`, and restarts when that state changes (Case AN). A discarded async source block is freed before it runs.
 - Precise captures: a body that uses a value through field paths only, such as `self.total` and `self.theme`, gets an edge only to the handles it may write. Calling a method on the value whole, such as `self.notify(…)`, makes every handle in it a possible write; binding the fields first, `let (total, theme, tx) = (&self.total, &self.theme, &self.tx);`, keeps it precise (Case AY). A helper that only reads takes `&x.accessor()`.
 
-**`.scoped()`.** `SourceNode::scoped` and `DerivedNode::scoped` take the handle and return it, `fn scoped(self) -> Self`, marked `#[must_use]` with "a scoped node lives only while its handles do; bind this one", since `effect!(…).scoped();` frees the node at once. From then on:
+**`.scoped()`.** `SourceNode::scoped` and `DerivedNode::scoped` take the handle and return it, `fn scoped(self) -> Self`, marked `#[must_use]` with "a scoped node lives only while its handles do; bind this one", since `node!(…).scoped();` frees the node at once. From then on:
 
 - the node lives by its handles, children and captures alone: support, any run's generation and any holdover let go of it at once;
 - support from upstream stops at it: it is supported only while it has outside handles itself;
@@ -929,9 +929,9 @@ effect!(|rows| {
 ```rust
 async fn quote(State(app): State<App>, Query(req): Query<Req>) -> String {
     let rates: &SourceNode<f64> = &app.rates;
-    let input: SourceNode<Req> = effect!(req);
-    let price: DerivedNode<f64> = effect!(|input, rates| calc(&input.get(), *rates.get())).scoped();
-    effect!(|price, rates| metrics::record(*price.get(), *rates.get())); // hangs off `price`
+    let input: SourceNode<Req> = node!(req);
+    let price: DerivedNode<f64> = node!(|input, rates| calc(&input.get(), *rates.get())).scoped();
+    node!(|price, rates| metrics::record(*price.get(), *rates.get())); // hangs off `price`
     lithia::flush().await;
     format!("{:.2}", price.get())
 } // returning, or a cancelled future, frees `price`, `input` and the metrics effect
@@ -1008,7 +1008,7 @@ lithia runs on tokio's multi-threaded runtime: values live in per-node cells, an
 
 ```rust
 /// Bound on every node value; blanket-implemented so that the compile error names the fix.
-/// `fn store<K: NodeValue>(v: K) -> SourceNode<K> { effect!(v) }`
+/// `fn store<K: NodeValue>(v: K) -> SourceNode<K> { node!(v) }`
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be a node value: values must be `Send + Sync + 'static`",
     note = "replace `Rc` with `Arc`, and `RefCell` or `Cell` with `Mutex`, `RwLock` or an atomic")]
@@ -1197,7 +1197,7 @@ Expected changes, and what they replace:
 - Type-directed classification of captures inside containers, so a handle in a captured `Vec` can be read-only, once specialization or a stable equivalent allows it (4.2).
 - Variants. lithia is the general-purpose core; LiSP, a signal-processing variant with GPU-backed, eagerly caching graphs, and a GUI variant can impose what the core cannot, such as borrowing scopes (1).
 - Finer-grained sweep locking, if the benchmarks show contention on the one sweep lock (15).
-- Native generators. `yield` in `effect!` uses the syntax of Rust's unstable `async gen` blocks; the macro lowers it as the `async-stream` crate does on stable, and will lower generator bodies to native `async gen` blocks once they stabilize. Both allow a borrow across a `yield`, so user code does not change (3.6).
+- Native generators. `yield` in `node!` uses the syntax of Rust's unstable `async gen` blocks; the macro lowers it as the `async-stream` crate does on stable, and will lower generator bodies to native `async gen` blocks once they stabilize. Both allow a borrow across a `yield`, so user code does not change (3.6).
 - `Share` and precise captures. Handles will implement Rust's planned `Share` trait once it stabilizes, and captures of `Share` types will use it; the capture rule stays the same (4.2).
 - Writable derived nodes. Because a write is just a run, Solid-style writable memos need no new machinery; they are out of scope for v0 (1, 8).
 - An option for waiting on pending parents, such as `parents = READY | ANY`, beside `batches`; a ghost under `disposed = PEND` would keep a waiting child waiting (3.2, 8, 10.5).

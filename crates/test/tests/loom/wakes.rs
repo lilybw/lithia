@@ -24,11 +24,11 @@ fn a_write_wakes_the_parked_block_it_stops() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (fed, copy): (SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
-                let fed: SourceNode<u32> = effect!(async {
+                let fed: SourceNode<u32> = node!(async {
                     Parked.await;
                     1
                 });
-                let copy: DerivedNode<u32> = effect!(|fed| *fed.get());
+                let copy: DerivedNode<u32> = node!(|fed| *fed.get());
                 (fed, copy)
             });
             model::run_one();
@@ -48,8 +48,8 @@ fn disposal_wakes_a_parked_run() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, waiting): (SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
-                let a: SourceNode<u32> = effect!(1);
-                let waiting: DerivedNode<u32> = effect!(async |a| {
+                let a: SourceNode<u32> = node!(1);
+                let waiting: DerivedNode<u32> = node!(async |a| {
                     let value: u32 = *a.get();
                     Parked.await;
                     value
@@ -74,8 +74,8 @@ fn freeing_a_node_wakes_its_parked_run() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, waiting): (SourceNode<u32>, DerivedNode<u32>) = scope.batch(|| {
-                let a: SourceNode<u32> = effect!(1);
-                let waiting: DerivedNode<u32> = effect!(async |a| {
+                let a: SourceNode<u32> = node!(1);
+                let waiting: DerivedNode<u32> = node!(async |a| {
                     let value: u32 = *a.get();
                     Parked.await;
                     value

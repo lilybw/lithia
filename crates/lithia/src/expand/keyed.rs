@@ -23,7 +23,7 @@ use crate::options::{Options, Shape};
 use crate::run::RunControl;
 use crate::{NodeValue, Site};
 
-/// A value `effect!`'s `key` option accepts.
+/// A value `node!`'s `key` option accepts.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be a node key",
     label = "used as `key` here",
@@ -534,7 +534,7 @@ fn reclaim_or_create<K: NodeValue>(
     if same { Reclaim::Same(Reclaimed(node)) } else { Reclaim::Changed(Reclaimed(node)) }
 }
 
-/// Looks up a keyed derived node; `probes` are its captures. Called by `effect!`.
+/// Looks up a keyed derived node; `probes` are its captures. Called by `node!`.
 #[doc(hidden)]
 pub fn reclaim_derived<K: NodeValue>(
     key: &KeyRef<'_>,
@@ -548,13 +548,13 @@ pub fn reclaim_derived<K: NodeValue>(
     reclaim_or_create(key, Kind::Derived, shape, &parent_ids, probes)
 }
 
-/// Looks up a keyed async source block; `probes` are its captures. Called by `effect!`.
+/// Looks up a keyed async source block; `probes` are its captures. Called by `node!`.
 #[doc(hidden)]
 pub fn reclaim_source_async<K: NodeValue>(key: &KeyRef<'_>, shape: &Shape, probes: &[&dyn Probe]) -> Reclaim<K> {
     reclaim_or_create(key, Kind::AsyncSource, shape, &[], probes)
 }
 
-/// Looks up a keyed source node; `probe` is its new value. Called by `effect!`.
+/// Looks up a keyed source node; `probe` is its new value. Called by `node!`.
 #[doc(hidden)]
 pub fn reclaim_source<K: NodeValue>(key: &KeyRef<'_>, shape: &Shape, probe: &dyn Probe) -> Reclaim<K> {
     reclaim_or_create(key, Kind::Source, shape, &[], &[probe])

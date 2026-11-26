@@ -14,10 +14,10 @@ fn a_creator_decides_its_child_before_it_runs() {
             let scope: ModelScope = ModelScope::new();
             let seen: std::sync::Arc<std::sync::Mutex<Vec<(u32, u32)>>> = Default::default();
             let input: SourceNode<u32> = scope.batch(|| {
-                let input: SourceNode<u32> = effect!(0);
-                effect!(|input| {
+                let input: SourceNode<u32> = node!(0);
+                node!(|input| {
                     let made_at: u32 = *input.get();
-                    effect!(|input| {
+                    node!(|input| {
                         // Read before locking: a std lock held across a loom switch would block the model.
                         let pair: (u32, u32) = (*made_at, *input.get());
                         seen.lock().unwrap().push(pair);
@@ -44,11 +44,11 @@ fn a_superseded_runs_creation_waits_for_the_restart() {
             let scope: ModelScope = ModelScope::new();
             let seen: std::sync::Arc<std::sync::Mutex<Vec<(u32, u32, u32)>>> = Default::default();
             let input: SourceNode<u32> = scope.batch(|| {
-                let input: SourceNode<u32> = effect!(0);
-                effect!(async |input| {
+                let input: SourceNode<u32> = node!(0);
+                node!(async |input| {
                     let made_at: u32 = *input.get();
                     let runs: std::sync::Arc<std::sync::atomic::AtomicU32> = Default::default();
-                    effect!(|input| {
+                    node!(|input| {
                         let run: u32 = runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         let record: (u32, u32, u32) = (*made_at, *input.get(), run);
                         seen.lock().unwrap().push(record);
@@ -77,11 +77,11 @@ fn case_ao_an_idle_old_child_never_runs() {
         with_worker(|| {
             let scope: ModelScope = ModelScope::new();
             let (a, inner_runs): (SourceNode<u32>, SourceNode<u32>) = scope.batch(|| {
-                let a: SourceNode<u32> = effect!(0);
-                let inner_runs: SourceNode<u32> = effect!(0);
-                effect!(|a| {
+                let a: SourceNode<u32> = node!(0);
+                let inner_runs: SourceNode<u32> = node!(0);
+                node!(|a| {
                     let _ = a.get();
-                    effect!(|a| {
+                    node!(|a| {
                         let _ = a.get();
                         inner_runs.update(|n: &u32| n + 1);
                     });
@@ -106,13 +106,13 @@ fn a_superseded_run_keeps_its_creations_until_it_stops() {
             let created: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
             let lost: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
             let (id, _loader): (SourceNode<u32>, DerivedNode<()>) = scope.batch(|| {
-                let id: SourceNode<u32> = effect!(7);
-                let k: SourceNode<u32> = effect!(1);
+                let id: SourceNode<u32> = node!(7);
+                let k: SourceNode<u32> = node!(1);
                 let sc: ModelScope = scope.clone();
-                let loader: DerivedNode<()> = effect!(|id| {
+                let loader: DerivedNode<()> = node!(|id| {
                     if *id.get() == 7 {
                         let before: usize = sc.live();
-                        effect!(|k| {
+                        node!(|k| {
                             let _ = k.get();
                         });
                         created.store(true, Ordering::SeqCst);
@@ -148,19 +148,19 @@ fn case_ar_creations_under_a_disposed_body() {
                 SourceNode<Option<DerivedNode<()>>>,
                 DerivedNode<()>,
             ) = scope.batch(|| {
-                let k: SourceNode<u32> = effect!(1);
-                let free_runs: SourceNode<u32> = effect!(0);
-                let held_runs: SourceNode<u32> = effect!(0);
-                let slot: SourceNode<Option<DerivedNode<()>>> = effect!(None);
-                let body: DerivedNode<()> = effect!(|k| {
+                let k: SourceNode<u32> = node!(1);
+                let free_runs: SourceNode<u32> = node!(0);
+                let held_runs: SourceNode<u32> = node!(0);
+                let slot: SourceNode<Option<DerivedNode<()>>> = node!(None);
+                let body: DerivedNode<()> = node!(|k| {
                     let _ = k.get();
                     started.store(true, Ordering::SeqCst);
                     wait_for(disposed);
-                    effect!(|k| {
+                    node!(|k| {
                         let _ = k.get();
                         free_runs.update(|n: &u32| n + 1);
                     });
-                    slot.set(Some(effect!(|k| {
+                    slot.set(Some(node!(|k| {
                         let _ = k.get();
                         held_runs.update(|n: &u32| n + 1);
                     })));
@@ -193,8 +193,8 @@ fn case_aq_a_write_releases_a_superseded_blocks_creations() {
             let scope: ModelScope = ModelScope::new();
             let go: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
             let block: SourceNode<u32> = scope.batch(|| {
-                effect!(async {
-                    effect!(1u32);
+                node!(async {
+                    node!(1u32);
                     WaitFor(go.clone()).await;
                     5u32
                 })

@@ -1,4 +1,4 @@
-// effect!(|n| *n.get(), batches = WHOLE, resilience = NONE)
+// node!(|n| *n.get(), batches = WHOLE, resilience = NONE)
 
 {
     fn __lithia_scope () {

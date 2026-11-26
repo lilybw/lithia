@@ -1,5 +1,5 @@
 error: option `disposed` is given twice
- --> tests/ui/repeated_option.rs:7:41
+ --> tests/ui/repeated_option.rs:7:39
   |
-7 |     let _ = effect!(0, disposed = MASK, disposed = PEND);
-  |                                         ^^^^^^^^
+7 |     let _ = node!(0, disposed = MASK, disposed = PEND);
+  |                                       ^^^^^^^^

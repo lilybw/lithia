@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! Capture mode: handle clones an `effect!` expansion makes for a body are internal handles,
+//! Capture mode: handle clones a `node!` expansion makes for a body are internal handles,
 //! and their nodes are recorded for the writer edges of the node being created.
 
 use std::cell::{Cell, RefCell};
@@ -176,7 +176,7 @@ impl Drop for ReadOnly {
     }
 }
 
-/// One `effect!` expansion's capture clones; ends capture mode when finished or dropped.
+/// One `node!` expansion's capture clones; ends capture mode when finished or dropped.
 #[doc(hidden)]
 pub struct Capturing {
     outer: Option<Recorded>,

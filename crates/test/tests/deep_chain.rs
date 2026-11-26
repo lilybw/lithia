@@ -6,20 +6,20 @@
 
 use std::time::Duration;
 
-use lithia::{DerivedNode, SourceNode, effect};
+use lithia::{DerivedNode, SourceNode, node};
 
 #[lithia::test]
 async fn a_long_chain_propagates_and_drops_without_recursion() {
-    let other: SourceNode<u64> = effect!(0);
-    let _scoped: DerivedNode<()> = effect!(|other| {
+    let other: SourceNode<u64> = node!(0);
+    let _scoped: DerivedNode<()> = node!(|other| {
         let _ = other.get();
     })
     .scoped();
-    let source: SourceNode<u64> = effect!(0);
-    let mut tail: DerivedNode<u64> = effect!(|source| *source.get() + 1);
+    let source: SourceNode<u64> = node!(0);
+    let mut tail: DerivedNode<u64> = node!(|source| *source.get() + 1);
     for _ in 0..20_000 {
         let previous: DerivedNode<u64> = tail.clone();
-        tail = effect!(|previous| *previous.get() + 1);
+        tail = node!(|previous| *previous.get() + 1);
     }
     lithia::flush().await;
     assert_eq!(*tail.get(), 20_001);
