@@ -349,7 +349,7 @@ async fn expect_bodies(alive: &AtomicUsize, want: usize, seed: u64, phase: &str)
 /// Writes from `tasks` lithia tasks at once, each its own sequence from `seed`, and waits until every
 /// run they caused has ended, async ones included (`flush` does not wait for those).
 async fn write(sources: &[SourceNode<u64>], seed: u64, tasks: u64) {
-    let mut joins: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut joins: Vec<lithia::JoinHandle<()>> = Vec::new();
     for task in 0..tasks {
         let sources: Vec<SourceNode<u64>> = sources.to_vec();
         joins.push(lithia::spawn(async move {

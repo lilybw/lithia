@@ -299,7 +299,7 @@ async fn concurrent_writers_reach_eventual_consistency() {
     let right: DerivedNode<u64> = node!(|s4, s5, s6, s7| *s4.get() + *s5.get() + *s6.get() + *s7.get());
     let total: DerivedNode<u64> = node!(|left, right| *left.get() + *right.get());
     lithia::flush().await;
-    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut tasks: Vec<lithia::JoinHandle<()>> = Vec::new();
     for (index, source) in sources.iter().enumerate() {
         let source: SourceNode<u64> = source.clone();
         tasks.push(lithia::spawn(async move {
@@ -501,7 +501,7 @@ async fn a_node_written_twice_in_one_batch_carries_its_newest_stamp() {
         started.recv().unwrap();
         other.set(1); // an outside batch of its own: `c` runs now on another worker, reading `s` = 2
     });
-    let writes: tokio::task::JoinHandle<()> = lithia::spawn(async move {
+    let writes: lithia::JoinHandle<()> = lithia::spawn(async move {
         s.set(2);
         go.send(()).unwrap();
         std::thread::sleep(Duration::from_millis(100)); // still the same poll, so the same batch
@@ -524,7 +524,7 @@ async fn a_cut_rerun_leaves_alone_what_its_run_recorded_after_the_cut() {
     let work: DerivedNode<()> = node!(async |input, result| {
         runs.update(|n: &u32| n + 1);
         let (n, out): (u32, SourceNode<u32>) = (*input.get(), result.clone());
-        let blocking: tokio::task::JoinHandle<()> = lithia::spawn_blocking(move || out.set(n * n));
+        let blocking: lithia::JoinHandle<()> = lithia::spawn_blocking(move || out.set(n * n));
         std::thread::sleep(Duration::from_millis(100)); // the poll goes on while the write lands
         blocking.await.unwrap();
     });

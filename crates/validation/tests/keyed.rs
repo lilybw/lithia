@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use lithia::{DerivedNode, SourceNode, node};
+use lithia::{DerivedNode, Ref, SourceNode, node};
 use tracing::Level;
 
 #[derive(Clone, PartialEq, Debug)]
@@ -30,7 +30,7 @@ fn texts(list: &DerivedNode<Vec<DerivedNode<String>>>) -> Vec<String> {
     list.get().iter().map(|node: &DerivedNode<String>| (*node.get()).clone()).collect()
 }
 
-fn values(list: &DerivedNode<Vec<DerivedNode<String>>>) -> Vec<Arc<String>> {
+fn values(list: &DerivedNode<Vec<DerivedNode<String>>>) -> Vec<Ref<String>> {
     list.get().iter().map(|node: &DerivedNode<String>| node.get()).collect()
 }
 
@@ -58,15 +58,15 @@ async fn case_bd_rows_keep_their_nodes() {
     lithia::flush().await;
     assert_eq!(texts(&list), ["a!", "b!"]);
     assert_eq!(runs.load(Ordering::SeqCst), 2);
-    let before: Vec<Arc<String>> = values(&list);
+    let before: Vec<Ref<String>> = values(&list);
 
     // Reordered: both rows are reclaimed with equal captures, so neither runs.
     rows.set(vec![row(2, "b"), row(1, "a")]);
     lithia::flush().await;
     assert_eq!(texts(&list), ["b!", "a!"]);
     assert_eq!(runs.load(Ordering::SeqCst), 2);
-    let after: Vec<Arc<String>> = values(&list);
-    assert!(Arc::ptr_eq(&before[0], &after[1]) && Arc::ptr_eq(&before[1], &after[0]));
+    let after: Vec<Ref<String>> = values(&list);
+    assert!(Ref::ptr_eq(&before[0], &after[1]) && Ref::ptr_eq(&before[1], &after[0]));
 
     // A changed row reruns in place, a new row is created.
     rows.set(vec![row(2, "B"), row(1, "a"), row(3, "c")]);
@@ -226,13 +226,13 @@ async fn case_bh_keyed_async_nodes() {
     assert_eq!((block.get().as_str(), item.get().as_str(), starts.load(Ordering::SeqCst)), ("A", "a0", 1));
 
     // An equal row: the block is not restarted and the derived node does not rerun.
-    let value: Arc<String> = item.get();
+    let value: Ref<String> = item.get();
     rows.set(vec![row(1, "a")]);
     lithia::flush().await;
     lithia::test::settled(&blocks).await;
     lithia::test::settled(&derived).await;
     assert_eq!(starts.load(Ordering::SeqCst), 1);
-    assert!(Arc::ptr_eq(&value, &derived.get()[0].get()));
+    assert!(Ref::ptr_eq(&value, &derived.get()[0].get()));
 
     // A changed row restarts the block and reruns the derived node, both in place.
     rows.set(vec![row(1, "b")]);
@@ -254,7 +254,7 @@ async fn case_bi_a_superseded_run_hands_its_keyed_nodes_on() {
     let gate: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let list: DerivedNode<Vec<DerivedNode<String>>> = node!(async |rows| {
-        let current: Arc<Vec<Row>> = rows.get();
+        let current: Ref<Vec<Row>> = rows.get();
         let seed: SourceNode<u32> = seed.clone();
         let made: Vec<DerivedNode<String>> = current
             .iter()

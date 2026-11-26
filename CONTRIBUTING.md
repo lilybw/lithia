@@ -32,7 +32,7 @@ Inside `crates/lithia/src`:
 
 | Module | Holds |
 |---|---|
-| `api.rs`, `handles.rs`, `changes.rs`, `status.rs`, `site.rs`, `options.rs`, `value.rs` | The public API |
+| `api.rs`, `handles.rs`, `changes.rs`, `reference.rs`, `task.rs`, `status.rs`, `site.rs`, `options.rs`, `value.rs` | The public API |
 | `expand/` | What the macro's expansions call: creation, keyed reclaim, captures, the hidden traits, the entry points |
 | `graph/` | The node record: ids and the clock, header, scheduler state, sets, epochs |
 | `protocol/` | The scheduling protocol (§7, §11.4): work done after unlocking, propagation, delivery, the run lifecycle, linking, defers |

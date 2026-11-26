@@ -186,7 +186,7 @@ fn fan_in() -> Row {
         });
         lithia::flush().await;
         let start: Instant = Instant::now();
-        let tasks: Vec<tokio::task::JoinHandle<()>> = parents
+        let tasks: Vec<lithia::JoinHandle<()>> = parents
             .iter()
             .map(|parent: &SourceNode<u64>| {
                 let parent: SourceNode<u64> = parent.clone();

@@ -13,7 +13,7 @@ use crate::expand::capture::SharedLease;
 use crate::graph::ids::Stamp;
 use crate::graph::node::{Commit, Displaced, Header, Kind, Node, NodeRef, TypedNodeRef};
 use crate::sync::MutexGuard;
-use crate::{Ghosted, NodeValue, Status, diag, protocol};
+use crate::{Ghosted, NodeValue, Ref, Status, diag, protocol};
 
 /// Type-erased reference to a node, used by `node!` and the free functions.
 #[doc(hidden)]
@@ -41,9 +41,9 @@ pub trait Readable: sealed::Sealed + Send + Sync {
     /// The node's value type.
     type Value: NodeValue;
     /// Current value. Panics if the node is a ghost under `disposed = FAIL`.
-    fn get(&self) -> Arc<Self::Value>;
+    fn get(&self) -> Ref<Self::Value>;
     /// Current value, or `Err(Ghosted)` where the node's `disposed` option would make `get` panic.
-    fn try_get(&self) -> Result<Arc<Self::Value>, Ghosted>;
+    fn try_get(&self) -> Result<Ref<Self::Value>, Ghosted>;
     /// Stream of this node's values from now on; like `tokio::sync::watch`, it may skip values.
     fn changes(&self) -> Changes<Self::Value>;
     /// Calls `f` with the current value, borrowed, without taking a reference to it; `f` may not
@@ -70,10 +70,10 @@ impl<T: Readable + ?Sized> sealed::Sealed for &T {}
 impl<T: Readable + ?Sized> Readable for &T {
     type Value = T::Value;
     #[track_caller]
-    fn get(&self) -> Arc<T::Value> {
+    fn get(&self) -> Ref<T::Value> {
         (**self).get()
     }
-    fn try_get(&self) -> Result<Arc<T::Value>, Ghosted> {
+    fn try_get(&self) -> Result<Ref<T::Value>, Ghosted> {
         (**self).try_get()
     }
     fn changes(&self) -> Changes<T::Value> {
@@ -202,11 +202,11 @@ macro_rules! readable {
         impl<K: NodeValue> Readable for $ty<K> {
             type Value = K;
             #[track_caller]
-            fn get(&self) -> Arc<K> {
-                self.node.read_or_panic()
+            fn get(&self) -> Ref<K> {
+                Ref::new(self.node.read_or_panic())
             }
-            fn try_get(&self) -> Result<Arc<K>, Ghosted> {
-                self.node.read()
+            fn try_get(&self) -> Result<Ref<K>, Ghosted> {
+                self.node.read().map(Ref::new)
             }
             fn changes(&self) -> Changes<K> {
                 Changes::new(&self.node)
@@ -226,8 +226,8 @@ macro_rules! readable {
         impl<K: NodeValue> $ty<K> {
             /// Current value. Panics if the node is a ghost under `disposed = FAIL`.
             #[track_caller]
-            pub fn get(&self) -> Arc<K> {
-                self.node.read_or_panic()
+            pub fn get(&self) -> Ref<K> {
+                Ref::new(self.node.read_or_panic())
             }
 
             /// Calls `f` with the current value, borrowed; `f` may not write nodes. Panics like `get`.
@@ -238,8 +238,8 @@ macro_rules! readable {
 
             /// Current value, or `Err(Ghosted)` where the `disposed` option would make `get` panic.
             #[must_use = "a read has no effect; use the value or drop the call"]
-            pub fn try_get(&self) -> Result<Arc<K>, Ghosted> {
-                self.node.read()
+            pub fn try_get(&self) -> Result<Ref<K>, Ghosted> {
+                self.node.read().map(Ref::new)
             }
 
             /// Stream of this node's values from now on: the current value first, then each change.

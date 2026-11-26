@@ -38,7 +38,7 @@ fn a_write_frames_through_a_node_being_disposed() {
             let x: SourceNode<u32> = node!(1);
             let m: DerivedNode<u32> = node!(|x| *x.get() + 1);
             // Reading the ghost fails, so the survivor's rerun counts it as 0.
-            let c: DerivedNode<u32> = node!(|x, m| *x.get() + m.try_get().map_or(0, |v: std::sync::Arc<u32>| *v));
+            let c: DerivedNode<u32> = node!(|x, m| *x.get() + m.try_get().map_or(0, |v: lithia::Ref<u32>| *v));
             (x, m, c)
         });
         scope.flush();

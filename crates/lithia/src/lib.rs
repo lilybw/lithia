@@ -18,10 +18,12 @@ mod handles;
 mod lifetime;
 mod options;
 mod protocol;
+mod reference;
 mod run;
 mod site;
 mod status;
 mod sync;
+mod task;
 mod testing;
 mod value;
 
@@ -30,8 +32,10 @@ pub use changes::Changes;
 pub use handles::{Accessor, DerivedNode, Dispose, Readable, Reflow, Setter, SourceNode, Writable};
 pub use lithia_macro::{main, node, test};
 pub use options::{batches, disposed, resilience};
+pub use reference::Ref;
 pub use site::Site;
 pub use status::{Failure, Ghosted, Status};
+pub use task::{JoinError, JoinHandle};
 pub use value::NodeValue;
 
 /// Test utilities: `settled` and `live_nodes`. Unstable: may change in any release.

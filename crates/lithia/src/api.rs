@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tokio::runtime::Handle;
-use tokio::task::JoinHandle;
 
 use crate::context::{self, Batch, Deferred, Frame, Target};
 use crate::graph::epoch::{Epochs, Scope, ScopeToken};
@@ -18,7 +17,7 @@ use crate::graph::node::Header;
 use crate::handles::NodeHandle;
 use crate::run::{self};
 use crate::sync::MutexGuard;
-use crate::{Dispose, Ghosted, Readable, Reflow, Status, lifetime::dispose as disposal, protocol};
+use crate::{Dispose, Ghosted, JoinHandle, Readable, Reflow, Status, lifetime::dispose as disposal, protocol};
 
 /// Delivers the pending batch, then waits until every run in the caller's scope has ended or suspended.
 /// `lithia::flush().await;` never waits for async results; tests use `lithia::test::settled`.
@@ -108,16 +107,16 @@ pub fn eq<K: PartialEq>(old: &K, new: &K) -> bool {
 /// Spawns a task that roots its own scope and whose polls form batches; it starts with an empty writer set.
 /// `lithia::spawn(async move { count.set(1); });`
 pub fn spawn<F: Future<Output = ()> + Send + 'static>(fut: F) -> JoinHandle<()> {
-    tokio::spawn(run::scoped(fut))
+    JoinHandle::new(tokio::spawn(run::scoped(fut)))
 }
 
-/// Runs blocking work on tokio's blocking pool in the caller's scope; from a body, its writes count as the run's.
+/// Runs blocking work on the runtime's blocking pool in the caller's scope; from a body, its writes count as the run's.
 /// `lithia::spawn_blocking(move || count.set(heavy())).await?;`
 pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> JoinHandle<R> {
     let target: Target = context::with_frame(|frame: Option<&Frame>| {
         frame.map_or_else(|| Target::Scope(context::detached_scope()), |frame: &Frame| frame.target.clone())
     });
-    tokio::task::spawn_blocking(move || {
+    JoinHandle::new(tokio::task::spawn_blocking(move || {
         let frame: Frame = Frame::new(target.clone());
         let result: std::thread::Result<R> = context::entered(&frame, || catch_unwind(AssertUnwindSafe(f)));
         let batch: Batch = frame.take_batch();
@@ -127,5 +126,5 @@ pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static)
             Ok(value) => value,
             Err(panic) => resume_unwind(panic),
         }
-    })
+    }))
 }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
-use lithia::{Changes, DerivedNode, Ghosted, SourceNode, Status, node};
+use lithia::{Changes, DerivedNode, Ghosted, Ref, SourceNode, Status, node};
 
 #[lithia::test]
 async fn writes_are_visible_immediately() {
@@ -134,7 +134,7 @@ async fn try_operations_report_ghosts() {
     assert_eq!(n.try_update(|v: &u32| v + 1), Err(Ghosted));
     assert_eq!(n.try_modify(|v: &mut u32| *v += 1), Err(Ghosted));
     assert_eq!(lithia::try_reflow(&n), Err(Ghosted));
-    let read: std::thread::Result<Arc<u32>> = catch_unwind(AssertUnwindSafe(|| n.get()));
+    let read: std::thread::Result<Ref<u32>> = catch_unwind(AssertUnwindSafe(|| n.get()));
     let message: String = match read {
         Ok(_) => panic!("reading a ghost under `disposed = FAIL` must panic"),
         Err(payload) => payload.downcast_ref::<String>().cloned().unwrap_or_default(),
@@ -150,7 +150,7 @@ async fn equal_writes_do_not_reach_changes() {
     let mut stream: Changes<u32> = n.changes();
     assert_eq!(*stream.next().await.unwrap(), 1);
     n.set(1);
-    let next: Result<Option<Arc<u32>>, tokio::time::error::Elapsed> =
+    let next: Result<Option<Ref<u32>>, tokio::time::error::Elapsed> =
         tokio::time::timeout(Duration::from_millis(30), stream.next()).await;
     assert!(next.is_err(), "an equal write is skipped");
     n.set(2);

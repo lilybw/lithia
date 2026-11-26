@@ -137,7 +137,7 @@ Solid 2.0 behaviour as described in RFC 01: reactivity, batching and effects.
 
 ## 3. Public API
 
-The whole surface is `node!`, two node types, two views, the `Status`, `Failure`, `Site` and `Ghosted` types, the `Changes` stream, typed option constants (3.2), nine free functions, the `#[lithia::main]` and `#[lithia::test]` attributes, and the `lithia::test` module (3.5). Four sealed traits state what each handle may do, and `NodeValue` bounds every value (11.1). The validation cases of section 13 live in the `lithia-validation` crate, not in a public module.
+The whole surface is `node!`, two node types, two views, the `Ref`, `Status`, `Failure`, `Site` and `Ghosted` types, the `Changes` stream, typed option constants (3.2), nine free functions and the `JoinHandle` and `JoinError` types of the two that spawn, the `#[lithia::main]` and `#[lithia::test]` attributes, and the `lithia::test` module (3.5). Four sealed traits state what each handle may do, and `NodeValue` bounds every value (11.1). The validation cases of section 13 live in the `lithia-validation` crate, not in a public module.
 
 ### 3.1 node!
 
@@ -165,7 +165,7 @@ let view: DerivedNode<Vec<DerivedNode<String>>> = node!(|rows| rows.get().iter()
 - An `async { … }` block creates a source node that stays `Pending` with its initial value until the block produces its first item (section 8).
 - A body that contains `yield` is a generator, written like Rust's `gen` blocks: each `yield` publishes an item, and the body returns `()` (3.6). A body without `yield` returns its single item.
 - An `async { … }` block that yields feeds a source node item by item.
-- `get()` returns `Arc<K>`, so values need no `Clone`; numeric use dereferences, e.g. `*count.get() * 2`.
+- `get()` returns a `Ref<K>`, which shares the value without copying it, so values need no `Clone`; numeric use dereferences, e.g. `*count.get() * 2` (3.3).
 - Inside a body, `key = …` keeps a child across its creator's runs: a rerun reclaims the node with the same key instead of creating a new one, and runs it again only if one of its captures changed (3.2, 10.1).
 
 ### 3.2 Options
@@ -247,9 +247,9 @@ impl<K: NodeValue> DerivedNode<K> {
 pub trait Readable: Sealed + Send + Sync {
     type Value: NodeValue;
     /// Current value. Panics if the node is a ghost under `disposed = FAIL`.
-    fn get(&self) -> Arc<Self::Value>;
+    fn get(&self) -> Ref<Self::Value>;
     /// Current value, or `Err(Ghosted)` where the node's `disposed` option would make `get` panic.
-    fn try_get(&self) -> Result<Arc<Self::Value>, Ghosted>;
+    fn try_get(&self) -> Result<Ref<Self::Value>, Ghosted>;
     /// Stream of this node's values from now on; like `tokio::sync::watch`, it may skip values.
     fn changes(&self) -> Changes<Self::Value>;
     /// Calls `f` with the current value, borrowed; `f` may not write nodes. Panics like `get`.
@@ -276,10 +276,24 @@ pub trait Dispose: Sealed + Send + Sync { … }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ghosted;
 
-/// `Unpin` `Stream<Item = Arc<K>>` of a node's values, current value first; holds the node weakly.
+/// `Unpin` `Stream<Item = Ref<K>>` of a node's values, current value first; holds the node weakly.
 /// `while let Some(v) = changes.next().await { println!("{v}"); }`
 pub struct Changes<K: NodeValue> { … }
+
+/// A node's value as one read saw it: it derefs to the value, and later writes leave it as it is.
+/// `let shared: Arc<u32> = count.get().into_arc();`
+pub struct Ref<K> { … }
+impl<K> Ref<K> {
+    /// The `Arc` holding the value; `Arc::from(r)` and `r.into()` do the same.
+    pub fn into_arc(self) -> Arc<K>;
+    /// The `Arc` holding the value, borrowed; called as `Ref::as_arc(&r)`.
+    pub fn as_arc(this: &Ref<K>) -> &Arc<K>;
+    /// True if both hold the same value; called as `Ref::ptr_eq(&a, &b)`.
+    pub fn ptr_eq(this: &Ref<K>, other: &Ref<K>) -> bool;
+}
 ```
+
+A `Ref` is an `Arc` under lithia's own name, so the read type can change without changing the API; it costs nothing beside the `Arc`. Cloning it clones the `Arc`, and it implements `Deref`, `AsRef`, `Borrow`, `Debug`, `Display`, `Pointer`, `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Hash` through the value, like `Arc`. No trait lets it stand where an `Arc<K>` parameter is expected; `into()` converts it. As on `Arc`, its own methods are called through the type, so none hides a method of the value.
 
 Handles state how a node is reached, not how long it lives: a node with a body needs no handle to keep running (10.1), and `.scoped()` makes one live by its handles alone (10.2). `get`, `set` and the other trait methods are also inherent on each type, so calling them needs no trait import; `Changes` likewise has an inherent `async fn next`, so a loop over it needs no `StreamExt`. The four traits are sealed: only lithia's handles implement them, which keeps the capability table below closed. `Ghosted` displays as "the node was disposed".
 
@@ -361,9 +375,29 @@ pub fn eq<K: PartialEq>(old: &K, new: &K) -> bool;
 /// `lithia::spawn(async move { count.set(1); });`
 pub fn spawn<F: Future<Output = ()> + Send + 'static>(fut: F) -> JoinHandle<()>;
 
-/// Runs blocking work on tokio's blocking pool in the caller's scope; from a body, its writes count as the run's.
+/// Runs blocking work on the runtime's blocking pool in the caller's scope; from a body, its writes count as the run's.
 /// `lithia::spawn_blocking(move || count.set(heavy())).await?;`
 pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> JoinHandle<R>;
+
+/// A task `spawn` or `spawn_blocking` started; awaiting it gives the task's output. Dropping it lets the task run on.
+/// `let total: u64 = lithia::spawn_blocking(move || sum(&rows)).await?;`
+pub struct JoinHandle<T> { … }
+impl<T> JoinHandle<T> {
+    /// Cancels the task at its next await; blocking work that has started runs to its end.
+    pub fn abort(&self);
+    /// True once the task has ended: finished, panicked or cancelled.
+    pub fn is_finished(&self) -> bool;
+}
+impl<T> Future for JoinHandle<T> { type Output = Result<T, JoinError>; }
+
+/// Why a task gave no output: it panicked, or it was cancelled by `abort` or by its runtime shutting down.
+pub struct JoinError { … }
+impl JoinError {
+    pub fn is_cancelled(&self) -> bool;
+    pub fn is_panic(&self) -> bool;
+    /// The task's panic payload, for `std::panic::resume_unwind`, or the error back if it was cancelled.
+    pub fn try_into_panic(self) -> Result<Box<dyn Any + Send + 'static>, JoinError>;
+}
 
 /// Test utilities; unstable, and exempt from stability guarantees.
 pub mod test {
@@ -381,6 +415,8 @@ pub mod test {
 Both attributes require an `async fn` and accept tokio's runtime arguments: `flavor = "multi_thread"` or `"current_thread"`, `worker_threads = N` (multi-threaded flavour only, at least 1) and `start_paused = bool`, which needs lithia's `test-util` feature (it turns on tokio's) and the current-thread flavour. Any other argument is a compile error naming the three; every bad argument is reported, and the function is emitted beside the errors, so it still exists for the rest of the crate. A test may return what a `#[test]` may, such as `Result<(), E>`. `#[lithia::test]` fails a test that runs longer than `LITHIA_TEST_TIMEOUT_MS` milliseconds of real time, whatever its runtime's clock does, panicking with the test's name; unset or 0 means no limit, and the workspace sets 20 000 in .cargo/config.toml.
 
 `flush()` never waits for async results, but a loop that never settles, like Case S, keeps it waiting; a test that needs an async result uses `lithia::test::settled`, ideally inside `tokio::time::timeout`.
+
+`JoinHandle` and `JoinError` are lithia's own, so no tokio type is part of the API and the runtime under lithia can change without breaking it. `JoinError` displays as "the task was cancelled" or "the task panicked" and implements `Error`.
 
 ### 3.6 Items: yield and changes()
 
@@ -951,7 +987,7 @@ Overlapping generations. Effects held in a replaced value live exactly as long a
 - The drops one protocol step or one run poll causes are gathered and queued when it ends, as one blocking task per runtime, at most 64 to a task; each still runs under its own `catch_unwind`. The drops those drops cause in turn, such as nodes whose last handle a dropped value held, are gathered the same way. A `Drop` that blocks therefore delays the others in its task, and one `Drop` must not wait for another to run. Drops outside a step, such as a value replaced by a write from a task, are queued one by one.
 - If the node's runtime has shut down, or the node has none, tokio would drop the payload on the spawning thread, which may be a worker in the middle of scheduling. Such drops go to a lithia-owned drop thread instead, also under `catch_unwind`.
 - An old value is dropped only after the node's write lock is released, so a `Drop` that writes nodes cannot deadlock.
-- If a reader still holds the previous `Arc<K>`, the drop happens on that reader's thread when it lets go. `Drop` cannot be async, so graceful async cleanup spawns a task.
+- If a reader still holds the previous value in a `Ref<K>`, the drop happens on that reader's thread when it lets go. `Drop` cannot be async, so graceful async cleanup spawns a task.
 - A freed node wakes its run if one is parked. The run then finds its node gone and drops its future, and with it the captures inside, such as a handle a `move` block took over (Case AN).
 
 ### 10.4 Manual disposal

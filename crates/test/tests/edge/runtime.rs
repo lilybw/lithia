@@ -225,3 +225,20 @@ async fn a_test_may_start_with_its_clock_paused() {
     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     assert!(before.elapsed() < std::time::Duration::from_secs(60), "the paused clock advanced on its own");
 }
+
+#[lithia::test]
+async fn spawned_tasks_report_their_output_cancellation_and_panics() {
+    let done: lithia::JoinHandle<u32> = lithia::spawn_blocking(|| 7);
+    assert_eq!(done.await.expect("the blocking task finishes"), 7);
+
+    let parked: lithia::JoinHandle<()> = lithia::spawn(std::future::pending::<()>());
+    parked.abort();
+    let cancelled: lithia::JoinError = parked.await.expect_err("an aborted task gives no output");
+    assert!(cancelled.is_cancelled() && !cancelled.is_panic());
+    assert_eq!(cancelled.to_string(), "the task was cancelled");
+
+    let failing: lithia::JoinHandle<()> = lithia::spawn_blocking(|| panic!("blocking work failed"));
+    let panicked: lithia::JoinError = failing.await.expect_err("a panicking task gives no output");
+    let payload: Box<dyn std::any::Any + Send> = panicked.try_into_panic().expect("it panicked");
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"blocking work failed"));
+}

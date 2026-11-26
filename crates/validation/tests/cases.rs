@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lithia::{Accessor, Changes, DerivedNode, Setter, SourceNode, Status, node};
+use lithia::{Accessor, Changes, DerivedNode, Ref, Setter, SourceNode, Status, node};
 use tokio::sync::oneshot;
 
 // Case A: nested creation and a write-back stop.
@@ -511,7 +511,7 @@ async fn case_z_modify() {
     let runs: SourceNode<u32> = node!(0);
     let _watch: DerivedNode<()> = node!(|history| runs.update(|n: &u32| n + 1));
     lithia::flush().await;
-    let before: Arc<Vec<u32>> = history.get();
+    let before: Ref<Vec<u32>> = history.get();
     history.modify(|v: &mut Vec<u32>| v.push(1));
     lithia::flush().await;
     assert_eq!(*history.get(), vec![1]);

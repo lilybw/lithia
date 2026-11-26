@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use lithia::{Accessor, DerivedNode, SourceNode, node};
+use lithia::{Accessor, DerivedNode, Ref, SourceNode, node};
 
 fn count(counter: &AtomicU32) -> u32 {
     counter.load(Ordering::SeqCst)
@@ -222,13 +222,13 @@ async fn one_site_with_two_value_types_never_mixes_them() {
     });
     lithia::flush().await;
     let (number, text): (SourceNode<u32>, SourceNode<String>) = (*pair.get()).clone().expect("pair");
-    let (number_value, text_value): (Arc<u32>, Arc<String>) = (number.get(), text.get());
+    let (number_value, text_value): (Ref<u32>, Ref<String>) = (number.get(), text.get());
     rerun.set(1);
     lithia::flush().await;
     assert!(matches!(lithia::status(&pair), lithia::Status::Ready));
     let (again_number, again_text): (SourceNode<u32>, SourceNode<String>) = (*pair.get()).clone().expect("pair");
-    assert!(Arc::ptr_eq(&number_value, &again_number.get()));
-    assert!(Arc::ptr_eq(&text_value, &again_text.get()));
+    assert!(Ref::ptr_eq(&number_value, &again_number.get()));
+    assert!(Ref::ptr_eq(&text_value, &again_text.get()));
 }
 
 #[lithia::test]
@@ -316,7 +316,7 @@ async fn a_reclaimed_node_takes_the_new_comparator() {
     coarse.set(true);
     lithia::flush().await;
     // Reclaimed unchanged, with the comparator that compares by tens: 5 equals 0.
-    assert!(Arc::ptr_eq(&child.get(), &(*made.get()).clone().expect("made").get()));
+    assert!(Ref::ptr_eq(&child.get(), &(*made.get()).clone().expect("made").get()));
     input.set(5);
     lithia::flush().await;
     assert_eq!(*child.get(), 0);

@@ -11,10 +11,10 @@ use std::task::{Context, Poll};
 use futures_core::Stream;
 use tokio_stream::wrappers::WatchStream;
 
-use crate::NodeValue;
 use crate::graph::node::{ChangeSender, ChangeSeq, TypedNodeRef, WeakTypedNodeRef};
+use crate::{NodeValue, Ref};
 
-/// `Unpin` `Stream<Item = Arc<K>>` of a node's values, current value first; holds the node weakly.
+/// `Unpin` `Stream<Item = Ref<K>>` of a node's values, current value first; holds the node weakly.
 /// `while let Some(v) = changes.next().await { println!("{v}"); }`
 pub struct Changes<K: NodeValue> {
     node: WeakTypedNodeRef<K>,
@@ -40,13 +40,13 @@ impl<K: NodeValue> Changes<K> {
     }
 
     /// Next value, or `None` once the node is freed or disposed.
-    pub async fn next(&mut self) -> Option<Arc<K>> {
+    pub async fn next(&mut self) -> Option<Ref<K>> {
         poll_fn(|cx: &mut Context<'_>| Pin::new(&mut *self).poll_next(cx)).await
     }
 }
 
 impl<K: NodeValue> Stream for Changes<K> {
-    type Item = Arc<K>;
+    type Item = Ref<K>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this: &mut Changes<K> = self.get_mut();
@@ -68,7 +68,7 @@ impl<K: NodeValue> Stream for Changes<K> {
                 if value.is_none() {
                     this.inner = None;
                 }
-                Poll::Ready(value)
+                Poll::Ready(value.map(Ref::new))
             }
         }
     }
