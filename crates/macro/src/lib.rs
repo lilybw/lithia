@@ -4,6 +4,8 @@
 //! Procedural macros of lithia: `node!`, `#[lithia::main]` and `#[lithia::test]`.
 //! Use them through the `lithia` crate, whose paths their expansions name.
 
+#![warn(missing_docs)]
+
 use proc_macro::TokenStream;
 
 mod attrs;

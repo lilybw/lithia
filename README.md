@@ -7,7 +7,7 @@ every kind of node; tokio runs them across threads.
 [Design spec](https://lilybw.com/lithia/spec/) · [Releases](https://github.com/lilybw/lithia/releases)
 
 ```rust
-use lithia::{DerivedNode, SourceNode, effect};
+use lithia::{DerivedNode, SourceNode, node};
 
 #[lithia::main]
 async fn main() {

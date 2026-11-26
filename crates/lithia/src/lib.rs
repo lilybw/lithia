@@ -6,6 +6,7 @@
 
 // One `unsafe` block, in `context::with_frame`, is allowed where it stands.
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 
 mod api;
 mod changes;
@@ -68,3 +69,8 @@ pub mod __private {
         pub use crate::exec::model::{ModelScope, quiet, reset, run_one, work_until};
     }
 }
+
+/// The README's example, compiled and run as a doctest.
+#[cfg(doctest)]
+#[doc = include_str!("../../../README.md")]
+struct ReadmeExample;

@@ -1,6 +1,6 @@
 # LITHIA design spec v0.5.0
 
-2026-11-22 · Lily
+2026-11-26 · Lily
 
 What changed in each version is in [`CHANGELOG.md`](https://github.com/lilybw/lithia/blob/nightly/CHANGELOG.md). This spec states the design as it
 stands; the validation cases it names live in `crates/validation`, the details of how lithia is verified in
@@ -41,7 +41,7 @@ What Loud Failures cannot see, since no check can tell these mistakes from inten
 - an automatic capture whose clone behaves differently from the original, such as an `mpsc::Sender` keeping its channel open (4.2);
 - a capture whose `PartialEq` ignores something a keyed body uses, which then keeps a stale result (4.7).
 
-### Out of scope for v0
+### Out of scope
 
 - Devtools and hot reload.
 - Merging functionally equivalent nodes.
@@ -177,14 +177,14 @@ let total: DerivedNode<i32> = node!(|a, b| *a.get() + *b.get(),
     init = 0, equals = lithia::eq, resilience = NONE, disposed = MASK);
 ```
 
-| Option | Values | Default | Applies to | v0 |
-| --- | --- | --- | --- | --- |
-| `init` | an expression of type `K` | `K::default()` | derived nodes and async source nodes | yes |
-| `equals` | a comparator taking `(&K, &K)` and returning `bool`, or `lithia::eq` | none: every write propagates | all nodes | yes |
-| `key` | an expression whose type is `Hash + Eq + Send + Sync + 'static`, or a closure `\|a, b\| expr` whose parameters name variables in scope | none: every run creates new nodes | all nodes created inside a body (10.1, Keyed nodes) | yes |
-| `batches` | `WHOLE`: run once every batch that reached the node is ready at it; `PARTIAL`: run on each batch as it is ready (8) | `PARTIAL` | derived nodes | yes |
-| `resilience` | `COMPLETE`: never fail because of parents; `PARTIAL`: fail once all parents are failed; `NONE`: fail once any parent is (9.2) | `COMPLETE` | derived nodes | yes |
-| `disposed` | `FAIL`, `MASK`, `PEND`: what readers and children see once the node is disposed (10.5) | `FAIL` | all nodes | yes |
+| Option | Values | Default | Applies to |
+| --- | --- | --- | --- |
+| `init` | an expression of type `K` | `K::default()` | derived nodes and async source nodes |
+| `equals` | a comparator taking `(&K, &K)` and returning `bool`, or `lithia::eq` | none: every write propagates | all nodes |
+| `key` | an expression whose type is `Hash + Eq + Send + Sync + 'static`, or a closure `\|a, b\| expr` whose parameters name variables in scope | none: every run creates new nodes | all nodes created inside a body (10.1, Keyed nodes) |
+| `batches` | `WHOLE`: run once every batch that reached the node is ready at it; `PARTIAL`: run on each batch as it is ready (8) | `PARTIAL` | derived nodes |
+| `resilience` | `COMPLETE`: never fail because of parents; `PARTIAL`: fail once all parents are failed; `NONE`: fail once any parent is (9.2) | `COMPLETE` | derived nodes |
+| `disposed` | `FAIL`, `MASK`, `PEND`: what readers and children see once the node is disposed (10.5) | `FAIL` | all nodes |
 
 Reserving the slot now means adding options later is never a breaking change. Each option may appear once; an unknown name, a repeated option, `init` on a plain source node, and `batches` or `resilience` on any source node are compile errors (4.6).
 
@@ -748,7 +748,7 @@ Every run is asynchronous in principle; a synchronous body is simply one that re
 - The block gets the same automatic capture as closure bodies, and sees its captures by reference (4.2). Its task holds the node only weakly, like every run, so the block lives by its handles, children and captures, exactly like a plain source node (10.1); a discarded one is freed before it runs (Case AN). What the block creates is held by its run's generation, and released once a write has superseded the block and it has stopped (Case AQ).
 - A keyed async source block reclaimed with a changed capture restarts in place: its running block is aborted, late items are discarded, and the new block runs as the node's next run, under the run id `block_run` records (10.1, Keyed nodes; Case BH).
 - `reflow` on a source node re-emits its current value and raises its version, so its children rerun; it sends nothing to `changes()`, since the value did not change. Unlike a write, it does not supersede an async block or generator that is still running.
-- Because a write is just a run, writable derived nodes (Solid's writable memos) would need no new machinery; they remain out of scope for v0 and are on the roadmap (16).
+- Because a write is just a run, writable derived nodes (Solid's writable memos) would need no new machinery; they remain out of scope and are on the roadmap (16).
 
 **Generators**
 
@@ -1122,7 +1122,7 @@ Unread memo. Once per site, when a top-level node whose value is not `()`, which
 
 Rerun rate. Each node counts its run starts, under the scheduling lock its run start holds, in one-second windows and warns once per window when the count passes the threshold; the clock is read as a window opens, every 1 024 runs and once past the threshold, so a window may close up to 1 023 runs late. The threshold is 50 000 runs per second by default, overridden by the `LITHIA_RERUN_RATE` environment variable, read once per process. A healthy node reruns 40 000–140 000 times a second on the benchmark's machine (15), so the warning flags loops that spin faster than lithia's own steps.
 
-Devtools are out of scope for v0 and on the roadmap (16).
+Devtools are out of scope and on the roadmap (16).
 
 ## 13. Validation cases
 
@@ -1224,30 +1224,37 @@ They show orders of magnitude and relative costs only. Contention on 8–64 core
 
 ## 16. Roadmap
 
-Expected changes, and what they replace:
+Expected changes, and what they replace. None changes the API or a behaviour this spec states; each lands in a minor or patch release:
 
+- Measurements on 8–64 cores: the fast path, the padding of hot statics and the one sweep lock (15), and finer-grained sweep locking if they show contention. Both are internal.
 - Scratch buffers per thread for a step's work lists and a run's shared record, which would save most of the ten allocations a run still makes (15).
-- Measurements on 8–64 cores: the fast path, the padding of hot statics and the one sweep lock (15).
-- Keyed collections. A keyed map over a collection node, which would let a list's rerun visit only the rows that changed instead of probing every row's captures; `key` covers the rows' own nodes today (10.1, Keyed nodes).
-- Rewiring a reclaimed node to new parents, which needs a dynamic topological order, such as Pearce and Kelly's, in place of creation order (10.1).
-- Type-directed classification of captures inside containers, so a handle in a captured `Vec` can be read-only, once specialization or a stable equivalent allows it (4.2).
-- Variants. lithia is the general-purpose core; LiSP, a signal-processing variant with GPU-backed, eagerly caching graphs, and a GUI variant can impose what the core cannot, such as borrowing scopes (1).
-- Finer-grained sweep locking, if the benchmarks show contention on the one sweep lock (15).
 - Native generators. `yield` in `node!` uses the syntax of Rust's unstable `async gen` blocks; the macro lowers it as the `async-stream` crate does on stable, and will lower generator bodies to native `async gen` blocks once they stabilize. Both allow a borrow across a `yield`, so user code does not change (3.6).
 - `Share` and precise captures. Handles will implement Rust's planned `Share` trait once it stabilizes, and captures of `Share` types will use it; the capture rule stays the same (4.2).
-- Writable derived nodes. Because a write is just a run, Solid-style writable memos need no new machinery; they are out of scope for v0 (1, 8).
-- An option for waiting on pending parents, such as `parents = READY | ANY`, beside `batches`; a ghost under `disposed = PEND` would keep a waiting child waiting (3.2, 8, 10.5).
-- Devtools, out of scope for v0 (12).
-- Further performance work, guided by the benchmarks in section 15 (11.2).
+- Keyed collections. A keyed map over a collection node, which would let a list's rerun visit only the rows that changed instead of probing every row's captures; `key` covers the rows' own nodes today (10.1, Keyed nodes).
+- An option for waiting on pending parents, such as `parents = READY | ANY`, beside `batches`, whose default keeps today's behaviour; a ghost under `disposed = PEND` would keep a waiting child waiting (3.2, 8, 10.5).
+- Writable derived nodes. Because a write is just a run, Solid-style writable memos need no new machinery (1, 8).
+- Devtools (12), and further performance work guided by the benchmarks in section 15 (11.2).
+- Variants. lithia is the general-purpose core; LiSP, a signal-processing variant with GPU-backed, eagerly caching graphs, and a GUI variant can impose what the core cannot, such as borrowing scopes (1).
+
+Two changes would alter stated behaviour, so they come as options or in a major version:
+
+- Rewiring a reclaimed node to new parents, which needs a dynamic topological order, such as Pearce and Kelly's, in place of creation order; today new parents give a new node (10.1).
+- Type-directed classification of captures inside containers, so a handle in a captured `Vec` can be read-only, once specialization or a stable equivalent allows it (4.2).
 
 ## 17. Open questions
 
+To settle before 1.0, since an answer after it would change the API or a stated behaviour:
+
 - An implicit `equals` default for `K: PartialEq`? Left out for now: it would stop `()` effects propagating, and behave differently in generic code (6.4).
+- Should `try_set` hand the rejected value back, e.g. `Result<(), Ghosted<K>>`?
+- Should write cycles be defined as rounds, so that run counts are fixed? Run counts in an eight-way binding mesh vary with scheduling, from 15 to 58 (7.4, 15).
+- Should `Status` be `#[non_exhaustive]`, so a later state, such as one for children waiting on pending parents (16), is not a breaking change (3.4)?
+
+Additive, so they can wait for a minor release:
+
 - Keep the token stream in release builds, or only behind a diagnostics feature?
 - Tasks lithia did not start get one batch per write. Offer a runtime hook to batch them too? Batching cuts the cost of 100 writes to under a third (15).
 - The rerun-rate threshold is an environment variable (`LITHIA_RERUN_RATE`); should it also get an API (12)?
-- Should `try_set` hand the rejected value back, e.g. `Result<(), Ghosted<K>>`?
-- A truly in-place `modify` would need reads to take a brief lock, which slows every read and lets cross-node reads inside closures deadlock. Worth it for large values?
-- Run counts in an eight-way binding mesh vary with scheduling, from 15 to 58. Should write cycles be defined as rounds, so that the count is fixed (7.4, 15)?
+- A truly in-place `modify` would need reads to take a brief lock, which slows every read and lets cross-node reads inside closures deadlock. Worth it, as a method of its own, for large values?
 
 Questions resolved in earlier versions are recorded in `CHANGELOG.md`.
