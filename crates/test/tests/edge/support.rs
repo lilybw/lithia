@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lithia::{DerivedNode, Readable, SourceNode, node};
+use lithia::{DerivedNode, Readable, Setter, SourceNode, node};
 use tokio::sync::oneshot;
 use tracing::Level;
 
@@ -599,4 +599,74 @@ async fn a_last_handle_drop_races_a_creation_on_the_same_node() {
     lithia::flush().await;
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert_eq!(lithia::test::live_nodes().await, base + 1); // only `seen`
+}
+
+#[lithia::test]
+async fn a_setter_anchors_what_its_node_feeds_until_it_drops() {
+    let seen: SourceNode<u32> = node!(0);
+    let base: usize = lithia::test::live_nodes().await;
+    let t: SourceNode<u32> = node!(1);
+    node!(|t| seen.set(*t.get()));
+    let writer: Setter<u32> = t.setter();
+    let debug: String = format!("{writer:?}");
+    assert!(debug.starts_with("Setter { id: ") && debug.contains("support.rs:"), "{debug}");
+    drop(t);
+    assert_eq!(lithia::test::live_nodes().await, base + 2, "the setter can still change `t`");
+    writer.set(5);
+    lithia::flush().await;
+    assert_eq!(*seen.get(), 5);
+    let copy: Setter<u32> = writer.clone();
+    drop(writer);
+    assert_eq!(lithia::test::live_nodes().await, base + 2, "its clone anchors as well");
+    drop(copy);
+    assert_eq!(lithia::test::live_nodes().await, base, "with the last setter gone, nothing can change `t`");
+}
+
+#[derive(Clone)]
+struct Outlet {
+    w: Setter<u32>,
+    label: String,
+}
+
+#[lithia::test]
+async fn a_setter_reached_by_a_field_path_may_write() {
+    assert!(
+        keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
+            let (k, out): (SourceNode<u32>, Outlet) = (k.clone(), Outlet { w: t.setter(), label: "o".to_string() });
+            node!(|k| {
+                let _ = k.get();
+                out.w.set(1);
+            });
+        })
+        .await,
+        "a field path"
+    );
+    assert!(
+        keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
+            let (k, out): (SourceNode<u32>, Outlet) = (k.clone(), Outlet { w: t.setter(), label: "o".to_string() });
+            node!(move |k| {
+                let _ = (k.get(), out.label.len());
+                out.w.set(1);
+            });
+        })
+        .await,
+        "a field path in a move body"
+    );
+}
+
+#[lithia::test]
+async fn a_static_reference_as_a_moved_dependency_leaves_its_handle_outside() {
+    let seen: SourceNode<u32> = node!(0);
+    let t: SourceNode<u32> = node!(1);
+    let leaked: &'static SourceNode<u32> = Box::leak(Box::new(t.clone()));
+    node!(|t| seen.set(*t.get()));
+    drop(t);
+    // The body moves the reference, not the handle it points to, which stays outside.
+    let child: DerivedNode<u32> = node!(move |leaked| *leaked.get() + 1);
+    lithia::flush().await;
+    assert_eq!(*child.get(), 2);
+    let _ = lithia::test::live_nodes().await;
+    leaked.set(7);
+    lithia::flush().await;
+    assert_eq!((*seen.get(), *child.get()), (7, 8), "the handle outside still reaches every reader");
 }
