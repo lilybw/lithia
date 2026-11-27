@@ -1,0 +1,157 @@
+# cargo-mutants (https://mutants.rs) leaves out the mutants below. Each group lies outside the build
+# cargo-mutants tests or cannot change what lithia does; docs/VERIFICATION.md has the review. Patterns
+# name one mutant each, by its function and text, and a column or line where the text repeats; a
+# pattern that stops matching after an edit lets its mutant be tested, and reported, again.
+
+# Compiled only with `--cfg lithia_loom`, which the loom models run and cargo-mutants does not.
+exclude_globs = ["crates/lithia/src/exec/model.rs"]
+
+exclude_re = [
+    # Loom builds only (`#[cfg(lithia_loom)]`): sync.rs's loom mutex and the fast path's loom configuration.
+    "exec/fast_path\\.rs:354:5: replace\\ enabled\\ \\->\\ bool\\ with\\ false$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ enabled\\ \\->\\ bool\\ with\\ true$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ !=\\ with\\ ==\\ in\\ enabled$",
+    "exec/fast_path\\.rs:381:5: replace\\ runtime_key\\ \\->\\ RuntimeKey\\ with\\ Default::default\\(\\)$",
+    "exec/fast_path\\.rs:391:5: replace\\ same_runtime\\ \\->\\ bool\\ with\\ false$",
+    "exec/fast_path\\.rs:402:5: replace\\ workers\\ \\->\\ usize\\ with\\ 0$",
+    "exec/fast_path\\.rs:402:5: replace\\ workers\\ \\->\\ usize\\ with\\ 1$",
+    "sync\\.rs:169:9: replace\\ Mutex<T>::lock\\ \\->\\ MutexGuard<'_,\\ T>\\ with\\ MutexGuard::from\\(Default::default\\(\\)\\)$",
+    "sync\\.rs:169:9: replace\\ Mutex<T>::lock\\ \\->\\ MutexGuard<'_,\\ T>\\ with\\ MutexGuard::from_iter\\(\\[Default::default\\(\\)\\]\\)$",
+    "sync\\.rs:169:9: replace\\ Mutex<T>::lock\\ \\->\\ MutexGuard<'_,\\ T>\\ with\\ MutexGuard::new\\(\\)$",
+    "sync\\.rs:169:9: replace\\ Mutex<T>::lock\\ \\->\\ MutexGuard<'_,\\ T>\\ with\\ MutexGuard::new\\(Default::default\\(\\)\\)$",
+    "sync\\.rs:173:9: replace\\ Mutex<T>::get_mut\\ \\->\\ \\&mut\\ T\\ with\\ Box::leak\\(Box::new\\(Default::default\\(\\)\\)\\)$",
+    # The fast path only chooses where a ready run is polled: every route polls each run once, the loom
+    # models check both, and a synchronous body's run ends in its first poll, so none is left to spawn.
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Open::run$",
+    "exec/fast_path\\.rs:\\d+:77: replace\\ >=\\ with\\ <\\ in\\ Open::run$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ \\|\\|\\ with\\ \\&\\&\\ in\\ Open::run$",
+    "exec/fast_path\\.rs:\\d+:29: replace\\ >=\\ with\\ <\\ in\\ Open::run$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ \\+=\\ with\\ \\*=\\ in\\ Open::run$",
+    "exec/fast_path\\.rs:\\d+:87: replace\\ ==\\ with\\ !=\\ in\\ dispatch$",
+    "exec/fast_path\\.rs:210:12: delete\\ !\\ in\\ dispatch$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ keep\\ \\->\\ bool\\ with\\ false$",
+    "exec/fast_path\\.rs:\\d+:\\d+: delete\\ !\\ in\\ keep$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ \\+\\ with\\ \\*\\ in\\ keep$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ <=\\ with\\ >\\ in\\ keep$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ take_next\\ \\->\\ Option<WeakNodeRef>\\ with\\ None$",
+    "exec/fast_path\\.rs:\\d+:13: replace\\ ==\\ with\\ !=\\ in\\ pack$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ \\|\\|\\ with\\ \\&\\&\\ in\\ pack$",
+    "exec/fast_path\\.rs:\\d+:21: delete\\ !\\ in\\ pack$",
+    "exec/fast_path\\.rs:\\d+:24: replace\\ ==\\ with\\ !=\\ in\\ pack$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ \\|\\|\\ with\\ \\&\\&\\ in\\ hand_on$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ ==\\ with\\ !=\\ in\\ hand_on$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ <impl\\ Future\\ for\\ Runner>::poll\\ \\->\\ Poll<\\(\\)>\\ with\\ Poll::from\\(\\(\\)\\)$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ spawn_task\\ with\\ \\(\\)$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ spawn_runner\\ with\\ \\(\\)$",
+    "exec/fast_path\\.rs:361:5: replace\\ enabled\\ \\->\\ bool\\ with\\ false$",
+    "exec/fast_path\\.rs:386:5: replace\\ same_runtime\\ \\->\\ bool\\ with\\ false$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ open\\ \\->\\ Option<Open>\\ with\\ None$",
+    "exec/fast_path\\.rs:\\d+:\\d+: replace\\ Open::run\\ with\\ \\(\\)$",
+    # Hash quality only: maps compare their keys, and reclaiming compares site, type and value itself.
+    "expand/keyed\\.rs:\\d+:\\d+: replace\\ <impl\\ DynKey\\ for\\ T>::hash_at\\ \\->\\ KeyHash\\ with\\ Default::default\\(\\)$",
+    "expand/keyed\\.rs:\\d+:\\d+: replace\\ key_hash\\ \\->\\ KeyHash\\ with\\ Default::default\\(\\)$",
+    "graph/lineage\\.rs:\\d+:\\d+: replace\\ <impl\\ Hasher\\ for\\ Mix>::finish\\ \\->\\ u64\\ with\\ 0$",
+    "graph/lineage\\.rs:\\d+:\\d+: replace\\ <impl\\ Hasher\\ for\\ Mix>::finish\\ \\->\\ u64\\ with\\ 1$",
+    "graph/lineage\\.rs:\\d+:\\d+: replace\\ <impl\\ Hasher\\ for\\ Mix>::write\\ with\\ \\(\\)$",
+    "graph/lineage\\.rs:\\d+:\\d+: replace\\ \\^\\ with\\ \\&\\ in\\ <impl\\ Hasher\\ for\\ Mix>::write_u64$",
+    "graph/lineage\\.rs:\\d+:\\d+: replace\\ \\^\\ with\\ \\|\\ in\\ <impl\\ Hasher\\ for\\ Mix>::write_u64$",
+    "graph/lineage\\.rs:\\d+:\\d+: replace\\ <impl\\ Hasher\\ for\\ Mix>::write_u64\\ with\\ \\(\\)$",
+    "graph/lineage\\.rs:\\d+:\\d+: replace\\ <impl\\ Hasher\\ for\\ Mix>::write_usize\\ with\\ \\(\\)$",
+    # Buffers kept for reuse, consecutive tokens of one epoch merged, duplicate spawns removed: work only.
+    "graph/epoch\\.rs:\\d+:\\d+: replace\\ match\\ guard\\ Arc::ptr_eq\\(last,\\ \\&epoch\\)\\ with\\ false\\ in\\ Tokens::add$",
+    "graph/sched\\.rs:\\d+:\\d+: replace\\ >\\ with\\ <\\ in\\ Entries::shrink$",
+    "graph/sched\\.rs:\\d+:\\d+: replace\\ >\\ with\\ ==\\ in\\ Entries::shrink$",
+    "graph/sched\\.rs:\\d+:\\d+: replace\\ >\\ with\\ >=\\ in\\ Entries::shrink$",
+    "graph/sched\\.rs:\\d+:\\d+: replace\\ Entries::shrink\\ with\\ \\(\\)$",
+    "lifetime/drops\\.rs:\\d+:\\d+: replace\\ >=\\ with\\ <\\ in\\ drop_on_pool$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ >\\ with\\ <\\ in\\ <impl\\ Drop\\ for\\ Work>::drop$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ >\\ with\\ ==\\ in\\ <impl\\ Drop\\ for\\ Work>::drop$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ >\\ with\\ >=\\ in\\ <impl\\ Drop\\ for\\ Work>::drop$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ >\\ with\\ <\\ in\\ drain_deferred$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ >\\ with\\ ==\\ in\\ drain_deferred$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ >\\ with\\ >=\\ in\\ drain_deferred$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ spare_releases\\ \\->\\ Vec<Release>\\ with\\ vec!\\[\\]$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ >\\ with\\ <\\ in\\ keep_spare$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ >\\ with\\ ==\\ in\\ keep_spare$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ >\\ with\\ >=\\ in\\ keep_spare$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ keep_spare$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ <=\\ with\\ >\\ in\\ keep_spare$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ keep_spare\\ with\\ \\(\\)$",
+    # A failure record is read only while the failed bit is set: clearing it early, late or twice changes no status.
+    "graph/header\\.rs:\\d+:19: replace\\ \\&\\ with\\ \\^\\ in\\ Header::begin_run$",
+    "graph/header\\.rs:\\d+:19: replace\\ \\&\\ with\\ \\|\\ in\\ Header::begin_run$",
+    "graph/header\\.rs:\\d+:\\d+: replace\\ !=\\ with\\ ==\\ in\\ Header::begin_run$",
+    "graph/header\\.rs:\\d+:\\d+: replace\\ !=\\ with\\ ==\\ in\\ Header::clear_pending_failed$",
+    "graph/header\\.rs:\\d+:\\d+: replace\\ \\|\\ with\\ \\^\\ in\\ Header::clear_pending_failed$",
+    "graph/header\\.rs:\\d+:\\d+: replace\\ \\&\\ with\\ \\^\\ in\\ Header::clear_pending_failed$",
+    "graph/header\\.rs:\\d+:\\d+: replace\\ \\&\\ with\\ \\|\\ in\\ Header::clear_pending_failed$",
+    # Unread-memo checks look at the memo itself, so an extra one finds nothing new, and the handles a lease hands
+    # on at its end anchor the memo, so a check there finds it read.
+    "expand/capture\\.rs:\\d+:\\d+: replace\\ ==\\ with\\ !=\\ in\\ Lease::end$",
+    "graph/header\\.rs:\\d+:\\d+: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Header::unsubscribe$",
+    # A run's waker is its own task's, so `will_wake` only skips a clone; the flags `begin_poll` resets are read and
+    # reset after every poll anyway.
+    "run/control\\.rs:\\d+:\\d+: replace\\ match\\ guard\\ existing\\.will_wake\\(waker\\)\\ with\\ false\\ in\\ RunControl::set_waker$",
+    "run/control\\.rs:\\d+:\\d+: replace\\ match\\ guard\\ existing\\.will_wake\\(waker\\)\\ with\\ true\\ in\\ RunControl::set_waker$",
+    "run/control\\.rs:\\d+:\\d+: replace\\ RunControl::begin_poll\\ with\\ \\(\\)$",
+    # Hints that only skip work: a walk or a sweep that finds nothing to do changes nothing.
+    "lifetime/support\\.rs:\\d+:\\d+: replace\\ freed\\ with\\ \\(\\)$",
+    "lifetime/support\\.rs:\\d+:\\d+: replace\\ needs_sweep\\ \\->\\ bool\\ with\\ true$",
+    "lifetime/support\\.rs:\\d+:\\d+: delete\\ !\\ in\\ needs_sweep$",
+    "lifetime/support\\.rs:\\d+:\\d+: replace\\ any_let_go\\ \\->\\ bool\\ with\\ true$",
+    # Debug builds' invariant checks, which hold, and the clean-up of a node being freed, whose state goes with it.
+    "graph/sched\\.rs:\\d+:\\d+: replace\\ Sched::check\\ with\\ \\(\\)$",
+    "graph/sched\\.rs:\\d+:\\d+: replace\\ Subscribers::clear\\ with\\ \\(\\)$",
+    "graph/sched\\.rs:\\d+:\\d+: replace\\ <impl\\ Drop\\ for\\ SchedGuard<'_>>::drop\\ with\\ \\(\\)$",
+    "graph/sched\\.rs:\\d+:\\d+: delete\\ !\\ in\\ <impl\\ Drop\\ for\\ SchedGuard<'_>>::drop$",
+    "testing/trace\\.rs:\\d+:\\d+: replace\\ Trace::clear\\ with\\ \\(\\)$",
+    # Safety nets for a protocol step a panic leaves undrained, and for tokens dropped unclosed; no correct run reaches them.
+    "graph/epoch\\.rs:\\d+:\\d+: replace\\ Tokens::is_empty\\ \\->\\ bool\\ with\\ true$",
+    "graph/epoch\\.rs:\\d+:34: delete\\ !\\ in\\ <impl\\ Drop\\ for\\ Tokens>::drop$",
+    "graph/epoch\\.rs:\\d+:\\d+: replace\\ <impl\\ Drop\\ for\\ Tokens>::drop\\ with\\ \\(\\)$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ Work::is_drained\\ \\->\\ bool\\ with\\ true$",
+    "protocol/work\\.rs:132:13: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Work::is_drained$",
+    "protocol/work\\.rs:133:13: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Work::is_drained$",
+    "protocol/work\\.rs:134:13: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Work::is_drained$",
+    "protocol/work\\.rs:135:13: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Work::is_drained$",
+    "protocol/work\\.rs:136:13: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Work::is_drained$",
+    "protocol/work\\.rs:137:13: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Work::is_drained$",
+    "protocol/work\\.rs:138:13: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Work::is_drained$",
+    "protocol/work\\.rs:139:13: replace\\ \\&\\&\\ with\\ \\|\\|\\ in\\ Work::is_drained$",
+    "protocol/work\\.rs:\\d+:\\d+: replace\\ <impl\\ Drop\\ for\\ Work>::drop\\ with\\ \\(\\)$",
+    # Internal ids print only in debug assertions and internal Debug output.
+    "graph/ids\\.rs:\\d+:\\d+: replace\\ <impl\\ fmt::Display\\ for\\ NodeId>::fmt\\ \\->\\ fmt::Result\\ with\\ Ok\\(Default::default\\(\\)\\)$",
+    "graph/ids\\.rs:\\d+:\\d+: replace\\ <impl\\ fmt::Display\\ for\\ EpochId>::fmt\\ \\->\\ fmt::Result\\ with\\ Ok\\(Default::default\\(\\)\\)$",
+    "graph/ids\\.rs:\\d+:\\d+: replace\\ <impl\\ fmt::Display\\ for\\ ScopeId>::fmt\\ \\->\\ fmt::Result\\ with\\ Ok\\(Default::default\\(\\)\\)$",
+    "handles\\.rs:\\d+:\\d+: replace\\ <impl\\ fmt::Debug\\ for\\ NodeHandle>::fmt\\ \\->\\ fmt::Result\\ with\\ Ok\\(Default::default\\(\\)\\)$",
+    "run/task\\.rs:\\d+:\\d+: replace\\ <impl\\ std::fmt::Debug\\ for\\ TaskFuture<F>>::fmt\\ \\->\\ std::fmt::Result\\ with\\ Ok\\(Default::default\\(\\)\\)$",
+    # The same value either way: lineage numbers never set the top bit, and `T::default()` is `Default::default()`.
+    "expand/traits\\.rs:\\d+:\\d+: replace\\ <impl\\ InitDefault\\ for\\ T>::__lithia_init\\ \\->\\ Self\\ with\\ Default::default\\(\\)$",
+    "graph/ids\\.rs:\\d+:\\d+: replace\\ \\|\\ with\\ \\^\\ in\\ WriterId::lineage$",
+    # A `Setter` always writes, so a body moving it or reaching it by a field path records the same edge, and its
+    # anchor and the body's writer edge hold the same nodes for as long as the body lives.
+    "handles\\.rs:\\d+:\\d+: replace\\ Setter<K>::__lithia_move\\ with\\ \\(\\)$",
+    "handles\\.rs:\\d+:\\d+: replace\\ Setter<K>::__lithia_move_ro\\ with\\ \\(\\)$",
+    "handles\\.rs:\\d+:\\d+: replace\\ Setter<K>::__lithia_is_handle\\ \\->\\ bool\\ with\\ false$",
+    # `settled`'s trace prunes dead weak references; when it prunes, keeping them all, or noting a write that has an
+    # edge as well, changes what it follows by nothing.
+    "context\\.rs:\\d+:\\d+: replace\\ \\|\\|\\ with\\ \\&\\&\\ in\\ note_written$",
+    "testing/trace\\.rs:\\d+:\\d+: replace\\ >=\\ with\\ <\\ in\\ note_created$",
+    "testing/trace\\.rs:\\d+:\\d+: replace\\ \\*\\ with\\ \\+\\ in\\ note_created$",
+    "testing/trace\\.rs:\\d+:\\d+: replace\\ \\*\\ with\\ /\\ in\\ note_created$",
+    "testing/trace\\.rs:\\d+:\\d+: replace\\ >\\ with\\ >=\\ in\\ note_created$",
+    "testing/trace\\.rs:\\d+:\\d+: replace\\ >\\ with\\ >=\\ in\\ note_wrote$",
+    # `settled` waits on a notifier with a 20 ms poll behind it: a missed or extra wake-up only delays it.
+    "testing/progress\\.rs:\\d+:\\d+: replace\\ >\\ with\\ <\\ in\\ bump$",
+    "testing/progress\\.rs:\\d+:\\d+: replace\\ >\\ with\\ ==\\ in\\ bump$",
+    "testing/progress\\.rs:\\d+:\\d+: replace\\ >\\ with\\ >=\\ in\\ bump$",
+    "testing/progress\\.rs:\\d+:\\d+: replace\\ bump\\ with\\ \\(\\)$",
+    "testing/progress\\.rs:\\d+:\\d+: replace\\ Waiter::seq\\ \\->\\ SettleSeq\\ with\\ Default::default\\(\\)$",
+    "testing/progress\\.rs:\\d+:\\d+: replace\\ Waiter::notify\\ \\->\\ \\&'static\\ Notify\\ with\\ Box::leak\\(Box::new\\(Default::default\\(\\)\\)\\)$",
+    "testing/progress\\.rs:\\d+:\\d+: replace\\ <impl\\ Drop\\ for\\ Waiter>::drop\\ with\\ \\(\\)$",
+    # The scope map prunes scopes that are gone; pruning more often or never only changes its size. An empty
+    # batch delivered opens nothing.
+    "context\\.rs:\\d+:\\d+: replace\\ >=\\ with\\ <\\ in\\ task_scope$",
+    "context\\.rs:\\d+:\\d+: replace\\ >\\ with\\ >=\\ in\\ task_scope$",
+    "context\\.rs:\\d+:\\d+: replace\\ Batch::is_empty\\ \\->\\ bool\\ with\\ false$",
+]

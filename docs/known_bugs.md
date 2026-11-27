@@ -29,7 +29,13 @@ None.
   runtime shutdown, `defer` and the rerun rate. `MCDiamond` has finished once in CI (26 147 949 states, depth 109, 3 h 57 min, no error); runners differ in speed,
   so CI stops it after 270 minutes and passes it if it found no error by then. The loom models (`crates/test/tests/loom/`) run with at
   most three preemptions on each push and four on nightly.
-- cargo-mutants has run over the whole engine once, on ec53abb: of 1 584 mutants, 848 were caught,
-  293 did not build and 37 timed out. The 406 that survived are not yet sorted into gaps in the tests
-  and mutants that change nothing; the 44 in the loom executor cannot be caught, since cargo-mutants
-  runs no loom models.
+- cargo-mutants makes 1 640 mutants of the engine. `.cargo/mutants.toml` leaves out 169 that are
+  compiled only for loom or cannot change what lithia does (`VERIFICATION.md` names the groups). Of
+  the rest, 160 survive the tests (review of 2026-11-27). Most are protocol and lifetime paths that
+  only particular interleavings reach: supersession with handovers, cut reruns, creator gating and its
+  two resume paths, children linked while a parent runs or is disposed, sweeps deferred to an
+  operation's end, `settled`'s quiet checks between steps. The TLA+ and loom models check those paths;
+  cargo-mutants runs neither. The others no test tells apart: `LITHIA_RERUN_RATE` and
+  `LITHIA_TEST_TIMEOUT_MS` set to 0, a lineage's copy of a key or a keyed node's kept inputs dropped
+  inline, place counts of unkeyed creations at one site, drops grouped by runtime, and parents released
+  without the worklist (the 20 002-node chain frees without recursion either way).
