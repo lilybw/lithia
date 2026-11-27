@@ -725,3 +725,51 @@ async fn the_growth_warning_counts_what_support_holds_at_one_site() {
     assert_eq!(growth_warnings(line), 1, "the next warning waits for 10 000");
     drop(second);
 }
+
+#[lithia::test]
+async fn two_handles_of_one_node_moved_into_a_block_are_counted_apart() {
+    let seen: SourceNode<u32> = node!(0);
+    let other_seen: SourceNode<u32> = node!(0);
+    let base: usize = lithia::test::live_nodes().await;
+    let (tx, rx): (
+        oneshot::Sender<(SourceNode<u32>, SourceNode<u32>)>,
+        oneshot::Receiver<(SourceNode<u32>, SourceNode<u32>)>,
+    ) = oneshot::channel();
+    let t: SourceNode<u32> = node!(3);
+    let u: SourceNode<u32> = node!(30);
+    node!(|t| seen.set(*t.get()));
+    node!(|u| other_seen.set(*u.get()));
+    let (kept, dropped, also): (SourceNode<u32>, SourceNode<u32>, SourceNode<u32>) = (t.clone(), t.clone(), u.clone());
+    drop((t, u));
+    let block: SourceNode<()> = node!(async move {
+        drop(dropped); // one of the two leased handles of `t` goes while the block runs
+        let _ = tx.send((kept, also));
+    });
+    let (moved, moved_other): (SourceNode<u32>, SourceNode<u32>) = rx.await.unwrap();
+    lithia::test::settled(&block).await;
+    drop(block);
+    // The block has ended: the handles it moved out anchor their nodes, once each.
+    assert_eq!(lithia::test::live_nodes().await, base + 4);
+    moved.set(4);
+    moved_other.set(40);
+    lithia::flush().await;
+    assert_eq!((*seen.get(), *other_seen.get()), (4, 40));
+    drop((moved, moved_other));
+    assert_eq!(lithia::test::live_nodes().await, base);
+}
+
+#[lithia::test]
+async fn the_last_anchor_moved_into_a_body_that_only_reads_lets_go_at_once() {
+    let k: SourceNode<u32> = node!(0);
+    let seen: SourceNode<u32> = node!(0);
+    let t: SourceNode<u32> = node!(1);
+    node!(|t| seen.set(*t.get()));
+    lithia::flush().await;
+    let base: usize = lithia::test::live_nodes().await;
+    // `t`'s only handle moves into a body that only reads it: nothing outside can change `t` now.
+    let reader: DerivedNode<u32> = node!(move |k| *k.get() + *t.get());
+    lithia::flush().await;
+    assert_eq!(lithia::test::live_nodes().await, base, "the reader came, `t`'s watcher went");
+    assert_eq!(*reader.get(), 1);
+    drop(reader);
+}
