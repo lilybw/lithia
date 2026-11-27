@@ -432,3 +432,57 @@ async fn keys_that_hash_alike_name_lineages_of_their_own() {
         lithia_test::find(tracing::Level::DEBUG, &["a cycle cut an effect", here], Duration::from_millis(200)).await;
     assert!(cut.is_none(), "{cut:?}");
 }
+
+/// A key that counts the values made and dropped; it compares and hashes by its number alone.
+struct CountedKey(u32, Arc<(AtomicU32, AtomicU32)>);
+
+impl CountedKey {
+    fn new(number: u32, counts: &Arc<(AtomicU32, AtomicU32)>) -> CountedKey {
+        counts.0.fetch_add(1, Ordering::SeqCst);
+        CountedKey(number, counts.clone())
+    }
+}
+
+impl PartialEq for CountedKey {
+    fn eq(&self, other: &CountedKey) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for CountedKey {}
+
+impl std::hash::Hash for CountedKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl Drop for CountedKey {
+    fn drop(&mut self) {
+        self.1.1.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[lithia::test]
+async fn keys_a_creator_stops_making_are_let_go_of() {
+    let keys: SourceNode<u32> = node!(0);
+    let counts: Arc<(AtomicU32, AtomicU32)> = Arc::new((AtomicU32::new(0), AtomicU32::new(0)));
+    let made: Arc<(AtomicU32, AtomicU32)> = counts.clone();
+    let _creator: DerivedNode<()> = node!(|keys| {
+        let number: u32 = *keys.get();
+        node!(
+            |keys| {
+                let _ = keys.get();
+            },
+            key = CountedKey::new(number, made)
+        );
+    });
+    lithia::flush().await;
+    for number in 1..=12 {
+        keys.set(number); // a key the creator never made before; the one before it is made no more
+        lithia::flush().await;
+    }
+    let _ = lithia::test::live_nodes().await;
+    let live: u32 = counts.0.load(Ordering::SeqCst) - counts.1.load(Ordering::SeqCst);
+    assert!(live <= 4, "{live} of {} keys still held", counts.0.load(Ordering::SeqCst));
+}

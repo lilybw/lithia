@@ -670,3 +670,58 @@ async fn a_static_reference_as_a_moved_dependency_leaves_its_handle_outside() {
     lithia::flush().await;
     assert_eq!((*seen.get(), *child.get()), (7, 8), "the handle outside still reaches every reader");
 }
+
+/// Makes a handle-less watcher of `k`, held by support; returns the line of its one site.
+fn held_watcher(k: &SourceNode<u32>) -> u32 {
+    let k: SourceNode<u32> = k.clone();
+    let line: u32 = line!() + 1;
+    node!(|k| {
+        let _ = k.get();
+    });
+    line
+}
+
+/// Growth warnings naming `line` of this file so far.
+fn growth_warnings(line: u32) -> usize {
+    let at: String = format!("support.rs:{line}:");
+    events()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event: &&lithia_test::Captured| {
+            event.level == Level::WARN && event.text.contains("keep piling up") && event.text.contains(&at)
+        })
+        .count()
+}
+
+#[lithia::test]
+async fn the_growth_warning_counts_what_support_holds_at_one_site() {
+    let _ = events();
+    let first: SourceNode<u32> = node!(0);
+    let mut line: u32 = 0;
+    for _ in 0..600 {
+        line = held_watcher(&first);
+    }
+    lithia::flush().await;
+    drop(first); // support lets go of all 600: the site's count falls back to 0
+    let _ = lithia::test::live_nodes().await;
+    let second: SourceNode<u32> = node!(0);
+    for _ in 0..400 {
+        held_watcher(&second);
+    }
+    lithia::flush().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(growth_warnings(line), 0, "400 held now, below 1 000");
+    for _ in 0..600 {
+        held_watcher(&second);
+    }
+    lithia::flush().await;
+    assert!(warned("keep piling up", line, Duration::from_secs(2)).await, "1 000 held");
+    for _ in 0..9 {
+        held_watcher(&second);
+    }
+    lithia::flush().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(growth_warnings(line), 1, "the next warning waits for 10 000");
+    drop(second);
+}
