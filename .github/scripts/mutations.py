@@ -151,6 +151,12 @@ MUTATIONS: list[Mutation] = [
         "                Some(_) if header.is_ghost() => None,\n",
         "loom", "a_write_frames_through_a_node_being_disposed",
     ),
+    Mutation(
+        "W8", "A shutdown not telling the children of the dropped run's epochs", "crates/lithia/src/protocol/lifecycle.rs",
+        "    if !ghost && !served.is_empty() {\n",
+        "    if false && !served.is_empty() {\n",
+        "edge", "a_runtime_shutting_down_fails_the_strict_children_of_its_runs",
+    ),
 ]
 
 SUITES: dict[str, list[str]] = {
