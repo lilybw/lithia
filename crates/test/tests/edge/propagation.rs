@@ -594,3 +594,30 @@ async fn tasks_lithia_did_not_start_keep_scopes_of_their_own() {
     assert_eq!(other, 0, "another task's nodes are not in this one's scope");
     assert_eq!(first.await.unwrap(), 3, "a task keeps its scope however many others came and went");
 }
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_counts_in_the_scope_of_the_write_it_serves() {
+    let x: SourceNode<u32> = node!(0);
+    let y: SourceNode<u32> = node!(0);
+    let _mirror: DerivedNode<()> = node!(|x| y.set(*x.get()));
+    let slow: DerivedNode<u32> = node!(|y| {
+        let value: u32 = *y.get();
+        if value > 0 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        value
+    });
+    lithia::flush().await;
+    let seen: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let (writer, reader, out): (SourceNode<u32>, DerivedNode<u32>, Arc<AtomicU32>) =
+        (x.clone(), slow.clone(), seen.clone());
+    // The task's write starts runs of nodes made in this test's scope; they count in the task's.
+    lithia::spawn(async move {
+        writer.set(1);
+        lithia::flush().await;
+        out.store(*reader.get(), Ordering::SeqCst);
+    })
+    .await
+    .unwrap();
+    assert_eq!(seen.load(Ordering::SeqCst), 1, "the task's flush waited for the run its write caused");
+}
