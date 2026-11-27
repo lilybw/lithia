@@ -486,3 +486,82 @@ async fn keys_a_creator_stops_making_are_let_go_of() {
     let live: u32 = counts.0.load(Ordering::SeqCst) - counts.1.load(Ordering::SeqCst);
     assert!(live <= 4, "{live} of {} keys still held", counts.0.load(Ordering::SeqCst));
 }
+
+/// A service with no `PartialEq`: captured in an `Arc`, it compares by pointer.
+struct Service(u32);
+
+#[lithia::test]
+async fn a_keyed_node_reruns_when_a_captured_arc_is_another_one() {
+    let config: SourceNode<Arc<Service>> = node!(Arc::new(Service(1)));
+    let tick: SourceNode<u32> = node!(0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _creator: DerivedNode<Vec<DerivedNode<u32>>> = node!(|config| {
+        let shared: Arc<Service> = (*config.get()).clone();
+        vec![node!(
+            |tick| {
+                let _ = tick.get();
+                runs.fetch_add(1, Ordering::SeqCst);
+                shared.0
+            },
+            key = 0u8
+        )]
+    });
+    lithia::flush().await;
+    assert_eq!(count(&runs), 1);
+    let same: Arc<Service> = (*config.get()).clone();
+    config.set(same); // the same `Arc`: the reclaimed node does not rerun
+    lithia::flush().await;
+    assert_eq!(count(&runs), 1);
+    config.set(Arc::new(Service(1))); // another `Arc`, though alike
+    lithia::flush().await;
+    assert_eq!(count(&runs), 2);
+}
+
+/// A key that notes the thread it drops on; compares and hashes by its number alone.
+struct KeyDropsWhere(u32, Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>);
+
+impl PartialEq for KeyDropsWhere {
+    fn eq(&self, other: &KeyDropsWhere) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for KeyDropsWhere {}
+
+impl std::hash::Hash for KeyDropsWhere {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl Drop for KeyDropsWhere {
+    fn drop(&mut self) {
+        self.1.lock().unwrap().push(std::thread::current().id());
+    }
+}
+
+#[lithia::test(flavor = "current_thread")]
+async fn keys_drop_off_the_thread_that_runs_their_creator() {
+    let threads: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let keys: SourceNode<u32> = node!(0);
+    let noted: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>> = threads.clone();
+    let _creator: DerivedNode<()> = node!(|keys| {
+        let number: u32 = *keys.get();
+        node!(
+            |keys| {
+                let _ = keys.get();
+            },
+            key = KeyDropsWhere(number, noted.clone())
+        );
+    });
+    lithia::flush().await;
+    for number in 1..=6 {
+        keys.set(number); // the creator runs here, on the only worker, and lets go of the key before
+        lithia::flush().await;
+    }
+    let _ = lithia::test::live_nodes().await;
+    let here: std::thread::ThreadId = std::thread::current().id();
+    let dropped: Vec<std::thread::ThreadId> = threads.lock().unwrap().clone();
+    assert!(dropped.len() >= 5, "{dropped:?}");
+    assert!(dropped.iter().all(|thread: &std::thread::ThreadId| *thread != here), "{dropped:?}");
+}
