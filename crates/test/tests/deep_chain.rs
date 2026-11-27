@@ -32,7 +32,17 @@ async fn a_long_chain_propagates_and_drops_without_recursion() {
     // bottom-up, parents through a worklist and bodies on the blocking pool, without recursion.
     drop(tail);
     assert_eq!(lithia::test::live_nodes().await, base, "support still holds the chain");
-    drop(source);
+    // The last anchor goes on a thread with a small stack: freeing 20 002 nodes recursively would overflow it.
+    let runtime: tokio::runtime::Handle = tokio::runtime::Handle::current();
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(move || {
+            let _entered: tokio::runtime::EnterGuard<'_> = runtime.enter();
+            drop(source);
+        })
+        .expect("a thread")
+        .join()
+        .expect("the chain is let go of without overflowing the stack");
     let freed: Result<(), tokio::time::error::Elapsed> = tokio::time::timeout(Duration::from_secs(15), async {
         while lithia::test::live_nodes().await != base - 20_002 {
             tokio::time::sleep(Duration::from_millis(5)).await;

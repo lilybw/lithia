@@ -565,3 +565,32 @@ async fn settled_follows_every_node_a_run_writes() {
     lithia::test::settled(&input).await; // both written nodes, not only the last one noted
     assert_eq!((*slow.get(), *quick.get()), (5, 5));
 }
+
+#[lithia::test(flavor = "current_thread")]
+async fn tasks_lithia_did_not_start_keep_scopes_of_their_own() {
+    let (made, made_rx): (tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>) =
+        tokio::sync::oneshot::channel();
+    let (done, done_rx): (tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>) =
+        tokio::sync::oneshot::channel();
+    let first: tokio::task::JoinHandle<usize> = tokio::spawn(async move {
+        let nodes: Vec<SourceNode<u32>> = (0..3).map(|i: u32| node!(i)).collect();
+        made.send(()).unwrap();
+        let _ = done_rx.await;
+        let live: usize = lithia::test::live_nodes().await;
+        drop(nodes);
+        live
+    });
+    made_rx.await.unwrap();
+    let other: usize = tokio::spawn(async { lithia::test::live_nodes().await }).await.unwrap();
+    // More tasks than the scope map keeps before it prunes the scopes that are gone.
+    for _ in 0..70 {
+        tokio::spawn(async {
+            let _ = node!(0u32);
+        })
+        .await
+        .unwrap();
+    }
+    done.send(()).unwrap();
+    assert_eq!(other, 0, "another task's nodes are not in this one's scope");
+    assert_eq!(first.await.unwrap(), 3, "a task keeps its scope however many others came and went");
+}

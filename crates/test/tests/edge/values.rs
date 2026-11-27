@@ -126,6 +126,25 @@ async fn nodes_created_inside_update_closures_are_delivered() {
 }
 
 #[lithia::test]
+async fn nodes_created_inside_update_closures_outside_lithia_tasks_are_delivered() {
+    let n: SourceNode<u32> = node!(2);
+    let holder: SourceNode<Option<DerivedNode<u32>>> = node!(None);
+    let (source, slot): (SourceNode<u32>, SourceNode<Option<DerivedNode<u32>>>) = (n.clone(), holder.clone());
+    let runtime: tokio::runtime::Handle = tokio::runtime::Handle::current();
+    // A thread of its own runs no lithia task: its closure's creation is delivered once the lock is released.
+    std::thread::spawn(move || {
+        let _entered: tokio::runtime::EnterGuard<'_> = runtime.enter();
+        slot.update(move |_old: &Option<DerivedNode<u32>>| Some(node!(|source| *source.get() * 10)));
+    })
+    .join()
+    .unwrap();
+    let child: DerivedNode<u32> = (*holder.get()).clone().expect("created in the closure");
+    let ran: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(2), lithia_test::until(|| *child.get() == 20)).await;
+    assert!(ran.is_ok(), "the node's first run was delivered: {}", *child.get());
+}
+
+#[lithia::test]
 async fn try_operations_report_ghosts() {
     let n: SourceNode<u32> = node!(1);
     lithia::dispose(&n);

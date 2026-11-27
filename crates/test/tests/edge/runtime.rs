@@ -260,3 +260,57 @@ async fn spawned_tasks_report_their_output_cancellation_and_panics() {
     let payload: Box<dyn std::any::Any + Send> = panicked.try_into_panic().expect("it panicked");
     assert_eq!(payload.downcast_ref::<&str>(), Some(&"blocking work failed"));
 }
+
+#[test]
+fn values_drop_on_their_own_nodes_runtime() {
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<(bool, Option<tokio::runtime::Id>)>>>;
+    /// Notes, when dropped, whether its node was made on runtime A and which runtime it dropped on.
+    struct DropsOn(Seen, bool);
+    impl Drop for DropsOn {
+        fn drop(&mut self) {
+            let on: Option<tokio::runtime::Id> =
+                tokio::runtime::Handle::try_current().ok().map(|h: tokio::runtime::Handle| h.id());
+            self.0.lock().unwrap().push((self.1, on));
+        }
+    }
+    fn watch(runtime: &tokio::runtime::Runtime, on_a: bool, hub: &SourceNode<u32>, seen: &Seen) {
+        let (hub, seen): (SourceNode<u32>, Seen) = (hub.clone(), seen.clone());
+        runtime.block_on(async {
+            let init: DropsOn = DropsOn(seen.clone(), on_a);
+            node!(
+                |hub| {
+                    let _ = hub.get();
+                    DropsOn(seen.clone(), *on_a)
+                },
+                init = init
+            );
+        });
+    }
+    let rt_a: tokio::runtime::Runtime =
+        tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let rt_b: tokio::runtime::Runtime =
+        tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let (a_id, b_id): (tokio::runtime::Id, tokio::runtime::Id) = (rt_a.handle().id(), rt_b.handle().id());
+    let seen: Seen = Default::default();
+    let hub: SourceNode<u32> = rt_a.block_on(async { node!(0) });
+    for i in 0..16 {
+        watch(if i % 2 == 0 { &rt_a } else { &rt_b }, i % 2 == 0, &hub, &seen);
+    }
+    rt_a.block_on(async { lithia::flush().await });
+    rt_b.block_on(async { lithia::flush().await });
+    rt_a.block_on(async {
+        hub.set(1); // every watcher's item replaces its first one
+        lithia::flush().await;
+    });
+    rt_b.block_on(async { lithia::flush().await });
+    rt_a.block_on(async {
+        drop(hub); // one sweep lets go of every watcher, on both runtimes
+        let _ = lithia::test::live_nodes().await;
+    });
+    let seen: Vec<(bool, Option<tokio::runtime::Id>)> = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 3 * 16, "the init value, the first item and the last of each watcher");
+    assert!(
+        seen.iter().all(|(on_a, on): &(bool, Option<tokio::runtime::Id>)| *on == Some(if *on_a { a_id } else { b_id })),
+        "{seen:?}"
+    );
+}
