@@ -15,8 +15,9 @@
 (* anchor that fell during it. Freeing is a step of its own, taken by any  *)
 (* thread once nothing holds the node.                                     *)
 (*                                                                         *)
-(* Left out: values, scheduling (Scheduling.tla), and children linked to a *)
-(* node while disposal tears it down.                                      *)
+(* A child linked to a ghost before the ghost's teardown is handled by     *)
+(* that teardown: disposed of if all its parents are ghosts, otherwise a   *)
+(* survivor. Left out: values and scheduling (Scheduling.tla).             *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
 
@@ -71,10 +72,11 @@ VARIABLES
     snap,       \* anchors when the sweep under way began
     ghost,      \* disposed nodes still alive
     disposing,  \* the ghosts a thread's disposal is still to tear down
+    late,       \* nodes linked to the ghosts a thread's disposal is still to tear down
     budget
 
 vars == <<made, live, hold, leased, ended, anchors, support, letGo, heldBy, gen, hover, reg, scoped,
-          bodies, creating, queue, taken, keep, lock, snap, ghost, disposing, budget>>
+          bodies, creating, queue, taken, keep, lock, snap, ghost, disposing, late, budget>>
 
 -----------------------------------------------------------------------------
 (* Strong references, and what lithia can see. *)
@@ -145,14 +147,14 @@ Clone(t, n) ==
     /\ hold' = [hold EXCEPT ![t][n] = @ + 1]
     /\ anchors' = [anchors EXCEPT ![n] = @ + 1]
     /\ UNCHANGED <<made, live, leased, ended, support, letGo, heldBy, gen, hover, reg, scoped, bodies,
-                   creating, queue, taken, keep, lock, snap, ghost, disposing>>
+                   creating, queue, taken, keep, lock, snap, ghost, disposing, late>>
 
 Send(t, u, n) ==
     /\ Outside(t)
     /\ t # u /\ hold[t][n] > 0 /\ hold[u][n] < MaxHandles
     /\ hold' = [hold EXCEPT ![t][n] = @ - 1, ![u][n] = @ + 1]
     /\ UNCHANGED <<made, live, leased, ended, anchors, support, letGo, heldBy, gen, hover, reg, scoped,
-                   bodies, creating, queue, taken, keep, lock, snap, ghost, disposing>>
+                   bodies, creating, queue, taken, keep, lock, snap, ghost, disposing, late>>
 
 \* The last anchoring handle's drop raises a starting point; the sweep runs once the step ends.
 Drop(t, n) ==
@@ -162,7 +164,7 @@ Drop(t, n) ==
     /\ anchors' = [anchors EXCEPT ![n] = @ - 1]
     /\ queue' = [queue EXCEPT ![t] = IF anchors[n] = 1 /\ NeedsSweep(n, live) THEN @ \cup {n} ELSE @]
     /\ UNCHANGED <<made, live, leased, ended, support, letGo, heldBy, gen, hover, reg, scoped, bodies,
-                   creating, taken, keep, lock, snap, ghost, disposing>>
+                   creating, taken, keep, lock, snap, ghost, disposing, late>>
 
 \* A count that rises from zero does so under the sweep lock, which then walks from the node if
 \* support has let go of anything still alive; a ghost's count rises without a walk.
@@ -182,7 +184,7 @@ BodyClone(t, w, n) ==
        THEN UNCHANGED <<support, letGo>>
        ELSE lock = None /\ Rise({n} \ ghost)
     /\ UNCHANGED <<made, live, leased, ended, heldBy, gen, hover, reg, scoped, bodies, creating, queue,
-                   taken, keep, lock, snap, ghost, disposing>>
+                   taken, keep, lock, snap, ghost, disposing, late>>
 
 \* A leased handle dropped while the lease runs counts nowhere.
 LeasedDrop(t, n) ==
@@ -190,7 +192,7 @@ LeasedDrop(t, n) ==
     /\ ~ended /\ leased[t][n] > 0
     /\ leased' = [leased EXCEPT ![t][n] = @ - 1]
     /\ UNCHANGED <<made, live, hold, ended, anchors, support, letGo, heldBy, gen, hover, reg, scoped,
-                   bodies, creating, queue, taken, keep, lock, snap, ghost, disposing>>
+                   bodies, creating, queue, taken, keep, lock, snap, ghost, disposing, late>>
 
 \* The block ends: under the lease's lock, every leased handle still alive counts as an outside
 \* handle before any of them can be dropped as one.
@@ -205,7 +207,7 @@ LeaseEnd(t) ==
     /\ leased' = [u \in Thread |-> [n \in Node |-> 0]]
     /\ ended' = TRUE
     /\ UNCHANGED <<made, live, heldBy, gen, hover, reg, scoped, bodies, creating, queue, taken, keep, lock,
-                   snap, ghost, disposing>>
+                   snap, ghost, disposing, late>>
 
 \* lifetime/support.rs scope: support and the creator let go of the node, wherever the creator holds
 \* it, and it is a starting point.
@@ -221,7 +223,7 @@ Scope(t, n) ==
                     IF Targets[n] # {} \/ (\E c \in live : n \in PP(c)) \/ gen[n] # {}
                     THEN @ \cup {n} ELSE @]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, letGo, reg, bodies, creating, taken,
-                   keep, lock, snap, ghost, disposing>>
+                   keep, lock, snap, ghost, disposing, late>>
 
 \* A creator's next run releases its generation: each unkeyed member loses its creation edge and is a
 \* starting point; keyed members join the holdover, still held (graph/sched.rs take_generation).
@@ -234,7 +236,7 @@ CreatorRun(t, c) ==
        /\ hover' = [hover EXCEPT ![c] = gen[c] \cap Keyed]
        /\ queue' = [queue EXCEPT ![t] = @ \cup {m \in rel : NeedsSweep(m, live)}]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, reg, scoped, bodies,
-                   creating, taken, keep, lock, snap, ghost, disposing>>
+                   creating, taken, keep, lock, snap, ghost, disposing, late>>
 
 \* expand/keyed.rs reclaim: the creator's run creates the key again and takes the node back.
 Reclaim(t, c, n) ==
@@ -242,7 +244,7 @@ Reclaim(t, c, n) ==
     /\ n \in hover[c]
     /\ hover' = [hover EXCEPT ![c] = @ \ {n}]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, heldBy, gen, reg, scoped,
-                   bodies, creating, queue, taken, keep, lock, snap, ghost, disposing>>
+                   bodies, creating, queue, taken, keep, lock, snap, ghost, disposing, late>>
 
 \* protocol/lifecycle.rs finalize: the run ended without a successor, and what it did not reclaim
 \* is released.
@@ -255,11 +257,12 @@ RunEnd(t, c) ==
        /\ hover' = [hover EXCEPT ![c] = {}]
        /\ queue' = [queue EXCEPT ![t] = @ \cup {m \in rel : NeedsSweep(m, live)}]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, reg, scoped, bodies,
-                   creating, taken, keep, lock, snap, ghost, disposing>>
+                   creating, taken, keep, lock, snap, ghost, disposing, late>>
 
 \* expand/create.rs: the node, linked to its parents, with its handle; its creator's run, or the creating
 \* code, holds what its body captures and the creator while it is created. A node whose parents are
-\* all torn-down ghosts is disposed of once it is made.
+\* all torn-down ghosts is disposed of once it is made; one linked to a ghost not torn down yet is left
+\* to that ghost's teardown.
 CreateAlloc(t, n) ==
     /\ Outside(t)
     /\ n \notin made
@@ -271,6 +274,7 @@ CreateAlloc(t, n) ==
     /\ hold' = [hold EXCEPT ![t][n] = 1]
     /\ creating' = [creating EXCEPT ![t] = [node |-> n, step |-> "hold",
                                             orphan |-> Parents[n] # {} /\ Parents[n] \subseteq Torn]]
+    /\ late' = [u \in Thread |-> IF Parents[n] \cap disposing[u] # {} THEN late[u] \cup {n} ELSE late[u]]
     /\ UNCHANGED <<leased, ended, support, letGo, heldBy, gen, hover, reg, scoped, bodies, queue, taken,
                    keep, lock, snap, ghost, disposing>>
 
@@ -290,7 +294,7 @@ CreateHold(t) ==
           /\ creating' = [creating EXCEPT ![t] =
                             IF Targets[n] = {} THEN AfterHold(creating[t]) ELSE [@ EXCEPT !.step = "register"]]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, letGo, hover, reg, scoped, bodies, queue,
-                   taken, keep, lock, snap, ghost, disposing, budget>>
+                   taken, keep, lock, snap, ghost, disposing, late, budget>>
 
 \* Under the sweep lock, the writer joins its targets' writer lists and, if it is supported, holds
 \* again what support let go of downstream.
@@ -303,7 +307,7 @@ CreateRegister(t) ==
           /\ letGo' = letGo \ re
     /\ creating' = [creating EXCEPT ![t] = AfterHold(creating[t])]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, heldBy, gen, hover, scoped, bodies, queue,
-                   taken, keep, lock, snap, ghost, disposing, budget>>
+                   taken, keep, lock, snap, ghost, disposing, late, budget>>
 
 \* lifetime/dispose.rs: the node and the descendants, in NodeId order, whose parents are all freed or
 \* ghosts become ghosts, which are never anchors from then on.
@@ -324,7 +328,7 @@ DisposeMark(t, r) ==
        /\ ghost' = ghost \cup F
        /\ disposing' = [disposing EXCEPT ![t] = F]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, heldBy, gen, hover, reg,
-                   scoped, bodies, creating, queue, taken, keep, lock, snap>>
+                   scoped, bodies, creating, queue, taken, keep, lock, snap, late>>
 
 \* Tearing the ghosts down: each drops its support and its body, leaves its parents, and releases its
 \* generation, keyed nodes and holdover; the members, the ghosts' targets and the surviving
@@ -343,12 +347,19 @@ TearDown(t, F, surv) ==
        /\ bodies' = bodies \cup {f \in F : Captures(f) # {}}
        /\ queue' = [queue EXCEPT ![t] = @ \cup raised]
 
+\* The children linked to the ghosts after the walk, before they closed, are handled as the walk would
+\* have handled them: one whose parents are all ghosts is disposed of too, and the others survive.
 DisposeTear(t) ==
     /\ disposing[t] # {}
-    /\ LET F == disposing[t] IN TearDown(t, F, (UNION {Desc(f) : f \in F}) \ ghost)
+    /\ LET F == disposing[t]
+           O == {c \in late[t] \cap live : c \notin ghost /\ Parents[c] \subseteq ghost}
+           G == UNION {FreeWalk(Desc(o), {o}) : o \in O}
+       IN /\ ghost' = ghost \cup G
+          /\ TearDown(t, F \cup G, (UNION {Desc(f) : f \in F \cup G}) \ (ghost \cup G))
     /\ disposing' = [disposing EXCEPT ![t] = {}]
+    /\ late' = [late EXCEPT ![t] = {}]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, letGo, reg, scoped, creating, taken, keep,
-                   lock, snap, ghost, budget>>
+                   lock, snap, budget>>
 
 \* dispose_unchecked on a new node whose parents are all ghosts.
 CreateOrphan(t) ==
@@ -358,7 +369,7 @@ CreateOrphan(t) ==
        /\ TearDown(t, {n}, {})
     /\ creating' = [creating EXCEPT ![t] = NoCreation]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, letGo, reg, scoped, taken, keep, lock, snap,
-                   disposing, budget>>
+                   disposing, late, budget>>
 
 -----------------------------------------------------------------------------
 (* lithia's own steps. *)
@@ -380,14 +391,14 @@ Free(t, n) ==
     /\ reg' = reg \ {n}
     /\ bodies' = IF Captures(n) # {} /\ n \notin Torn THEN bodies \cup {n} ELSE bodies
     /\ UNCHANGED <<made, hold, leased, ended, anchors, support, scoped, creating, taken, keep,
-                   lock, snap, ghost, disposing, budget>>
+                   lock, snap, ghost, disposing, late, budget>>
 
 \* The blocking pool drops a freed node's body, and the handles it captured.
 BodyDrop(w) ==
     /\ w \in bodies
     /\ bodies' = bodies \ {w}
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, heldBy, gen, hover, reg,
-                   scoped, creating, queue, taken, keep, lock, snap, ghost, disposing, budget>>
+                   scoped, creating, queue, taken, keep, lock, snap, ghost, disposing, late, budget>>
 
 SweepBegin(t) ==
     /\ queue[t] # {} /\ taken[t] = {} /\ keep[t] = {} /\ creating[t].node = None /\ disposing[t] = {}
@@ -397,7 +408,7 @@ SweepBegin(t) ==
     /\ queue' = [queue EXCEPT ![t] = {}]
     /\ snap' = Anchors
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, heldBy, gen, hover, reg,
-                   scoped, bodies, creating, keep, ghost, disposing, budget>>
+                   scoped, bodies, creating, keep, ghost, disposing, late, budget>>
 
 \* lifetime/support.rs sweep. Counts only fall while the lock is held, so it reads every anchor it had at
 \* some point: any of those that fell may still count. A start's exact check may give up.
@@ -417,14 +428,14 @@ SweepEnd(t) ==
     /\ taken' = [taken EXCEPT ![t] = {}]
     /\ lock' = None
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, heldBy, gen, hover, reg, scoped, bodies,
-                   creating, queue, snap, ghost, disposing, budget>>
+                   creating, queue, snap, ghost, disposing, late, budget>>
 
 \* After the lock, the sweep drops the references it held, which may free nodes.
 KeepDrop(t) ==
     /\ keep[t] # {} /\ lock # t
     /\ keep' = [keep EXCEPT ![t] = {}]
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, heldBy, gen, hover, reg,
-                   scoped, bodies, creating, queue, taken, lock, snap, ghost, disposing, budget>>
+                   scoped, bodies, creating, queue, taken, lock, snap, ghost, disposing, late, budget>>
 
 -----------------------------------------------------------------------------
 
@@ -451,6 +462,7 @@ Init ==
     /\ snap = {}
     /\ ghost = {}
     /\ disposing = [t \in Thread |-> {}]
+    /\ late = [t \in Thread |-> {}]
     /\ budget = Budget
 
 Internal ==
@@ -499,6 +511,9 @@ SupportHolds ==
 GenerationsExact ==
     /\ \A c, m \in Node : m \in gen[c] <=> heldBy[m] = c
     /\ \A c \in Node : hover[c] \subseteq gen[c] \cap Keyed
+
+\* Once lithia has nothing left to do, a node whose parents are all ghosts is a ghost itself.
+OrphansDisposed == Quiescent => \A n \in live : Parents[n] # {} /\ Parents[n] \subseteq ghost => n \in ghost
 
 \* A torn-down ghost holds nothing and support never holds it.
 GhostsReleased == \A g \in Torn : g \notin support /\ gen[g] = {} /\ hover[g] = {}
