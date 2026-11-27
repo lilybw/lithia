@@ -233,6 +233,32 @@ async fn status_follows_runs_failures_and_writes() {
 }
 
 #[lithia::test]
+async fn a_rerun_in_flight_is_pending_and_clears_a_failure_as_it_starts() {
+    let n: SourceNode<u32> = node!(0);
+    let gate: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
+    let slow: DerivedNode<u32> = node!(async |n| {
+        let value: u32 = *n.get();
+        assert_ne!(value, 1, "the body refuses 1");
+        if value > 1 {
+            gate.notified().await;
+        }
+        value
+    });
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Ready));
+    n.set(1);
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Failed(_)));
+    n.set(2); // the rerun starts, and waits at the gate: no longer failed, not yet ready
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Pending), "{:?}", lithia::status(&slow));
+    gate.notify_one();
+    lithia::test::settled(&slow).await;
+    assert!(matches!(lithia::status(&slow), Status::Ready));
+    assert_eq!(*slow.get(), 2);
+}
+
+#[lithia::test]
 async fn a_write_before_the_first_item_keeps_the_block_from_running() {
     let ran: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let flag: Arc<AtomicBool> = ran.clone();

@@ -645,3 +645,30 @@ async fn settled_follows_every_node_a_run_creates() {
     let values: Vec<u64> = creator.get().iter().map(|child: &DerivedNode<u64>| *child.get()).collect();
     assert_eq!(values, (0..MADE).map(|i: u64| 10 + i).collect::<Vec<u64>>());
 }
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_superseded_run_publishes_nothing() {
+    let n: SourceNode<u32> = node!(0);
+    let started: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let finished: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let slow: DerivedNode<u32> = node!(|n| {
+        let value: u32 = *n.get();
+        if value == 1 {
+            started.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(60));
+            finished.store(true, Ordering::SeqCst);
+        } else if value == 2 {
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        value * 10
+    });
+    lithia::flush().await;
+    n.set(1);
+    lithia_test::until(|| started.load(Ordering::SeqCst)).await;
+    n.set(2); // supersedes the run still computing 10
+    lithia_test::until(|| finished.load(Ordering::SeqCst)).await;
+    tokio::time::sleep(Duration::from_millis(30)).await; // the superseded run has returned; its successor runs
+    assert_eq!(*slow.get(), 0, "a superseded run's item is discarded");
+    lithia::flush().await;
+    assert_eq!(*slow.get(), 20);
+}
