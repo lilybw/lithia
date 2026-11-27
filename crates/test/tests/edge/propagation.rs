@@ -724,3 +724,27 @@ async fn a_function_a_body_defers_counts_in_the_scope_of_the_write_it_serves() {
     .unwrap();
     assert!(seen.load(Ordering::SeqCst), "the task's flush returned before the deferred function ran");
 }
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn children_linked_while_a_parent_runs_wait_for_it_wherever_it_sits() {
+    let y: SourceNode<u32> = node!(1);
+    let a: SourceNode<u32> = node!(0);
+    let started: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let slow: DerivedNode<u32> = node!(|a| {
+        let value: u32 = *a.get();
+        if value > 0 {
+            started.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        value
+    });
+    let x: SourceNode<u32> = node!(1);
+    lithia::flush().await;
+    a.set(5);
+    lithia_test::until(|| started.load(Ordering::SeqCst)).await;
+    // Made while `slow` runs, each child waits for it: its first parent in one, its second in the other.
+    let first: DerivedNode<u32> = node!(|slow, x| *slow.get() + *x.get());
+    let second: DerivedNode<u32> = node!(|y, slow| *y.get() + *slow.get());
+    lithia::flush().await;
+    assert_eq!((*first.get(), *second.get()), (6, 6));
+}

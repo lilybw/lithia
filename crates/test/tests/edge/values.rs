@@ -259,6 +259,23 @@ async fn a_rerun_in_flight_is_pending_and_clears_a_failure_as_it_starts() {
 }
 
 #[lithia::test]
+async fn a_node_failing_through_its_parent_again_stays_failed() {
+    let n: SourceNode<u32> = node!(0);
+    let parent: DerivedNode<u32> = node!(|n| {
+        let value: u32 = *n.get();
+        assert!(value == 0, "the parent refuses {value}");
+        value
+    });
+    let child: DerivedNode<u32> = node!(|parent| *parent.get(), resilience = NONE);
+    lithia::flush().await;
+    for value in 1..=3 {
+        n.set(value); // the parent fails again; the child fails through it again
+        lithia::flush().await;
+        assert!(matches!(lithia::status(&child), Status::Failed(_)), "{value}: {:?}", lithia::status(&child));
+    }
+}
+
+#[lithia::test]
 async fn a_write_before_the_first_item_keeps_the_block_from_running() {
     let ran: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let flag: Arc<AtomicBool> = ran.clone();

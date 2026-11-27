@@ -773,3 +773,33 @@ async fn the_last_anchor_moved_into_a_body_that_only_reads_lets_go_at_once() {
     assert_eq!(*reader.get(), 1);
     drop(reader);
 }
+
+/// A capture whose clone panics.
+struct Brittle;
+
+impl Clone for Brittle {
+    fn clone(&self) -> Brittle {
+        panic!("this capture cannot be cloned")
+    }
+}
+
+#[lithia::test]
+async fn a_capture_that_panics_while_cloned_leaves_later_handles_outside() {
+    let seen: SourceNode<u32> = node!(0);
+    let k: SourceNode<u32> = node!(0);
+    let brittle: Brittle = Brittle;
+    let failed: std::thread::Result<DerivedNode<()>> = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        node!(|k| {
+            let _ = (k.get(), &brittle);
+        })
+    }));
+    assert!(failed.is_err(), "the expansion panicked while it took its captures");
+    let t: SourceNode<u32> = node!(1);
+    node!(|t| seen.set(*t.get()));
+    // A clone made now is an outside handle again, so it anchors `t` once `t` itself goes.
+    let copy: SourceNode<u32> = t.clone();
+    drop(t);
+    copy.set(5);
+    lithia::flush().await;
+    assert_eq!(*seen.get(), 5);
+}

@@ -479,3 +479,24 @@ async fn a_memo_whose_last_reader_was_a_finished_block_warns_that_nothing_reads_
     assert!(find(Level::WARN, &[UNREAD, &line], Duration::from_secs(2)).await.is_some());
     drop((block, input));
 }
+
+#[lithia::test]
+async fn a_block_polled_twice_or_yielding_was_under_way_and_never_warns_when_freed() {
+    let _ = events();
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let twice: SourceNode<u32> = node!(async {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        std::future::pending::<u32>().await
+    });
+    let yield_line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let yielding: SourceNode<u32> = node!(async {
+        yield 1;
+        std::future::pending::<()>().await;
+    });
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    drop((twice, yielding));
+    let _ = lithia::test::live_nodes().await;
+    assert!(find(Level::WARN, &["freed before its first run", &line], Duration::from_millis(100)).await.is_none());
+    assert!(find(Level::WARN, &["freed before its first run", &yield_line], Duration::from_millis(50)).await.is_none());
+}
