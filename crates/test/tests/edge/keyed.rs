@@ -589,3 +589,17 @@ async fn a_keyed_child_ready_before_its_creator_decides_runs_once_its_creator_ke
     assert_eq!(*creator.get()[0].get(), 7);
     assert_eq!(count(&runs), 2, "it waited for its creator, then ran once");
 }
+
+/// A value with no `PartialEq`: a reclaimed keyed source node always takes the new one.
+struct Opaque(u32);
+
+#[lithia::test]
+async fn a_reclaimed_keyed_source_takes_a_new_value_it_cannot_compare() {
+    let n: SourceNode<u32> = node!(1);
+    let creator: DerivedNode<Vec<SourceNode<Opaque>>> = node!(|n| vec![node!(Opaque(*n.get()), key = 0u8)]);
+    lithia::flush().await;
+    assert_eq!(creator.get()[0].get().0, 1);
+    n.set(2);
+    lithia::flush().await;
+    assert_eq!(creator.get()[0].get().0, 2);
+}
