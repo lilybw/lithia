@@ -35,7 +35,8 @@ None.
   only particular interleavings reach: supersession with handovers, cut reruns, creator gating and its
   two resume paths, children linked while a parent runs or is disposed, sweeps deferred to an
   operation's end, `settled`'s quiet checks between steps. The TLA+ and loom models check those paths;
-  cargo-mutants runs neither. The others no test tells apart: `LITHIA_RERUN_RATE` and
+  cargo-mutants runs neither. Of 11 such mutants run against the loom models at two preemptions, 5
+  fail a model. The others no test tells apart: `LITHIA_RERUN_RATE` and
   `LITHIA_TEST_TIMEOUT_MS` set to 0, a lineage's copy of a key or a keyed node's kept inputs dropped
   inline, place counts of unkeyed creations at one site, drops grouped by runtime, and parents released
   without the worklist (the 20 002-node chain frees without recursion either way).
