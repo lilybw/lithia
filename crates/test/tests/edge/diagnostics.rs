@@ -459,3 +459,23 @@ async fn the_rerun_rate_threshold_comes_from_the_environment() {
     lithia::dispose(&holder);
     assert!(event.is_some(), "loop count {}", *n.get());
 }
+
+#[lithia::test]
+async fn a_memo_whose_last_reader_was_a_finished_block_warns_that_nothing_reads_it() {
+    let _ = events();
+    let input: SourceNode<u32> = node!(0);
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let memo: DerivedNode<u32> = node!(|input| *input.get() + 1);
+    let held: DerivedNode<u32> = memo.clone();
+    drop(memo);
+    let (done, finished): (tokio::sync::oneshot::Sender<u32>, tokio::sync::oneshot::Receiver<u32>) =
+        tokio::sync::oneshot::channel();
+    // A one-shot block takes the memo's last handle; once it ends, nothing reads the memo.
+    let block: SourceNode<()> = node!(async move {
+        let _ = done.send(*held.get());
+    });
+    let _ = finished.await.unwrap();
+    lithia::test::settled(&block).await;
+    assert!(find(Level::WARN, &[UNREAD, &line], Duration::from_secs(2)).await.is_some());
+    drop((block, input));
+}
