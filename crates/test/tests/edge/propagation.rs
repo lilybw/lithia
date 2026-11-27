@@ -621,3 +621,27 @@ async fn a_run_counts_in_the_scope_of_the_write_it_serves() {
     .unwrap();
     assert_eq!(seen.load(Ordering::SeqCst), 1, "the task's flush waited for the run its write caused");
 }
+
+#[lithia::test]
+async fn settled_follows_every_node_a_run_creates() {
+    const MADE: u64 = 24;
+    let input: SourceNode<u64> = node!(1);
+    let creator: DerivedNode<Vec<DerivedNode<u64>>> = node!(|input| {
+        let value: u64 = *input.get();
+        // More than the trace keeps before it prunes, the first made the slowest.
+        (0..MADE)
+            .map(|i: u64| {
+                node!(
+                    async |input| {
+                        tokio::time::sleep(Duration::from_millis(4 * (MADE - i))).await;
+                        *input.get() * 10 + i
+                    },
+                    init = value
+                )
+            })
+            .collect::<Vec<DerivedNode<u64>>>()
+    });
+    lithia::test::settled(&creator).await;
+    let values: Vec<u64> = creator.get().iter().map(|child: &DerivedNode<u64>| *child.get()).collect();
+    assert_eq!(values, (0..MADE).map(|i: u64| 10 + i).collect::<Vec<u64>>());
+}
