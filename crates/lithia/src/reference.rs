@@ -131,4 +131,25 @@ mod tests {
         let shared: Arc<String> = read.into();
         assert!(Arc::ptr_eq(&shared, &copy.into_arc()));
     }
+
+    #[test]
+    fn compares_hashes_and_points_as_its_value() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        fn hash(value: &impl Hash) -> u64 {
+            let mut hasher: DefaultHasher = DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        }
+        let low: Ref<u32> = Ref::new(Arc::new(1));
+        let high: Ref<u32> = Ref::new(Arc::new(2));
+        let other_low: Ref<u32> = Ref::new(Arc::new(1));
+        assert!(low != high && low == other_low && !Ref::ptr_eq(&low, &other_low));
+        assert_eq!(low.partial_cmp(&high), Some(std::cmp::Ordering::Less));
+        assert_eq!(high.cmp(&low), std::cmp::Ordering::Greater);
+        assert_eq!(hash(&low), hash(&1u32));
+        assert_ne!(hash(&low), hash(&high));
+        assert_eq!(format!("{low:p}"), format!("{:p}", Arc::as_ptr(Ref::as_arc(&low))));
+        assert_ne!(format!("{low:p}"), format!("{other_low:p}"));
+    }
 }

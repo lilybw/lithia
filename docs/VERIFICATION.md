@@ -155,8 +155,30 @@ runs the test named for it, which must fail; `--list` names them. W1–W7 cover 
 fast path, S1–S3 support's walks, and K1–K3 the wakes that end a stopped, retired or freed run. Two survive, both equivalent to the original: W3 releases a
 write to a child linked after the write's framing, which waits on the written node only through an
 entry, run or handover of that node that releases it as well, so the child reads the same value
-whichever release comes first; F5 runs the kept share once either way. cargo-mutants also runs weekly over `crates/lithia`
-in 16 shards and lists the mutants the tests leave alive.
+whichever release comes first; F5 runs the kept share once either way.
+
+### cargo-mutants
+
+`extended.yml` runs cargo-mutants weekly, and on a manual run, over `crates/lithia` in 16 shards, with
+the tests of `lithia`, `lithia-validation` and `lithia-test` but the compile-fail cases, and lists the
+mutants they leave alive. `.cargo/mutants.toml` leaves out the mutants reviewed as unable to change
+what lithia does, one pattern each, under its reason:
+
+- compiled only for loom: the model executor and the loom twins in `sync.rs` and the fast path;
+- the fast path's routing, which only chooses where a ready run is polled; the loom models check both routes;
+- hash quality, buffers kept for reuse, token merging, duplicate spawns, and hints that only skip work;
+- debug builds' invariant checks, the clean-up of a node being freed, and the safety nets for a
+  protocol step a panic leaves undrained;
+- internal ids' formatting, and replacements that compute the same value;
+- a `Setter`'s capture hooks, failure records read only while their bit is set, unread-memo checks
+  that find what they would anyway, a run's own waker, and `settled`'s trace pruning and wake-ups.
+
+The first run, on ec53abb, left 406 of 1 584 mutants alive and 37 timed out. The review of 2026-11-27
+mapped them onto 6041af0, with the 87 mutants new since or on changed lines: 518 in all. Of those,
+123 are now caught, 77 by new or extended tests (each checked on the mutant itself) and 46 by tests
+added since ec53abb; 33 time out and 33 do not build; 169 are left out as above; and 160 survive,
+as `known_bugs.md` describes. One mutant found a bug: a `&'static` handle used as a dependency of a
+`move` body was flagged as moved into it, so the nodes it could still write were let go.
 
 ## Stress
 

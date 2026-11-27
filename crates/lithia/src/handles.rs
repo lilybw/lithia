@@ -82,9 +82,8 @@ impl<T: Readable + ?Sized> Readable for &T {
     fn __lithia_node(&self) -> NodeHandle {
         (**self).__lithia_node()
     }
-    fn __lithia_move_dep(&self, read_only: bool) {
-        (**self).__lithia_move_dep(read_only)
-    }
+    /// A body that moves a reference moves no handle: the one it points to stays outside, an anchor.
+    fn __lithia_move_dep(&self, _read_only: bool) {}
 }
 
 /// Write access; implemented by `SourceNode` and `Setter`.

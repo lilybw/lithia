@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lithia::{DerivedNode, Readable, SourceNode, node};
+use lithia::{DerivedNode, Readable, Setter, SourceNode, node};
 use tokio::sync::oneshot;
 use tracing::Level;
 
@@ -599,4 +599,207 @@ async fn a_last_handle_drop_races_a_creation_on_the_same_node() {
     lithia::flush().await;
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert_eq!(lithia::test::live_nodes().await, base + 1); // only `seen`
+}
+
+#[lithia::test]
+async fn a_setter_anchors_what_its_node_feeds_until_it_drops() {
+    let seen: SourceNode<u32> = node!(0);
+    let base: usize = lithia::test::live_nodes().await;
+    let t: SourceNode<u32> = node!(1);
+    node!(|t| seen.set(*t.get()));
+    let writer: Setter<u32> = t.setter();
+    let debug: String = format!("{writer:?}");
+    assert!(debug.starts_with("Setter { id: ") && debug.contains("support.rs:"), "{debug}");
+    drop(t);
+    assert_eq!(lithia::test::live_nodes().await, base + 2, "the setter can still change `t`");
+    writer.set(5);
+    lithia::flush().await;
+    assert_eq!(*seen.get(), 5);
+    let copy: Setter<u32> = writer.clone();
+    drop(writer);
+    assert_eq!(lithia::test::live_nodes().await, base + 2, "its clone anchors as well");
+    drop(copy);
+    assert_eq!(lithia::test::live_nodes().await, base, "with the last setter gone, nothing can change `t`");
+}
+
+#[derive(Clone)]
+struct Outlet {
+    w: Setter<u32>,
+    label: String,
+}
+
+#[lithia::test]
+async fn a_setter_reached_by_a_field_path_may_write() {
+    assert!(
+        keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
+            let (k, out): (SourceNode<u32>, Outlet) = (k.clone(), Outlet { w: t.setter(), label: "o".to_string() });
+            node!(|k| {
+                let _ = k.get();
+                out.w.set(1);
+            });
+        })
+        .await,
+        "a field path"
+    );
+    assert!(
+        keeps_watcher(|k: &SourceNode<u32>, t: &SourceNode<u32>| {
+            let (k, out): (SourceNode<u32>, Outlet) = (k.clone(), Outlet { w: t.setter(), label: "o".to_string() });
+            node!(move |k| {
+                let _ = (k.get(), out.label.len());
+                out.w.set(1);
+            });
+        })
+        .await,
+        "a field path in a move body"
+    );
+}
+
+#[lithia::test]
+async fn a_static_reference_as_a_moved_dependency_leaves_its_handle_outside() {
+    let seen: SourceNode<u32> = node!(0);
+    let t: SourceNode<u32> = node!(1);
+    let leaked: &'static SourceNode<u32> = Box::leak(Box::new(t.clone()));
+    node!(|t| seen.set(*t.get()));
+    drop(t);
+    // The body moves the reference, not the handle it points to, which stays outside.
+    let child: DerivedNode<u32> = node!(move |leaked| *leaked.get() + 1);
+    lithia::flush().await;
+    assert_eq!(*child.get(), 2);
+    let _ = lithia::test::live_nodes().await;
+    leaked.set(7);
+    lithia::flush().await;
+    assert_eq!((*seen.get(), *child.get()), (7, 8), "the handle outside still reaches every reader");
+}
+
+/// Makes a handle-less watcher of `k`, held by support; returns the line of its one site.
+fn held_watcher(k: &SourceNode<u32>) -> u32 {
+    let k: SourceNode<u32> = k.clone();
+    let line: u32 = line!() + 1;
+    node!(|k| {
+        let _ = k.get();
+    });
+    line
+}
+
+/// Growth warnings naming `line` of this file so far.
+fn growth_warnings(line: u32) -> usize {
+    let at: String = format!("support.rs:{line}:");
+    events()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event: &&lithia_test::Captured| {
+            event.level == Level::WARN && event.text.contains("keep piling up") && event.text.contains(&at)
+        })
+        .count()
+}
+
+#[lithia::test]
+async fn the_growth_warning_counts_what_support_holds_at_one_site() {
+    let _ = events();
+    let first: SourceNode<u32> = node!(0);
+    let mut line: u32 = 0;
+    for _ in 0..600 {
+        line = held_watcher(&first);
+    }
+    lithia::flush().await;
+    drop(first); // support lets go of all 600: the site's count falls back to 0
+    let _ = lithia::test::live_nodes().await;
+    let second: SourceNode<u32> = node!(0);
+    for _ in 0..400 {
+        held_watcher(&second);
+    }
+    lithia::flush().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(growth_warnings(line), 0, "400 held now, below 1 000");
+    for _ in 0..600 {
+        held_watcher(&second);
+    }
+    lithia::flush().await;
+    assert!(warned("keep piling up", line, Duration::from_secs(2)).await, "1 000 held");
+    for _ in 0..9 {
+        held_watcher(&second);
+    }
+    lithia::flush().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(growth_warnings(line), 1, "the next warning waits for 10 000");
+    drop(second);
+}
+
+#[lithia::test]
+async fn two_handles_of_one_node_moved_into_a_block_are_counted_apart() {
+    let seen: SourceNode<u32> = node!(0);
+    let other_seen: SourceNode<u32> = node!(0);
+    let base: usize = lithia::test::live_nodes().await;
+    let (tx, rx): (
+        oneshot::Sender<(SourceNode<u32>, SourceNode<u32>)>,
+        oneshot::Receiver<(SourceNode<u32>, SourceNode<u32>)>,
+    ) = oneshot::channel();
+    let t: SourceNode<u32> = node!(3);
+    let u: SourceNode<u32> = node!(30);
+    node!(|t| seen.set(*t.get()));
+    node!(|u| other_seen.set(*u.get()));
+    let (kept, dropped, also): (SourceNode<u32>, SourceNode<u32>, SourceNode<u32>) = (t.clone(), t.clone(), u.clone());
+    drop((t, u));
+    let block: SourceNode<()> = node!(async move {
+        drop(dropped); // one of the two leased handles of `t` goes while the block runs
+        let _ = tx.send((kept, also));
+    });
+    let (moved, moved_other): (SourceNode<u32>, SourceNode<u32>) = rx.await.unwrap();
+    lithia::test::settled(&block).await;
+    drop(block);
+    // The block has ended: the handles it moved out anchor their nodes, once each.
+    assert_eq!(lithia::test::live_nodes().await, base + 4);
+    moved.set(4);
+    moved_other.set(40);
+    lithia::flush().await;
+    assert_eq!((*seen.get(), *other_seen.get()), (4, 40));
+    drop((moved, moved_other));
+    assert_eq!(lithia::test::live_nodes().await, base);
+}
+
+#[lithia::test]
+async fn the_last_anchor_moved_into_a_body_that_only_reads_lets_go_at_once() {
+    let k: SourceNode<u32> = node!(0);
+    let seen: SourceNode<u32> = node!(0);
+    let t: SourceNode<u32> = node!(1);
+    node!(|t| seen.set(*t.get()));
+    lithia::flush().await;
+    let base: usize = lithia::test::live_nodes().await;
+    // `t`'s only handle moves into a body that only reads it: nothing outside can change `t` now.
+    let reader: DerivedNode<u32> = node!(move |k| *k.get() + *t.get());
+    lithia::flush().await;
+    assert_eq!(lithia::test::live_nodes().await, base, "the reader came, `t`'s watcher went");
+    assert_eq!(*reader.get(), 1);
+    drop(reader);
+}
+
+/// A capture whose clone panics.
+struct Brittle;
+
+impl Clone for Brittle {
+    fn clone(&self) -> Brittle {
+        panic!("this capture cannot be cloned")
+    }
+}
+
+#[lithia::test]
+async fn a_capture_that_panics_while_cloned_leaves_later_handles_outside() {
+    let seen: SourceNode<u32> = node!(0);
+    let k: SourceNode<u32> = node!(0);
+    let brittle: Brittle = Brittle;
+    let failed: std::thread::Result<DerivedNode<()>> = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        node!(|k| {
+            let _ = (k.get(), &brittle);
+        })
+    }));
+    assert!(failed.is_err(), "the expansion panicked while it took its captures");
+    let t: SourceNode<u32> = node!(1);
+    node!(|t| seen.set(*t.get()));
+    // A clone made now is an outside handle again, so it anchors `t` once `t` itself goes.
+    let copy: SourceNode<u32> = t.clone();
+    drop(t);
+    copy.set(5);
+    lithia::flush().await;
+    assert_eq!(*seen.get(), 5);
 }

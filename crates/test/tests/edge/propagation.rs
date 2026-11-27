@@ -188,8 +188,31 @@ fn defer_outside_lithia_tasks_follows_the_latest_write() {
     });
 }
 
+#[test]
+fn defer_outside_lithia_tasks_waits_for_a_slow_run_of_the_latest_write() {
+    let runtime: tokio::runtime::Runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let x: SourceNode<u32> = node!(1);
+        let doubled: DerivedNode<u32> = node!(|x| {
+            let value: u32 = *x.get();
+            if value == 4 {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            value * 2
+        });
+        let seen: SourceNode<u32> = node!(0);
+        lithia::flush().await;
+        x.set(4);
+        let (doubled2, seen2): (DerivedNode<u32>, SourceNode<u32>) = (doubled.clone(), seen.clone());
+        lithia::defer(move || seen2.set(*doubled2.get())); // after the write's epoch, not at once
+        lithia::flush().await;
+        assert_eq!(*seen.get(), 8);
+    });
+}
+
 #[lithia::test]
 async fn flush_returns_after_a_deferred_function_panics() {
+    let _ = lithia_test::events();
     let written: SourceNode<bool> = node!(false);
     let writer: SourceNode<bool> = written.clone();
     lithia::defer(move || {
@@ -200,6 +223,13 @@ async fn flush_returns_after_a_deferred_function_panics() {
         tokio::time::timeout(Duration::from_secs(2), lithia::flush()).await;
     assert!(done.is_ok(), "flush hung after a deferred function panicked");
     assert!(*written.get(), "a write made before the panic lands");
+    let reported: Option<lithia_test::Captured> = lithia_test::find(
+        tracing::Level::WARN,
+        &["a deferred function panicked", "deferred function panics"],
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(reported.is_some(), "the panic is reported with its message");
 }
 
 #[lithia::test(flavor = "multi_thread", worker_threads = 4)]
@@ -530,4 +560,191 @@ async fn a_cut_rerun_leaves_alone_what_its_run_recorded_after_the_cut() {
     });
     lithia::test::settled(&work).await;
     assert_eq!((*result.get(), *runs.get()), (9, 1));
+}
+
+#[lithia::test]
+async fn settled_follows_every_node_a_run_writes() {
+    let input: SourceNode<u32> = node!(0);
+    let first: SourceNode<u32> = node!(0);
+    let second: SourceNode<u32> = node!(0);
+    // Handles the body finds in a value, not captures: its writes through them have no edge.
+    let outlets: SourceNode<Vec<SourceNode<u32>>> = node!(vec![first.clone(), second.clone()]);
+    let _writer: DerivedNode<()> = node!(|input, outlets| {
+        let value: u32 = *input.get();
+        for outlet in outlets.get().iter() {
+            outlet.set(value);
+        }
+    });
+    let slow: DerivedNode<u32> = node!(async |first| {
+        let value: u32 = *first.get();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        value
+    });
+    let quick: DerivedNode<u32> = node!(async |second| {
+        let value: u32 = *second.get();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        value
+    });
+    lithia::test::settled(&input).await;
+    input.set(5);
+    lithia::test::settled(&input).await; // both written nodes, not only the last one noted
+    assert_eq!((*slow.get(), *quick.get()), (5, 5));
+}
+
+#[lithia::test(flavor = "current_thread")]
+async fn tasks_lithia_did_not_start_keep_scopes_of_their_own() {
+    let (made, made_rx): (tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>) =
+        tokio::sync::oneshot::channel();
+    let (done, done_rx): (tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>) =
+        tokio::sync::oneshot::channel();
+    let first: tokio::task::JoinHandle<usize> = tokio::spawn(async move {
+        let nodes: Vec<SourceNode<u32>> = (0..3).map(|i: u32| node!(i)).collect();
+        made.send(()).unwrap();
+        let _ = done_rx.await;
+        let live: usize = lithia::test::live_nodes().await;
+        drop(nodes);
+        live
+    });
+    made_rx.await.unwrap();
+    let other: usize = tokio::spawn(async { lithia::test::live_nodes().await }).await.unwrap();
+    // More tasks than the scope map keeps before it prunes the scopes that are gone.
+    for _ in 0..70 {
+        tokio::spawn(async {
+            let _ = node!(0u32);
+        })
+        .await
+        .unwrap();
+    }
+    done.send(()).unwrap();
+    assert_eq!(other, 0, "another task's nodes are not in this one's scope");
+    assert_eq!(first.await.unwrap(), 3, "a task keeps its scope however many others came and went");
+}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_counts_in_the_scope_of_the_write_it_serves() {
+    let x: SourceNode<u32> = node!(0);
+    let y: SourceNode<u32> = node!(0);
+    let _mirror: DerivedNode<()> = node!(|x| y.set(*x.get()));
+    let slow: DerivedNode<u32> = node!(|y| {
+        let value: u32 = *y.get();
+        if value > 0 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        value
+    });
+    lithia::flush().await;
+    let seen: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let (writer, reader, out): (SourceNode<u32>, DerivedNode<u32>, Arc<AtomicU32>) =
+        (x.clone(), slow.clone(), seen.clone());
+    // The task's write starts runs of nodes made in this test's scope; they count in the task's.
+    lithia::spawn(async move {
+        writer.set(1);
+        lithia::flush().await;
+        out.store(*reader.get(), Ordering::SeqCst);
+    })
+    .await
+    .unwrap();
+    assert_eq!(seen.load(Ordering::SeqCst), 1, "the task's flush waited for the run its write caused");
+}
+
+#[lithia::test]
+async fn settled_follows_every_node_a_run_creates() {
+    const MADE: u64 = 24;
+    let input: SourceNode<u64> = node!(1);
+    let creator: DerivedNode<Vec<DerivedNode<u64>>> = node!(|input| {
+        let value: u64 = *input.get();
+        // More than the trace keeps before it prunes, the first made the slowest.
+        (0..MADE)
+            .map(|i: u64| {
+                node!(
+                    async |input| {
+                        tokio::time::sleep(Duration::from_millis(4 * (MADE - i))).await;
+                        *input.get() * 10 + i
+                    },
+                    init = value
+                )
+            })
+            .collect::<Vec<DerivedNode<u64>>>()
+    });
+    lithia::test::settled(&creator).await;
+    let values: Vec<u64> = creator.get().iter().map(|child: &DerivedNode<u64>| *child.get()).collect();
+    assert_eq!(values, (0..MADE).map(|i: u64| 10 + i).collect::<Vec<u64>>());
+}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_superseded_run_publishes_nothing() {
+    let n: SourceNode<u32> = node!(0);
+    let started: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let finished: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let slow: DerivedNode<u32> = node!(|n| {
+        let value: u32 = *n.get();
+        if value == 1 {
+            started.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(60));
+            finished.store(true, Ordering::SeqCst);
+        } else if value == 2 {
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        value * 10
+    });
+    lithia::flush().await;
+    n.set(1);
+    lithia_test::until(|| started.load(Ordering::SeqCst)).await;
+    n.set(2); // supersedes the run still computing 10
+    lithia_test::until(|| finished.load(Ordering::SeqCst)).await;
+    tokio::time::sleep(Duration::from_millis(30)).await; // the superseded run has returned; its successor runs
+    assert_eq!(*slow.get(), 0, "a superseded run's item is discarded");
+    lithia::flush().await;
+    assert_eq!(*slow.get(), 20);
+}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_function_a_body_defers_counts_in_the_scope_of_the_write_it_serves() {
+    let x: SourceNode<u32> = node!(0);
+    let done: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let _deferring: DerivedNode<()> = node!(|x| {
+        if *x.get() > 0 {
+            let done: Arc<AtomicBool> = done.clone();
+            lithia::defer(move || {
+                std::thread::sleep(Duration::from_millis(40));
+                done.store(true, Ordering::SeqCst);
+            });
+        }
+    });
+    lithia::flush().await;
+    let seen: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let (writer, flag, out): (SourceNode<u32>, Arc<AtomicBool>, Arc<AtomicBool>) =
+        (x.clone(), done.clone(), seen.clone());
+    lithia::spawn(async move {
+        writer.set(1);
+        lithia::flush().await; // waits for what the run it started deferred
+        out.store(flag.load(Ordering::SeqCst), Ordering::SeqCst);
+    })
+    .await
+    .unwrap();
+    assert!(seen.load(Ordering::SeqCst), "the task's flush returned before the deferred function ran");
+}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn children_linked_while_a_parent_runs_wait_for_it_wherever_it_sits() {
+    let y: SourceNode<u32> = node!(1);
+    let a: SourceNode<u32> = node!(0);
+    let started: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let slow: DerivedNode<u32> = node!(|a| {
+        let value: u32 = *a.get();
+        if value > 0 {
+            started.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        value
+    });
+    let x: SourceNode<u32> = node!(1);
+    lithia::flush().await;
+    a.set(5);
+    lithia_test::until(|| started.load(Ordering::SeqCst)).await;
+    // Made while `slow` runs, each child waits for it: its first parent in one, its second in the other.
+    let first: DerivedNode<u32> = node!(|slow, x| *slow.get() + *x.get());
+    let second: DerivedNode<u32> = node!(|y, slow| *y.get() + *slow.get());
+    lithia::flush().await;
+    assert_eq!((*first.get(), *second.get()), (6, 6));
 }

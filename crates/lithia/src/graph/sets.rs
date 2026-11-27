@@ -199,4 +199,17 @@ mod tests {
         assert!(mask.take(3) && !mask.get(3) && !mask.take(3));
         assert!(mask.take(70) && mask.is_empty() && !mask.take(70));
     }
+
+    #[test]
+    fn mask_counts_each_parent_apart_and_ensure_owes_one() {
+        let mut mask: ParentMask = ParentMask::new();
+        for index in [3usize, 3, 5, 5] {
+            mask.add(index);
+        }
+        assert!(mask.take(5) && mask.take(5) && !mask.take(5));
+        assert!(mask.take(3) && mask.take(3) && !mask.take(3));
+        mask.ensure(9);
+        mask.ensure(9);
+        assert!(mask.get(9) && mask.take(9) && !mask.take(9));
+    }
 }

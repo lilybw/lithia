@@ -126,10 +126,30 @@ async fn nodes_created_inside_update_closures_are_delivered() {
 }
 
 #[lithia::test]
+async fn nodes_created_inside_update_closures_outside_lithia_tasks_are_delivered() {
+    let n: SourceNode<u32> = node!(2);
+    let holder: SourceNode<Option<DerivedNode<u32>>> = node!(None);
+    let (source, slot): (SourceNode<u32>, SourceNode<Option<DerivedNode<u32>>>) = (n.clone(), holder.clone());
+    let runtime: tokio::runtime::Handle = tokio::runtime::Handle::current();
+    // A thread of its own runs no lithia task: its closure's creation is delivered once the lock is released.
+    std::thread::spawn(move || {
+        let _entered: tokio::runtime::EnterGuard<'_> = runtime.enter();
+        slot.update(move |_old: &Option<DerivedNode<u32>>| Some(node!(|source| *source.get() * 10)));
+    })
+    .join()
+    .unwrap();
+    let child: DerivedNode<u32> = (*holder.get()).clone().expect("created in the closure");
+    let ran: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(2), lithia_test::until(|| *child.get() == 20)).await;
+    assert!(ran.is_ok(), "the node's first run was delivered: {}", *child.get());
+}
+
+#[lithia::test]
 async fn try_operations_report_ghosts() {
     let n: SourceNode<u32> = node!(1);
     lithia::dispose(&n);
     assert_eq!(n.try_get(), Err(Ghosted));
+    assert_eq!(n.try_get().unwrap_err().to_string(), "the node was disposed");
     assert_eq!(n.try_set(2), Err(Ghosted));
     assert_eq!(n.try_update(|v: &u32| v + 1), Err(Ghosted));
     assert_eq!(n.try_modify(|v: &mut u32| *v += 1), Err(Ghosted));
@@ -148,6 +168,7 @@ async fn try_operations_report_ghosts() {
 async fn equal_writes_do_not_reach_changes() {
     let n: SourceNode<u32> = node!(1, equals = lithia::eq);
     let mut stream: Changes<u32> = n.changes();
+    assert_eq!(format!("{stream:?}"), "Changes { ended: false }");
     assert_eq!(*stream.next().await.unwrap(), 1);
     n.set(1);
     let next: Result<Option<Ref<u32>>, tokio::time::error::Elapsed> =
@@ -209,6 +230,49 @@ async fn status_follows_runs_failures_and_writes() {
     broken.set(4); // a write is a new run, which clears the failure
     assert!(matches!(lithia::status(&broken), Status::Ready));
     assert_eq!(*broken.get(), 4);
+}
+
+#[lithia::test]
+async fn a_rerun_in_flight_is_pending_and_clears_a_failure_as_it_starts() {
+    let n: SourceNode<u32> = node!(0);
+    let gate: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
+    let slow: DerivedNode<u32> = node!(async |n| {
+        let value: u32 = *n.get();
+        assert_ne!(value, 1, "the body refuses 1");
+        if value > 1 {
+            gate.notified().await;
+        }
+        value
+    });
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Ready));
+    n.set(1);
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Failed(_)));
+    n.set(2); // the rerun starts, and waits at the gate: no longer failed, not yet ready
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Pending), "{:?}", lithia::status(&slow));
+    gate.notify_one();
+    lithia::test::settled(&slow).await;
+    assert!(matches!(lithia::status(&slow), Status::Ready));
+    assert_eq!(*slow.get(), 2);
+}
+
+#[lithia::test]
+async fn a_node_failing_through_its_parent_again_stays_failed() {
+    let n: SourceNode<u32> = node!(0);
+    let parent: DerivedNode<u32> = node!(|n| {
+        let value: u32 = *n.get();
+        assert!(value == 0, "the parent refuses {value}");
+        value
+    });
+    let child: DerivedNode<u32> = node!(|parent| *parent.get(), resilience = NONE);
+    lithia::flush().await;
+    for value in 1..=3 {
+        n.set(value); // the parent fails again; the child fails through it again
+        lithia::flush().await;
+        assert!(matches!(lithia::status(&child), Status::Failed(_)), "{value}: {:?}", lithia::status(&child));
+    }
 }
 
 #[lithia::test]

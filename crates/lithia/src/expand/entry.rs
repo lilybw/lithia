@@ -91,3 +91,14 @@ impl StartPaused for () {
         builder.start_paused(paused);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_test_timeout_comes_from_the_environment() {
+        // `.cargo/config.toml` sets 20 000 ms for every test this workspace runs.
+        if std::env::var("LITHIA_TEST_TIMEOUT_MS").as_deref() == Ok("20000") {
+            assert_eq!(super::test_timeout(), Some(std::time::Duration::from_millis(20_000)));
+        }
+    }
+}

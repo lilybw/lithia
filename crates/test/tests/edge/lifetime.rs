@@ -314,3 +314,40 @@ async fn a_ghost_reports_the_status_its_disposed_option_names() {
     assert_eq!((masked.try_set(4), pending.try_set(5)), (Err(lithia::Ghosted), Err(lithia::Ghosted)));
     assert_eq!((*masked.get(), *pending.get()), (2, 3));
 }
+
+/// Records the thread it drops on.
+struct DropsWhere(Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>);
+
+impl Drop for DropsWhere {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().push(std::thread::current().id());
+    }
+}
+
+#[lithia::test(flavor = "current_thread")]
+async fn a_replaced_value_drops_off_the_writing_thread() {
+    let threads: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let n: SourceNode<DropsWhere> = node!(DropsWhere(threads.clone()));
+    n.set(DropsWhere(threads.clone()));
+    let same: SourceNode<DropsWhere> =
+        node!(DropsWhere(threads.clone()), equals = |_: &DropsWhere, _: &DropsWhere| true);
+    same.set(DropsWhere(threads.clone())); // equal: the new value is discarded
+    let input: SourceNode<u32> = node!(0);
+    let made: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>> = threads.clone();
+    let derived: DerivedNode<DropsWhere> = node!(
+        |input| {
+            let _ = input.get();
+            DropsWhere(made.clone())
+        },
+        init = DropsWhere(threads.clone())
+    );
+    lithia::flush().await;
+    input.set(1); // the run's item replaces the first one, on this thread: the only worker
+    lithia::flush().await;
+    let _ = lithia::test::live_nodes().await;
+    let here: std::thread::ThreadId = std::thread::current().id();
+    let dropped: Vec<std::thread::ThreadId> = threads.lock().unwrap().clone();
+    assert_eq!(dropped.len(), 4, "the written-over and the discarded value, the init value and the first item");
+    assert!(dropped.iter().all(|thread: &std::thread::ThreadId| *thread != here), "{dropped:?}");
+    drop((n, same, derived));
+}
