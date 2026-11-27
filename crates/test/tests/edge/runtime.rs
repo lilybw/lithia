@@ -231,14 +231,32 @@ async fn spawned_tasks_report_their_output_cancellation_and_panics() {
     let done: lithia::JoinHandle<u32> = lithia::spawn_blocking(|| 7);
     assert_eq!(done.await.expect("the blocking task finishes"), 7);
 
+    let (open, gate): (tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>) =
+        tokio::sync::oneshot::channel();
+    let gated: lithia::JoinHandle<()> = lithia::spawn(async move {
+        let _ = gate.await;
+    });
+    assert!(!gated.is_finished());
+    assert_eq!(format!("{gated:?}"), "JoinHandle { finished: false }");
+    open.send(()).unwrap();
+    lithia_test::until(|| gated.is_finished()).await;
+    assert_eq!(format!("{gated:?}"), "JoinHandle { finished: true }");
+    gated.await.expect("the gated task finishes");
+
     let parked: lithia::JoinHandle<()> = lithia::spawn(std::future::pending::<()>());
     parked.abort();
     let cancelled: lithia::JoinError = parked.await.expect_err("an aborted task gives no output");
     assert!(cancelled.is_cancelled() && !cancelled.is_panic());
     assert_eq!(cancelled.to_string(), "the task was cancelled");
+    assert_eq!(format!("{cancelled:?}"), "JoinError { cancelled: true }");
+    let back: lithia::JoinError = cancelled.try_into_panic().expect_err("a cancelled task has no panic payload");
+    assert!(back.is_cancelled());
 
     let failing: lithia::JoinHandle<()> = lithia::spawn_blocking(|| panic!("blocking work failed"));
     let panicked: lithia::JoinError = failing.await.expect_err("a panicking task gives no output");
+    assert!(panicked.is_panic() && !panicked.is_cancelled());
+    assert_eq!(panicked.to_string(), "the task panicked");
+    assert_eq!(format!("{panicked:?}"), "JoinError { cancelled: false }");
     let payload: Box<dyn std::any::Any + Send> = panicked.try_into_panic().expect("it panicked");
     assert_eq!(payload.downcast_ref::<&str>(), Some(&"blocking work failed"));
 }

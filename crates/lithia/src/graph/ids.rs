@@ -205,3 +205,18 @@ pub(crate) fn stamp() -> Stamp {
 pub(crate) fn now() -> Stamp {
     Stamp(CLOCK.load(Ordering::SeqCst))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lineages_never_equal_a_node_and_stamps_tell_none_apart() {
+        for n in [1u64, 2, 5, 1 << 20] {
+            let node: NodeId = NodeId(NonZeroU64::new(n).expect("nonzero"));
+            assert_ne!(WriterId::lineage(n), WriterId::node(node));
+        }
+        assert!(!Stamp::NONE.is_some());
+        assert!(stamp().is_some());
+    }
+}

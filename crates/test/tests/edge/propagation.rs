@@ -190,6 +190,7 @@ fn defer_outside_lithia_tasks_follows_the_latest_write() {
 
 #[lithia::test]
 async fn flush_returns_after_a_deferred_function_panics() {
+    let _ = lithia_test::events();
     let written: SourceNode<bool> = node!(false);
     let writer: SourceNode<bool> = written.clone();
     lithia::defer(move || {
@@ -200,6 +201,13 @@ async fn flush_returns_after_a_deferred_function_panics() {
         tokio::time::timeout(Duration::from_secs(2), lithia::flush()).await;
     assert!(done.is_ok(), "flush hung after a deferred function panicked");
     assert!(*written.get(), "a write made before the panic lands");
+    let reported: Option<lithia_test::Captured> = lithia_test::find(
+        tracing::Level::WARN,
+        &["a deferred function panicked", "deferred function panics"],
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(reported.is_some(), "the panic is reported with its message");
 }
 
 #[lithia::test(flavor = "multi_thread", worker_threads = 4)]
@@ -530,4 +538,30 @@ async fn a_cut_rerun_leaves_alone_what_its_run_recorded_after_the_cut() {
     });
     lithia::test::settled(&work).await;
     assert_eq!((*result.get(), *runs.get()), (9, 1));
+}
+
+#[lithia::test]
+async fn settled_follows_every_node_a_run_writes() {
+    let input: SourceNode<u32> = node!(0);
+    let first: SourceNode<u32> = node!(0);
+    let second: SourceNode<u32> = node!(0);
+    let _writer: DerivedNode<()> = node!(|input| {
+        let value: u32 = *input.get();
+        first.set(value);
+        second.set(value);
+    });
+    let slow: DerivedNode<u32> = node!(async |first| {
+        let value: u32 = *first.get();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        value
+    });
+    let quick: DerivedNode<u32> = node!(async |second| {
+        let value: u32 = *second.get();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        value
+    });
+    lithia::test::settled(&input).await;
+    input.set(5);
+    lithia::test::settled(&input).await; // both written nodes, not only the last one noted
+    assert_eq!((*slow.get(), *quick.get()), (5, 5));
 }

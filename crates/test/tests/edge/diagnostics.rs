@@ -282,3 +282,180 @@ async fn a_comparator_whose_drop_panics_is_reported_not_raised() {
         find(Level::WARN, &["a dropped value panicked", "drop-probe-7783"], Duration::from_secs(2)).await;
     assert!(event.is_some(), "the panic is reported from the drop thread");
 }
+
+#[lithia::test]
+async fn failures_and_sites_format_their_parts() {
+    let root: SourceNode<u32> = node!(0);
+    let line: u32 = line!() + 1;
+    let failing: DerivedNode<u32> = node!(|root| if *root.get() == 0 { panic!("format-probe-7784") } else { 0 });
+    let through: DerivedNode<u32> = node!(|failing| *failing.get(), resilience = NONE);
+    lithia::flush().await;
+    let Status::Failed(own) = lithia::status(&failing) else { panic!("the body panicked") };
+    assert_eq!(own.to_string(), format!("{} ({})", own.message, own.site));
+    assert!(
+        own.to_string().contains("format-probe-7784") && own.to_string().contains(&format!("diagnostics.rs:{line}:"))
+    );
+    let site: String = format!("{:?}", own.site);
+    assert!(site.starts_with("Site { file: \"") && site.contains(&format!("line: {line}, column: ")), "{site}");
+    assert!(site.contains("module: \"") && site.contains("failures_and_sites_format_their_parts"), "{site}");
+    assert!(std::error::Error::source(&*own).is_none(), "its own panic has no cause");
+    let Status::Failed(caused) = lithia::status(&through) else { panic!("the child failed through its parent") };
+    let source: &dyn std::error::Error = std::error::Error::source(&*caused).expect("the parent's failure");
+    assert_eq!(source.to_string(), own.to_string());
+}
+
+#[lithia::test]
+async fn parent_failures_and_ghost_reads_report_at_debug() {
+    let _ = events();
+    let root: SourceNode<u32> = node!(0);
+    let failing: DerivedNode<u32> = node!(|root| if *root.get() == 0 { panic!("parent-probe-7785") } else { 0 });
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let through: DerivedNode<u32> = node!(|failing| *failing.get(), resilience = NONE);
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&through), Status::Failed(_)));
+    let event: Option<Captured> =
+        find(Level::DEBUG, &["node failed through its parents", "parent-probe-7785", &line], Duration::from_secs(2))
+            .await;
+    assert!(event.is_some());
+
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let masked: SourceNode<u32> = node!(7, disposed = MASK);
+    lithia::dispose(&masked);
+    assert_eq!(*masked.get(), 7);
+    let event: Option<Captured> =
+        find(Level::DEBUG, &["read of a disposed node", "disposed=", &line], Duration::from_secs(2)).await;
+    assert!(event.is_some());
+}
+
+#[lithia::test]
+async fn superseded_runs_and_sweeps_report_at_trace() {
+    let _ = events();
+    let input: SourceNode<u32> = node!(0);
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let slow: DerivedNode<u32> = node!(async |input| {
+        let value: u32 = *input.get();
+        tokio::time::sleep(Duration::from_millis(if value == 1 { 500 } else { 0 })).await;
+        value
+    });
+    lithia::flush().await;
+    input.set(1);
+    lithia::flush().await;
+    input.set(2); // supersedes the run still sleeping on 1
+    lithia::test::settled(&slow).await;
+    assert_eq!(*slow.get(), 2);
+    let event: Captured = find(Level::TRACE, &["run superseded or aborted", &line], Duration::from_secs(2))
+        .await
+        .expect("the superseded run is traced");
+    let run: &str = event.text.split("run=").nth(1).unwrap_or_default();
+    assert!(run.starts_with(|c: char| c.is_ascii_digit()), "the run counter: {}", event.text);
+
+    const WATCHERS: usize = 23;
+    let hub: SourceNode<u32> = node!(0);
+    for _ in 0..WATCHERS {
+        node!(|hub| {
+            let _ = hub.get();
+        });
+    }
+    lithia::flush().await;
+    let before: usize = events().lock().unwrap().len();
+    drop(hub); // the last anchor goes: a sweep lets go of the hub and its watchers
+    let _ = lithia::test::live_nodes().await;
+    let released: Vec<usize> = events().lock().unwrap()[before..]
+        .iter()
+        .filter(|event: &&Captured| event.level == Level::TRACE && event.text.contains("lithia: sweep"))
+        .filter_map(|event: &Captured| event.text.split("released=").nth(1)?.split(' ').next()?.parse().ok())
+        .collect();
+    assert!(released.iter().any(|count: &usize| *count >= WATCHERS), "sweeps let go of {released:?}");
+}
+
+/// The rerun-rate threshold the tests run with, from `.cargo/config.toml`; `None` if another one is set.
+fn test_rerun_rate() -> Option<u32> {
+    std::env::var("LITHIA_RERUN_RATE").ok().filter(|rate: &String| rate == "1000").map(|_| 1000)
+}
+
+/// Rerun-rate warnings naming `line` of this file so far.
+fn rate_warnings(line: &str) -> usize {
+    events()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event: &&Captured| {
+            event.level == Level::WARN && event.text.contains("reran faster") && event.text.contains(line)
+        })
+        .count()
+}
+
+#[lithia::test]
+async fn the_rerun_rate_warns_once_a_window_passes_the_threshold() {
+    let _ = events();
+    let Some(threshold) = test_rerun_rate() else { return };
+    let started: std::time::Instant = std::time::Instant::now();
+    let n: SourceNode<u32> = node!(0);
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let watcher: DerivedNode<u32> = node!(|n| *n.get());
+    lithia::flush().await; // run 1
+    for value in 1..threshold {
+        n.set(value);
+        lithia::flush().await;
+    }
+    let at_threshold: usize = rate_warnings(&line);
+    n.set(threshold);
+    lithia::flush().await; // run threshold + 1
+    for value in threshold + 1..threshold + 10 {
+        n.set(value);
+        lithia::flush().await;
+    }
+    if started.elapsed() > Duration::from_millis(900) {
+        eprintln!("too slow to stay within one window; skipped");
+        return;
+    }
+    assert_eq!(at_threshold, 0, "no warning at the threshold itself");
+    assert!(find(Level::WARN, &["reran faster", &line], Duration::from_secs(1)).await.is_some());
+    assert_eq!(rate_warnings(&line), 1, "once per window");
+    assert_eq!(*watcher.get(), threshold + 9);
+}
+
+#[lithia::test]
+async fn the_rerun_rate_counts_runs_within_one_second() {
+    let _ = events();
+    let Some(threshold) = test_rerun_rate() else { return };
+    let n: SourceNode<u32> = node!(0);
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let _watcher: DerivedNode<u32> = node!(|n| *n.get());
+    lithia::flush().await;
+    for value in 1..threshold * 6 / 10 {
+        n.set(value);
+        lithia::flush().await;
+    }
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    for value in 0..threshold / 2 {
+        n.set(value);
+        lithia::flush().await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(rate_warnings(&line), 0, "the runs spread over two windows");
+}
+
+#[lithia::test]
+async fn the_rerun_rate_threshold_comes_from_the_environment() {
+    let _ = events();
+    if test_rerun_rate().is_none() {
+        return;
+    }
+    let n: SourceNode<u32> = node!(0);
+    // A few thousand runs a second: over the tests' threshold, far under the default.
+    let line: String = format!("diagnostics.rs:{}", line!() + 1);
+    let holder: DerivedNode<()> = node!(|n| {
+        let again: SourceNode<u32> = (*n).clone();
+        lithia::spawn(async move {
+            let until: std::time::Instant = std::time::Instant::now() + Duration::from_micros(250);
+            while std::time::Instant::now() < until {
+                std::hint::spin_loop();
+            }
+            again.update(|v: &u32| v + 1);
+        });
+    });
+    let event: Option<Captured> = find(Level::WARN, &["reran faster", &line], Duration::from_secs(5)).await;
+    lithia::dispose(&holder);
+    assert!(event.is_some(), "loop count {}", *n.get());
+}

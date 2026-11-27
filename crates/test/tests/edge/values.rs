@@ -130,6 +130,7 @@ async fn try_operations_report_ghosts() {
     let n: SourceNode<u32> = node!(1);
     lithia::dispose(&n);
     assert_eq!(n.try_get(), Err(Ghosted));
+    assert_eq!(n.try_get().unwrap_err().to_string(), "the node was disposed");
     assert_eq!(n.try_set(2), Err(Ghosted));
     assert_eq!(n.try_update(|v: &u32| v + 1), Err(Ghosted));
     assert_eq!(n.try_modify(|v: &mut u32| *v += 1), Err(Ghosted));
@@ -148,6 +149,7 @@ async fn try_operations_report_ghosts() {
 async fn equal_writes_do_not_reach_changes() {
     let n: SourceNode<u32> = node!(1, equals = lithia::eq);
     let mut stream: Changes<u32> = n.changes();
+    assert_eq!(format!("{stream:?}"), "Changes { ended: false }");
     assert_eq!(*stream.next().await.unwrap(), 1);
     n.set(1);
     let next: Result<Option<Ref<u32>>, tokio::time::error::Elapsed> =
