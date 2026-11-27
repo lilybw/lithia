@@ -545,10 +545,13 @@ async fn settled_follows_every_node_a_run_writes() {
     let input: SourceNode<u32> = node!(0);
     let first: SourceNode<u32> = node!(0);
     let second: SourceNode<u32> = node!(0);
-    let _writer: DerivedNode<()> = node!(|input| {
+    // Handles the body finds in a value, not captures: its writes through them have no edge.
+    let outlets: SourceNode<Vec<SourceNode<u32>>> = node!(vec![first.clone(), second.clone()]);
+    let _writer: DerivedNode<()> = node!(|input, outlets| {
         let value: u32 = *input.get();
-        first.set(value);
-        second.set(value);
+        for outlet in outlets.get().iter() {
+            outlet.set(value);
+        }
     });
     let slow: DerivedNode<u32> = node!(async |first| {
         let value: u32 = *first.get();
@@ -671,4 +674,31 @@ async fn a_superseded_run_publishes_nothing() {
     assert_eq!(*slow.get(), 0, "a superseded run's item is discarded");
     lithia::flush().await;
     assert_eq!(*slow.get(), 20);
+}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_function_a_body_defers_counts_in_the_scope_of_the_write_it_serves() {
+    let x: SourceNode<u32> = node!(0);
+    let done: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let _deferring: DerivedNode<()> = node!(|x| {
+        if *x.get() > 0 {
+            let done: Arc<AtomicBool> = done.clone();
+            lithia::defer(move || {
+                std::thread::sleep(Duration::from_millis(40));
+                done.store(true, Ordering::SeqCst);
+            });
+        }
+    });
+    lithia::flush().await;
+    let seen: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let (writer, flag, out): (SourceNode<u32>, Arc<AtomicBool>, Arc<AtomicBool>) =
+        (x.clone(), done.clone(), seen.clone());
+    lithia::spawn(async move {
+        writer.set(1);
+        lithia::flush().await; // waits for what the run it started deferred
+        out.store(flag.load(Ordering::SeqCst), Ordering::SeqCst);
+    })
+    .await
+    .unwrap();
+    assert!(seen.load(Ordering::SeqCst), "the task's flush returned before the deferred function ran");
 }
