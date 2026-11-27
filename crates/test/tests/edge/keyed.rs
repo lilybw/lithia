@@ -565,3 +565,27 @@ async fn keys_drop_off_the_thread_that_runs_their_creator() {
     assert!(dropped.len() >= 5, "{dropped:?}");
     assert!(dropped.iter().all(|thread: &std::thread::ThreadId| *thread != here), "{dropped:?}");
 }
+
+#[lithia::test]
+async fn a_keyed_child_ready_before_its_creator_decides_runs_once_its_creator_keeps_it() {
+    let a: SourceNode<u32> = node!(0);
+    let b: SourceNode<u32> = node!(0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let creator: DerivedNode<Vec<DerivedNode<u32>>> = node!(|a| {
+        let _ = a.get();
+        vec![node!(
+            |b| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                *b.get()
+            },
+            key = 0u8
+        )]
+    });
+    lithia::flush().await;
+    // One batch: the child is ready for `b` while its creator has yet to decide on it for `a`.
+    a.set(1);
+    b.set(7);
+    lithia::flush().await;
+    assert_eq!(*creator.get()[0].get(), 7);
+    assert_eq!(count(&runs), 2, "it waited for its creator, then ran once");
+}

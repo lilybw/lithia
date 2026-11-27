@@ -188,6 +188,28 @@ fn defer_outside_lithia_tasks_follows_the_latest_write() {
     });
 }
 
+#[test]
+fn defer_outside_lithia_tasks_waits_for_a_slow_run_of_the_latest_write() {
+    let runtime: tokio::runtime::Runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let x: SourceNode<u32> = node!(1);
+        let doubled: DerivedNode<u32> = node!(|x| {
+            let value: u32 = *x.get();
+            if value == 4 {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            value * 2
+        });
+        let seen: SourceNode<u32> = node!(0);
+        lithia::flush().await;
+        x.set(4);
+        let (doubled2, seen2): (DerivedNode<u32>, SourceNode<u32>) = (doubled.clone(), seen.clone());
+        lithia::defer(move || seen2.set(*doubled2.get())); // after the write's epoch, not at once
+        lithia::flush().await;
+        assert_eq!(*seen.get(), 8);
+    });
+}
+
 #[lithia::test]
 async fn flush_returns_after_a_deferred_function_panics() {
     let _ = lithia_test::events();
