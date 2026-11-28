@@ -93,7 +93,7 @@ fn refresh<K: NodeValue>(
     crate::lifetime::support::add_anchors(header, 1, || node.clone());
     let runtime: Option<Handle> = header.runtime.clone();
     if let Some(old) = node.adopt_equals(equals) {
-        crate::lifetime::drops::drop_later(old, runtime.as_ref());
+        old.release(runtime.as_ref());
     }
     match header.kind {
         Kind::Source => {

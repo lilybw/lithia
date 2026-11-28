@@ -93,7 +93,59 @@ policy! {
 }
 
 /// Comparator for the `equals` option, where `true` means equal.
-pub(crate) type Equals<K> = Arc<dyn Fn(&K, &K) -> bool + Send + Sync>;
+#[doc(hidden)]
+pub struct Equals<K>(Compare<K>);
+
+/// A comparator closure, shared by a node and its comparisons.
+type Closure<K> = Arc<dyn Fn(&K, &K) -> bool + Send + Sync>;
+
+/// A comparator: `PartialEq` through a plain function, or a closure that may own data.
+enum Compare<K> {
+    Plain(fn(&K, &K) -> bool),
+    /// The closure, and whether dropping it may run user code.
+    Shared(Closure<K>, bool),
+}
+
+impl<K> Clone for Equals<K> {
+    fn clone(&self) -> Self {
+        Equals(match &self.0 {
+            Compare::Plain(f) => Compare::Plain(*f),
+            Compare::Shared(f, glue) => Compare::Shared(Arc::clone(f), *glue),
+        })
+    }
+}
+
+impl<K: 'static> Equals<K> {
+    /// A comparator from a plain function, which costs nothing to keep or drop.
+    pub(crate) fn plain(compare: fn(&K, &K) -> bool) -> Self {
+        Equals(Compare::Plain(compare))
+    }
+
+    /// A comparator from a closure.
+    pub(crate) fn shared<F: Fn(&K, &K) -> bool + Send + Sync + 'static>(compare: F) -> Self {
+        Equals(Compare::Shared(Arc::new(compare), std::mem::needs_drop::<F>()))
+    }
+
+    /// Whether `old` and `new` count as equal.
+    pub(crate) fn equal(&self, old: &K, new: &K) -> bool {
+        match &self.0 {
+            Compare::Plain(f) => f(old, new),
+            Compare::Shared(f, _) => f(old, new),
+        }
+    }
+
+    /// Takes the comparator out of `slot`, leaving one that compares nothing.
+    pub(crate) fn take(slot: &mut Equals<K>) -> Equals<K> {
+        std::mem::replace(slot, Equals::plain(|_: &K, _: &K| -> bool { false }))
+    }
+
+    /// Drops the comparator: off the protocol if dropping it may run user code, here otherwise (spec §10.3).
+    pub(crate) fn release(self, runtime: Option<&tokio::runtime::Handle>) {
+        if let Compare::Shared(_, true) = self.0 {
+            crate::lifetime::drops::drop_later(self, runtime);
+        }
+    }
+}
 
 /// The options that shape how a node behaves: part of a keyed node's identity (spec §10.1).
 #[doc(hidden)]
@@ -154,8 +206,11 @@ impl<K> Options<K> {
     }
 
     /// Sets the comparator; `true` means equal.
-    pub fn equals(mut self, equals: impl Fn(&K, &K) -> bool + Send + Sync + 'static) -> Self {
-        self.equals = Some(Arc::new(equals));
+    pub fn equals(mut self, equals: impl Fn(&K, &K) -> bool + Send + Sync + 'static) -> Self
+    where
+        K: 'static,
+    {
+        self.equals = Some(Equals::shared(equals));
         self
     }
 
@@ -201,7 +256,7 @@ impl<K: EqualsByDefault> ImplicitViaEq<K> for &Implicit<K> {
         if TypeId::of::<K>() == TypeId::of::<()>() {
             return None;
         }
-        Some(Arc::new(|old: &K, new: &K| -> bool { old == new }))
+        Some(Equals::plain(|old: &K, new: &K| -> bool { old == new }))
     }
 }
 
@@ -222,4 +277,26 @@ impl<K> ImplicitViaNone<K> for Implicit<K> {
 #[doc(hidden)]
 pub fn no_implicit<K>(_: Implicit<K>) -> Option<Equals<K>> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_comparator_is_a_plain_function() {
+        // A closure would cost every node an allocation, and every freed node a deferred drop.
+        let picked: Option<Equals<u64>> = (&&Implicit::<u64>(PhantomData)).__lithia_implicit();
+        assert!(matches!(picked, Some(Equals(Compare::Plain(_)))));
+        assert!(picked.is_some_and(|eq: Equals<u64>| eq.equal(&1, &1) && !eq.equal(&1, &2)));
+    }
+
+    #[test]
+    fn only_a_closure_that_owns_data_drops_off_the_protocol() {
+        let plain: Equals<u64> = Equals::shared(|a: &u64, b: &u64| a == b);
+        assert!(matches!(plain.0, Compare::Shared(_, false)));
+        let owned: Vec<u64> = vec![1];
+        let owning: Equals<u64> = Equals::shared(move |a: &u64, b: &u64| owned.contains(a) && a == b);
+        assert!(matches!(owning.0, Compare::Shared(_, true)));
+    }
 }

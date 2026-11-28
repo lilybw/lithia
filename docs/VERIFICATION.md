@@ -154,8 +154,13 @@ These make nothing fail, and are harmless:
 
 `.github/scripts/mutations.py` keeps each mutation as code, applies it to a copy of the workspace and
 runs the test named for it, which must fail; `--list` names them. W1–W8 cover the protocol, F1–F5 the
+<<<<<<< HEAD
 fast path, S1–S3 support's walks, R1–R4 rises and falls without the sweep lock, K1–K3 the wakes that
 end a stopped, retired or freed run, and Q1–Q2 the comparator a node takes by default. Two survive, both equivalent to the original: W3 releases a
+=======
+fast path, S1–S3 support's walks, K1–K3 the wakes that end a stopped, retired or freed run, and Q1–Q3
+the comparator a node takes by default. Two survive, both equivalent to the original: W3 releases a
+>>>>>>> origin/verify/v0.4.0.2
 write to a child linked after the write's framing, which waits on the written node only through an
 entry, run or handover of that node that releases it as well, so the child reads the same value
 whichever release comes first; F5 runs the kept share once either way.
