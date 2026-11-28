@@ -31,7 +31,8 @@ CRATES: dict[str, str] = {"lithia": "crates/lithia", "macro": "crates/macro"}
 OUT: Path = ROOT / ".claude/outlined"
 INDEX: Path = OUT / "INDEX.md"
 TOOLS: list[Path] = [Path(__file__).resolve(), ROOT / ".claude/tools/outline.py"]
-GENERATOR: str = hashlib.sha256(b"".join(p.read_bytes() for p in TOOLS)).hexdigest()[:12]
+# Line ends normalised, so a CRLF checkout of the tools stamps outlines as CI does.
+GENERATOR: str = hashlib.sha256(b"".join(p.read_bytes().replace(b"\r\n", b"\n") for p in TOOLS)).hexdigest()[:12]
 STAMP: re.Pattern[str] = re.compile(r"^// source ([0-9a-f]{16}), generator ([0-9a-f]{12})$", re.M)
 INDEX_STAMP: re.Pattern[str] = re.compile(r"^<!-- sources ([0-9a-f]{16}), generator ([0-9a-f]{12}) -->$", re.M)
 States = dict[str, str]
