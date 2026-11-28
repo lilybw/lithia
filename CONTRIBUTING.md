@@ -65,8 +65,8 @@ python3 .claude/tools/outline.py show crates/lithia/src --pub  # signatures and 
 
 `CLAUDE.md` and `.claude/` hold the setup for working on lithia with Claude: agents and their
 memories, skills, and the outline tool, which caches each folder's outline under `target/outline` with
-a hash of its sources. `.claude/generate-outlines.py` writes committed outlines of the two crates to
-`.claude/outlined/`, and the `outlines` workflow reports on every push which of them are stale.
+a hash of its sources. `.claude/generate-outlines.py` writes outlines of the two crates to
+`.claude/outlined/`, which git ignores.
 
 Loom explores every thread interleaving up to a preemption bound: 3 by default, and
 `LOOM_MAX_PREEMPTIONS=4` goes deeper in minutes rather than seconds. `LITHIA_LOOM_FAST_PATH=off` gives

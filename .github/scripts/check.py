@@ -19,6 +19,7 @@ import io
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -130,4 +131,6 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # `| head` ends the output quietly
     sys.exit(main(sys.argv[1:]))

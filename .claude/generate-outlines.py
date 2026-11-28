@@ -150,8 +150,8 @@ def report(files: list[Path], markdown: bool) -> States:
         key: str = s.split(" ")[0]
         counts[key] = counts.get(key, 0) + 1
     line: str = ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
-    if not OUT.is_dir():
-        message: str = "No outlines are committed; `python3 .claude/generate-outlines.py` writes them."
+    if not INDEX.is_file() and not (OUT.is_dir() and any(OUT.rglob("outlined.*.rs"))):
+        message: str = "No outlines here; `python3 .claude/generate-outlines.py` writes them."
         print(f"### Outlines\n\n{message}" if markdown else message)
         return states
     off: list[tuple[str, str]] = [(p, s) for p, s in sorted(states.items()) if s != "current"]

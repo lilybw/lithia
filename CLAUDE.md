@@ -16,12 +16,12 @@ conventions, `docs/VERIFICATION.md` what checks it, `docs/known_bugs.md` what is
   folder and rebuilt only when a hash of its sources changes. Then Read just the lines you need.
   `outline.py status` names folders changed since their outline was built; `outline.py hash FOLDER`
   lets you tell later whether code you read has changed.
-- `.claude/outlined/`, when present, mirrors the lithia and lithia-macro crates as Rust-like outlines
+- `.claude/outlined/`, once generated, mirrors the lithia and lithia-macro crates as Rust-like outlines
   (`crates/lithia/src/run/future.rs` → `.claude/outlined/lithia/src/run/outlined.future.rs`, items
-  noted `// L<n>`), readable without running anything. Repository-wide searches skip it (`.ignore`);
-  search it by path. Each header records its source's hash: `.claude/generate-outlines.py --status`
-  says which are stale, CI's `outlines` workflow tabulates it on every push, and running the script
-  without arguments brings them up to date.
+  noted `// L<n>`), readable without running anything. Git ignores them, so each checkout makes its
+  own: `python3 .claude/generate-outlines.py` writes or updates them, rebuilding only the stale ones,
+  and `--status` says which are stale by the source hash in each header. Repository-wide searches
+  skip them (`.ignore`); search them by path.
 - The code cites the spec where it implements it, as `spec §7.4`: `python3 .github/scripts/spec_refs.py
   7.4` lists those places (`--file PATH` the reverse, `--coverage` every section's count), and
   `--check`, part of `check.py`, fails on a citation of a section the spec doesn't have. Cite the
