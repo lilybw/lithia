@@ -94,6 +94,30 @@ about ±5%.
 
 ## History
 
+### Drop threads on the 7950X3D (2026-11-28)
+
+`lock_bench.py --stats` on 753a3f3, system allocator. Each after is the range over the five locks, with
+`ticket` in brackets where it is slower than all of them; the lock's figures are `parking_lot`'s.
+Before is `parking_lot` in the entry below.
+
+| Row | 1 thread, before → after | 32 threads, before → after | Lock at 32: held, waited |
+| --- | ---: | ---: | ---: |
+| `sweeps`, per drop | 13.6 → 2.1–2.5 ms | 235 → 31–42 ms (ticket 69) | 2.0 ms, 26 ms |
+| `sweep-100`, per drop | 2.22 ms → 99–137 µs (381) | 17.7 → 1.3–2.9 ms (4.3) | 0.11 ms, 1.5 ms |
+| `sweep-10`, per drop | 245 → 17–73 µs | 2.36 → 0.15–0.29 ms (0.43) | 13 µs, 175 µs |
+| `sweep-turns`, per drop | 17.3 → 2.1–3.9 ms (4.6) | 40 → 3.7–5.9 ms | 1.5 ms, 0 |
+| `churn`, per cycle | 59 → 22–33 µs (50) | 1.17 → 0.30–0.48 ms (0.54) | 10 µs, 337 µs |
+| `sweep-kept`, per drop | 0.93 ms, unchanged | 27.5 ms, unchanged | 2.0 ms, 26 ms |
+| `create-shared`, per creation | 590 ns, unchanged | 25 µs, unchanged | |
+
+- Sweeps that free are 3 to 20 times as fast on one thread, and 6 to 15 times at 32.
+- Now the sweep lock is most of what remains on many threads: at 32, a 2 000-effect drop waits 26 of its
+  31–42 ms for it, a churn cycle 337 of 483 µs. A hold of the same work grows from 0.7 ms on one
+  thread to 2 ms at 32.
+- Creation is unchanged, 640 ns on one thread and 6.9 µs at 32, and so is creation on a shared hub.
+- The second run's `--features mimalloc` was ignored: `lock_bench.py` did not pass it on, and now
+  refuses arguments it does not know.
+
 ### The sweep lock's own figures, and drop threads (2026-11-28)
 
 The same 7950X3D, system allocator, `lock_bench.py --stats`; `parking_lot` shown, the other four within

@@ -27,6 +27,9 @@ that time:
 - **Freeing a plain source node** cost 10 µs while every default comparator was an `Arc`'d closure,
   handed to the pool one task per node. Fixed (a259489): about 250 ns.
 - Choosing another lock changes none of these beyond noise.
+- **After approach 4**, on the 7950X3D: a 2 000-effect drop takes 2.1–2.5 ms on one thread and 31–42 ms
+  at 32, of which 26 ms waiting for the sweep lock; a churn cycle waits 337 of 483 µs. The lock is now
+  most of what remains on many threads, and each hold grows from 0.7 ms to 2 ms with the threads.
 
 Still unmeasured on many cores: the allocator (`alloc` row, `--features mimalloc`), the id counter
 (`counter` row) and creation of plain sources, which together decide approaches 3, 5, 10 and 11.
@@ -125,12 +128,12 @@ Still unmeasured on many cores: the allocator (`alloc` row, `--features mimalloc
 
 ## A plan
 
-1. Done: the lock's figures, and approach 4. Next on the 7950X3D: the same runs again, and the full
-   scaling table with `--features mimalloc`, to see what freeing costs now and whether the allocator
-   or the id counter shows in creation.
-2. The low-risk constant factors, each with the benchmark before and after: 2 (marks, which shortens
-   every hold of the sweep lock), 1 (in-place body drops), 11 (sharded site counts), 3.
-3. For sweeps that keep: 7, modelled in `Lifetimes.tla` first; 8 only if 7 does not fit.
+1. Done: the lock's figures, and approach 4. Still to run on the 7950X3D: the full scaling table with
+   `--features mimalloc`, to see whether the allocator or the id counter shows in creation.
+2. The sweep lock's hold, now the larger cost on many threads: 2 (marks), then 1 (in-place body drops),
+   11 (sharded site counts), 3, each with the benchmark before and after.
+3. For sweeps on many threads, freeing or not: 7, modelled in `Lifetimes.tla` first; 8 only if 7 does
+   not fit.
 4. For creation on a shared hub: 12.
 5. If the allocator dominates on Windows: a recommendation in the README, then 5's node pool or 6. If
    the shared counter shows: 10.

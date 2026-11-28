@@ -5,11 +5,13 @@
 """Runs the scaling benchmark once per sweep lock and prints one table per row, a lock per line.
 
   lock_bench.py [--locks parking_lot,fair,std,spin,ticket] [--rows ROW,...] [--threads 1,2,4,...] [--stats]
+                [--features mimalloc]
   lock_bench.py --check    lints lithia built with each lock, as `check.py full` does
 
 Each lock is a build with `--cfg lithia_sweep_lock="NAME"` in its own target directory under
 target/locks, so switching between them rebuilds nothing twice. `--stats` adds `--cfg lithia_lock_stats`,
-which follows each cell with the lock's acquisitions, mean and longest hold and mean wait. The rows are
+which follows each cell with the lock's acquisitions, mean and longest hold and mean wait; `--features`
+passes the benchmark crate's features to Cargo, such as `mimalloc`. The rows are
 those the sweep lock takes part in, unless `--rows` names others; `LITHIA_BENCH_PIN` passes through.
 The tables also go to target/locks/results.md. The locks (crates/lithia/src/lifetime/sweep_lock.rs):
 
@@ -47,18 +49,21 @@ def option(argv: list[str], name: str, default: list[str]) -> list[str]:
     return default
 
 
-def run(lock: str, rows: list[str], threads: list[str], stats: bool) -> tuple[str, list[str], Table]:
+def run(
+    lock: str, rows: list[str], threads: list[str], stats: bool, features: list[str]
+) -> tuple[str, list[str], Table]:
     """Builds and runs the benchmark with `lock`: the host line, the thread counts, and each row's cells."""
     env: dict[str, str] = dict(os.environ)
     flags: str = f'--cfg lithia_sweep_lock="{lock}"' + (" --cfg lithia_lock_stats" if stats else "")
     env["RUSTFLAGS"] = f'{env.get("RUSTFLAGS", "")} {flags}'.strip()
-    env["CARGO_TARGET_DIR"] = str(OUT / (f"{lock}-stats" if stats else lock))
+    env["CARGO_TARGET_DIR"] = str(OUT / "-".join([lock] + (["stats"] if stats else []) + features))
     env["LITHIA_BENCH"] = ",".join(rows)
     if threads:
         env["LITHIA_BENCH_THREADS"] = ",".join(threads)
     print(f"{lock}: building and running …", file=sys.stderr, flush=True)
     done: subprocess.CompletedProcess[str] = subprocess.run(
-        ["cargo", "bench", "-p", "lithia-bench", "--bench", "scaling", "--locked"],
+        ["cargo", "bench", "-p", "lithia-bench", "--bench", "scaling", "--locked"]
+        + (["--features", ",".join(features)] if features else []),
         cwd=ROOT, env=env, capture_output=True, encoding="utf-8", errors="replace",
     )
     (OUT / f"{lock}.log").write_text(done.stdout + done.stderr, encoding="utf-8", newline="\n")
@@ -105,6 +110,13 @@ def main(argv: list[str]) -> int:
     locks: list[str] = option(argv, "--locks", LOCKS)
     rows: list[str] = option(argv, "--rows", ROWS)
     threads: list[str] = option(argv, "--threads", [])
+    features: list[str] = option(argv, "--features", [])
+    valued: set[str] = {"--locks", "--rows", "--threads", "--features"}
+    stray: list[str] = [a for i, a in enumerate(argv)
+                        if a not in valued | {"--stats"} and (i == 0 or argv[i - 1] not in valued)]
+    if stray:
+        print(f"unknown arguments: {' '.join(stray)}\n{__doc__}", file=sys.stderr)
+        return 2
     unknown: list[str] = [lock for lock in locks if lock not in LOCKS]
     if unknown or not all(re.fullmatch(r"\d+", t) for t in threads):
         print(f"unknown locks or thread counts: {', '.join(unknown) or ', '.join(threads)}\n{__doc__}", file=sys.stderr)
@@ -114,7 +126,7 @@ def main(argv: list[str]) -> int:
     host: str = ""
     counts: list[str] = []
     for lock in locks:
-        host, counts, results[lock] = run(lock, rows, threads, "--stats" in argv)
+        host, counts, results[lock] = run(lock, rows, threads, "--stats" in argv, features)
     report: list[str] = [host, ""]
     for row in rows:
         report += [f"### {row}", "", f"| Lock | {' | '.join(counts)} |", f"|---|{'---|' * len(counts)}"]
