@@ -79,7 +79,7 @@ jobs:
 
       - name: Docs
         if: matrix.suite == 'tests'
-        run: cargo doc --no-deps -p lithia -p lithia-macro --locked
+        run: cargo doc --no-deps -p lithate -p lithia-macro --locked
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -96,7 +96,7 @@ jobs:
 
       - name: Lint (loom)
         if: matrix.suite == 'loom'
-        run: cargo clippy -p lithia -p lithia-test --all-targets --locked -- -D warnings
+        run: cargo clippy -p lithate -p lithia-test --all-targets --locked -- -D warnings
         env:
           RUSTFLAGS: --cfg lithia_loom
           CARGO_TARGET_DIR: target/loom

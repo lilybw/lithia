@@ -46,10 +46,10 @@ STEPS: list[Step] = [
     # `--all-targets` leaves out benches marked `bench = false`, which run only on request.
     Step("clippy-scaling", ["cargo", "clippy", "-p", "lithia-bench", "--bench", "scaling", "--locked", "--",
                             "-D", "warnings"]),
-    Step("clippy-loom", ["cargo", "clippy", "-p", "lithia", "-p", "lithia-test", "--all-targets", "--locked", "--",
+    Step("clippy-loom", ["cargo", "clippy", "-p", "lithate", "-p", "lithia-test", "--all-targets", "--locked", "--",
                          "-D", "warnings"], LOOM),
     Step("clippy-locks", [sys.executable, ".github/scripts/lock_bench.py", "--check"]),
-    Step("doc", ["cargo", "doc", "--no-deps", "-p", "lithia", "-p", "lithia-macro", "--locked"],
+    Step("doc", ["cargo", "doc", "--no-deps", "-p", "lithate", "-p", "lithia-macro", "--locked"],
          {"RUSTDOCFLAGS": "-D warnings"}),
     Step("test", ["cargo", "test", "--workspace", "--locked"]),
     Step("loom", ["cargo", "test", "-p", "lithia-test", "--test", "loom", "--release", "--locked"], LOOM),

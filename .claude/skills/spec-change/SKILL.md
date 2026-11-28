@@ -21,7 +21,7 @@ version replaces the file (git history keeps the old one); from 1.0 each release
 6. Renumbering or removing a section breaks the code's citations of it: `python3
    .github/scripts/spec_refs.py --check` lists them, and `spec_refs.py N.M` where a section is cited.
 7. If the README's example or claims are affected, update them; the example is a doctest
-   (`cargo test -p lithia --doc`).
+   (`cargo test -p lithate --doc`).
 
 A behaviour change also gets a validation case in `crates/validation` that pins it down, and the
 spec's §13 table lists it.

@@ -14,7 +14,7 @@ Find what changed with `git diff BASE..HEAD`; check public signatures with
 
 Write in plain language, in the voice the documents already use. State only what the code does: check
 each sentence you write against the code or a test. The README's example is compiled as a doctest, so
-`cargo test -p lithia --doc` must pass.
+`cargo test -p lithate --doc` must pass.
 
 Work only on the files your brief names; commit on your branch; never push. Report the files changed,
 one line each, and anything in the docs you found wrong but left alone.

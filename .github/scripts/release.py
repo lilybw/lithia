@@ -7,7 +7,7 @@
   release.py check --version V [--dry-run]   is HEAD a release candidate for V? Writes tag, prerelease
                                              and previous to $GITHUB_OUTPUT when it is set
   release.py token                           refuses a token that is not short-lived and publish-only
-  release.py publish --version V             publishes lithia-macro, then lithia, skipping either on crates.io
+  release.py publish --version V             publishes lithia-macro, then lithate, skipping either on crates.io
   release.py revoke                          revokes the token in use, so it cannot publish again
   release.py notes --version V               prints V's section of CHANGELOG.md
 
@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-CRATES: list[str] = ["lithia-macro", "lithia"]  # in the order they are published
+CRATES: list[str] = ["lithia-macro", "lithate"]  # in the order they are published; `lithate` is the library `lithia`
 API: str = "https://crates.io/api/v1"
 AGENT: str = "lithia-release (https://github.com/lilybw/lithia)"
 VERSION: re.Pattern[str] = re.compile(r"(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?")
@@ -195,7 +195,7 @@ def check(version: str, dry_run: bool) -> int:
         findings.hard(not newest or theirs.rstrip("/") == repository.rstrip("/"),
                       f"crates.io's `{crate}` is another project ({theirs or 'no repository'}); "
                       "publish under another package name, or have its owners add you")
-        if crate == "lithia":
+        if crate == "lithate":
             previous = newest
     tag: str = f"v{version}"
     findings.hard(not git("ls-remote", "--tags", "origin", f"refs/tags/{tag}"), f"the tag {tag} exists already")
@@ -266,7 +266,7 @@ def token() -> int:
     status, _ = request("GET", f"{API}/me", secret)
     if status == 200:
         print("refused: the token can read /api/v1/me, so it is not limited to publishing; "
-              "make one with only the publish-new and publish-update scopes, for lithia and lithia-macro")
+              "make one with only the publish-new and publish-update scopes, for lithate and lithia-macro")
         return 1
     if status not in (401, 403):
         print(f"refused: crates.io did not say whether the token's scopes are limited ({status})")
@@ -309,7 +309,7 @@ def notes(version: str) -> int:
     text: str
     _, text = changelog_section(base)
     sources: str = "https://github.com/lilybw/lithia"
-    print(f"lithia {version} on [crates.io](https://crates.io/crates/lithia/{version}).\n\n{text}\n\n"
+    print(f"lithia {version} on [crates.io](https://crates.io/crates/lithate/{version}), as `lithate`.\n\n{text}\n\n"
           f"[Design spec]({sources}/blob/v{version}/docs/spec/LITHIA_design_spec_v{base}.md)")
     return 0
 

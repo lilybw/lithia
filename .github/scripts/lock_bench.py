@@ -81,7 +81,7 @@ def check() -> int:
         env["RUSTFLAGS"] = f'{env.get("RUSTFLAGS", "")} --cfg lithia_sweep_lock="{lock}"'.strip()
         env["CARGO_TARGET_DIR"] = str(OUT / "check")
         done: subprocess.CompletedProcess[str] = subprocess.run(
-            ["cargo", "clippy", "-p", "lithia", "--locked", "--", "-D", "warnings"],
+            ["cargo", "clippy", "-p", "lithate", "--locked", "--", "-D", "warnings"],
             cwd=ROOT, env=env, capture_output=True, encoding="utf-8", errors="replace",
         )
         print(f"{'ok' if done.returncode == 0 else 'FAIL'}  {lock}")

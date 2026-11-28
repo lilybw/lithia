@@ -17,7 +17,7 @@ Changes reach `nightly` through pull requests; the maintainer may also push dire
 
 ## Publishing to crates.io
 
-[`publish.yml`](.github/workflows/publish.yml) publishes `lithia-macro`, then `lithia`, from a release
+[`publish.yml`](.github/workflows/publish.yml) publishes `lithia-macro`, then `lithate`, from a release
 candidate: a `nightly` commit whose `nightly` run passed, and whose full `extended` run, cargo-mutants
 included, passed too (`gh workflow run extended.yml --ref nightly` starts one). The maintainer runs it
 by hand from `nightly` with the version already committed there. A version such as `1.0.0-rc.1`

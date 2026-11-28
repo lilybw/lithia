@@ -231,7 +231,7 @@ jobs:
       - name: Mutants of crates/lithia
         run: |
           cargo mutants --no-shuffle --shard ${{ matrix.shard }}/16 --file 'crates/lithia/src/**' \
-            --timeout 600 --test-package lithia,lithia-validation,lithia-test -- -- --skip compile_errors || true
+            --timeout 600 --test-package lithate,lithia-validation,lithia-test -- -- --skip compile_errors || true
           cat mutants.out/missed.txt 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
