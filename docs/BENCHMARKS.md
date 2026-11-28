@@ -104,7 +104,7 @@ with `--features mimalloc`. Each cell is the range over the five locks; `ticket`
 | `sweeps`, per creation | 654–717 → 537–572 ns | 6.4–6.8 → 2.3–2.9 µs |
 | `sweeps`, per drop | 2.2–2.4 → 1.4–1.5 ms | 31–32 → 18–40 ms |
 | `sweep-kept`, per drop | 0.90–1.00 → 0.61–0.79 ms | 26–28 → 17–22 ms |
-| `churn`, per cycle | 26–36 → 25–33 µs | 0.33–0.49 → 0.22–0.55 ms |
+| `churn`, per cycle | 26–36 → 25–33 µs | 0.32–0.49 → 0.22–0.55 ms |
 | `create-shared`, per creation | 518–612 → 332–509 ns | 25–26 → 20–22 µs |
 | `rebuild`, per rerun | 141–148 → 113–119 µs | 139–162 → 108–126 µs |
 
