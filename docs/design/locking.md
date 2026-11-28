@@ -67,11 +67,11 @@ scalable non-zero indicator answers "is anyone here?" without a shared counter, 
 between zero and non-zero travel up its tree [6].
 
 **Make each synchronisation cheap.** Queue locks spin on a line of their own; NUMA-aware ones keep
-handoffs on one socket, which CNA reports as 39 % faster than a plain queue lock on two sockets and
-97 % on four, in a key-value benchmark [7, 8]. Flat combining lets the lock holder apply the requests
-other threads post, while they spin on their own records; for a FIFO queue it reports 4–7 times the
-throughput of the lock-free Michael–Scott queue [9]. Delegation goes further with a dedicated server thread, up to an order of
-magnitude over locks, at the cost of a hardware thread [10].
+handoffs on one socket, which CNA reports as 39 % faster than a plain queue lock on two sockets and 97 %
+on four, in a key-value benchmark [7, 8]. Flat combining lets the lock holder apply the requests other
+threads post, while they spin on their own records; for a FIFO queue it reports 4–7 times the throughput
+of the lock-free Michael–Scott queue [9]. Delegation goes further with a dedicated server thread, up to
+an order of magnitude over locks, at the cost of a hardware thread [10].
 
 **Move the work elsewhere.** Bacon and Rajan's concurrent cycle collector never halts all mutators: it
 checks its candidate cycles again in the next epoch, freeing only those no increment touched and no
