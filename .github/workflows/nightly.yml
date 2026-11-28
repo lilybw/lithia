@@ -1,18 +1,13 @@
 # SPDX-FileCopyrightText: 2026 lithia Authors
 # SPDX-License-Identifier: MPL-2.0
 
-# Every push to `nightly` runs the full test matrix; when it passes, the commit is released as
-# v<crate version>.<n>, with n one above the last release of that version, and the docs site is rebuilt.
+# Every push to `nightly` runs the full test matrix. A commit it passes on, and the full extended run
+# too, is a release candidate for publish.yml, which looks for this workflow's run by name.
 name: nightly
 
 on:
   push:
     branches: [nightly]
-
-# One release at a time, so each run sees the tags of the one before.
-concurrency:
-  group: nightly-release
-  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -20,51 +15,3 @@ permissions:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
-
-  release:
-    needs: ci
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write
-    outputs:
-      tag: ${{ steps.assets.outputs.tag }}
-    env:
-      CARGO_TERM_COLOR: always
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      # The toolchain and its components are rust-toolchain.toml's.
-      - name: Install Rust
-        run: rustup toolchain install
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install pandoc
-        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends pandoc
-
-      - name: Build assets
-        id: assets
-        run: .github/scripts/release-assets.sh
-
-      - name: Publish release
-        if: steps.assets.outputs.tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.assets.outputs.tag }}
-        run: |
-          gh release create "$TAG" target/dist/* \
-            --target "$GITHUB_SHA" \
-            --title "lithia $TAG" \
-            --notes-file target/release-notes.md
-
-  pages:
-    needs: release
-    if: needs.release.outputs.tag != ''
-    uses: ./.github/workflows/pages.yml
-    permissions:
-      contents: read
-      pages: write
-      id-token: write

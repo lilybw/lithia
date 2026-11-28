@@ -245,14 +245,14 @@ def check(version: str, dry_run: bool) -> int:
 def token() -> int:
     secret: str = os.environ.get("CARGO_REGISTRY_TOKEN", "")
     if not secret:
-        print("refused: the `crates-io` environment has no CARGO_REGISTRY_TOKEN secret")
+        print("refused: no CRATES_IO_PUBLISH secret, in the repository or the `crates-io` environment")
         return 1
     expires: str = os.environ.get("CRATES_IO_TOKEN_EXPIRES", "")
     today: datetime.date = datetime.datetime.now(datetime.UTC).date()
     try:
         until: datetime.date = datetime.date.fromisoformat(expires)
     except ValueError:
-        print("refused: set the `crates-io` environment's CRATES_IO_TOKEN_EXPIRES variable to the token's "
+        print("refused: set the CRATES_IO_TOKEN_EXPIRES variable (repository or `crates-io` environment) to the token's "
               "expiry date (YYYY-MM-DD) when you store it")
         return 1
     if until < today:

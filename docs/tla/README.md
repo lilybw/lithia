@@ -12,7 +12,7 @@ Two TLA+ specifications of the engine, checked by TLC on the small graphs in [`m
 
 Each step is one lock section or one atomic operation of the engine. `ci.yml` checks the models on
 each push and pull request. The three largest, `MCSharedTarget`, `MCWhole` and `MCDiamond`, run in
-`extended.yml` before a nightly release is promoted, so a failing model blocks a release. `MCDiamond` needs about four
+`extended.yml`, which a release candidate must pass, so a failing model blocks a release. `MCDiamond` needs about four
 hours: it finished once in CI with 26 147 949 states at depth 109 and no error. Since runners differ in
 speed, `extended.yml` stops it after 270 minutes and passes it if no error was found by then.
 

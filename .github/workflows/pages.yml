@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # Publishes the docs site: every release's API reference and spec under versions/<version>/, the
-# newest also at api/ and spec/. Run by nightly.yml after a release, or by hand to rebuild.
+# newest also at api/ and spec/. Run by publish.yml after a release, or by hand to rebuild.
 name: pages
 
 on:

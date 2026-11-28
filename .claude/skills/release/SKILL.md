@@ -20,7 +20,7 @@ branches, never publish to crates.io without being handed the token for it.
 ## Flow
 
 1. `verify/...` → `nightly`, by pull request or, when the maintainer says so, a direct push. Each push to
-   `nightly` is released as `v<version>.<n>` by `nightly.yml`, and the docs site is rebuilt.
+   `nightly` runs the full test matrix (`nightly.yml`); nothing is released from it.
 2. `nightly`, the default branch, → crates.io: a nightly commit on which the extended checks passed too
    is a release candidate, published with `publish.yml` (below).
 

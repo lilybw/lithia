@@ -38,12 +38,11 @@ async fn main() {
 ## Using it
 
 lithia is not on crates.io yet; it will be published as `lithate`, since another project has the name `lithia`
-there, and code will still name it `lithia`. Until then, pin a release tag, or follow `nightly` with
-`branch = "nightly"`:
+there, and code will still name it `lithia`. Until then, pin a `nightly` commit:
 
 ```toml
 [dependencies]
-lithia = { git = "https://github.com/lilybw/lithia", tag = "v0.5.0.1" }
+lithia = { git = "https://github.com/lilybw/lithia", rev = "<commit>" }
 ```
 
 It needs Rust 1.95 or newer and runs on tokio: start with `#[lithia::main]` and `#[lithia::test]`, or use
@@ -57,10 +56,10 @@ and `yield`, `node!` will lower its generator bodies to them instead of by hand.
 
 ## Releases and docs
 
-Every push to `nightly` that passes CI becomes a release named `v<version>.<n>`, such as `v0.5.0.1`, with
-the crate packages, the docs and the spec attached. Versions go to crates.io from a `nightly` commit
-that has also passed the slower checks, by hand and after stricter ones. Each release's docs stay online: add
-`?v=0.5.0.1` to any page under `api/` or `spec/` of the [docs site](https://lilybw.com/lithia/).
+`nightly` is the development branch; every push to it runs the full test matrix. Versions go to crates.io
+from a `nightly` commit that has also passed the slower checks, by hand and after stricter ones, and each
+becomes a GitHub release with the crate packages, the docs and the spec. Each release's docs stay online:
+add `?v=<version>` to any page under `api/` or `spec/` of the [docs site](https://lilybw.com/lithia/).
 
 The [design spec](https://lilybw.com/lithia/spec/) is the full reference for how lithia behaves and why.
 Also in the repository: [`CHANGELOG.md`](CHANGELOG.md), [`docs/known_bugs.md`](docs/known_bugs.md),
