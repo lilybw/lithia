@@ -91,7 +91,7 @@ fn two_runs_write_one_source_in_one_epoch() {
             let scope: ModelScope = ModelScope::new();
             let (a, f): (SourceNode<i32>, DerivedNode<i32>) = scope.batch(|| {
                 let a: SourceNode<i32> = node!(0);
-                let t: SourceNode<i32> = node!(0);
+                let t: SourceNode<i32> = node!(0, no_equals); // both writes must change it
                 let _b: DerivedNode<()> = node!(|a| t.set(*a.get()));
                 let _c: DerivedNode<()> = node!(|a| t.set(*a.get()));
                 let d: DerivedNode<i32> = node!(|t| *t.get() + 1);
