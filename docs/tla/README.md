@@ -221,8 +221,9 @@ Undoing each new rule fails the model:
   let go of, when a count rises from zero and when a writer registers;
 - with `FastRise`, rises from zero without the lock: the count rises in one step, marked rising, and the
   rise ends in another, taking the lock and walking if a sweep holds it or support has let go of a node
-  that still lives; a sweep may read any count that was zero while it ran as zero; and a handle added
-  onto a count still rising takes the lock. With `SkipSupported`, a count that falls to zero raises no
+  that still lives; a sweep may read as zero any count that was zero while it ran, though not the count
+  of a node created meanwhile, which starts at one; and a handle added onto a count still rising takes
+  the lock. With `SkipSupported`, a count that falls to zero raises no
   starting point while a parent anchors and no node has been scoped. Both are off in the models above
   them in the table, which keep their counts, and on in the others;
 - disposal: the freed branch becomes ghosts, which are never anchors, then is torn down in one
@@ -262,8 +263,8 @@ tests cover those.
 | `MCKeyed` | An effect creates a keyed source in its run, and a top-level effect on it is created, which only the creation edge supports; the creator's next run holds the source over, then reclaims it or ends and releases it. | 53 870 |
 | `MCDisposal` | Sources `a` and `b`, an effect `e` on both and a child `d` of `e`, created later: disposing of `b` leaves `e` a survivor that `a` alone supports; disposing of `e` takes `d` with it, or `d` is created with only a ghost for a parent. | 71 693 |
 | `MCLateChild` | Sources `a` and `b`, and effects `c` on `a` and `d` on both, created while `a`'s disposal is under way: linked after the walk, before `a` closed, `c` is disposed of and `d` survives; linked after `a` closed, a child disposes of itself. | 13 842 |
-| `MCFastRise` | A source `a` and an effect `e` on it that only support holds: `a`'s last handle drops while two threads clone `a` from `e`'s body, one rising from zero without the lock and one adding onto that rise. | 1 169 |
-| `MCSkip` | A source `a`, an effect `p` on it and an effect `m` on `p`: `a`'s and `m`'s last handles drop on two threads, so `m`'s fall may skip its sweep while `a`'s sweep lets go of `p`. | 2 830 |
+| `MCFastRise` | A source `a` and an effect `e` on it that only support holds: `a`'s last handle drops while two threads clone `a` from `e`'s body, one rising from zero without the lock and one adding onto that rise. | 1 211 |
+| `MCSkip` | A source `a`, an effect `p` on it and an effect `m` on `p`: `a`'s and `m`'s last handles drop on two threads, so `m`'s fall may skip its sweep while `a`'s sweep lets go of `p`. | 2 840 |
 
 ### Findings
 

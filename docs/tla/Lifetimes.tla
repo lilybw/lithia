@@ -78,7 +78,8 @@ VARIABLES
     late,       \* nodes linked to the ghosts a thread's disposal is still to tear down
     budget,
     rising,     \* the node whose count a thread raised from zero without the lock, its rise not done yet
-    dipped      \* nodes whose count was zero at some point during the sweep under way
+    dipped      \* nodes whose count was zero at some point during the sweep under way; a node created
+                \* during it starts with its count at one (expand/create.rs), so it is not among them
 
 vars == <<made, live, hold, leased, ended, anchors, support, letGo, heldBy, gen, hover, reg, scoped,
           bodies, creating, queue, taken, keep, lock, snap, ghost, disposing, late, budget,
@@ -453,7 +454,7 @@ SweepBegin(t) ==
     /\ taken' = [taken EXCEPT ![t] = queue[t]]
     /\ queue' = [queue EXCEPT ![t] = {}]
     /\ snap' = Anchors
-    /\ dipped' = {}
+    /\ dipped' = IF FastRise THEN {n \in made : n \notin Anchors} ELSE {}
     /\ UNCHANGED <<made, live, hold, leased, ended, anchors, support, letGo, heldBy, gen, hover, reg,
                    scoped, bodies, creating, keep, ghost, disposing, late, budget, rising>>
 
@@ -463,7 +464,7 @@ SweepBegin(t) ==
 SweepEnd(t) ==
     /\ lock = t
     /\ \E fell \in SUBSET (snap \ Anchors), gaveUp \in SUBSET taken[t],
-         rose \in SUBSET (IF FastRise THEN Anchors \cap ((Node \ snap) \cup dipped) ELSE {}) :
+         rose \in SUBSET (IF FastRise THEN Anchors \cap dipped ELSE {}) :
          LET A == ((Anchors \ rose) \cup fell) \cap Vis
              Elig == {n \in Vis : n \notin scoped /\ n \notin BlockedBy(A)}
              exact == Fix(A, Elig)

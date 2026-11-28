@@ -12,7 +12,7 @@ MCDefer	935	51
 MCDiamond	bounded	270
 MCDisposal	71693	24
 MCDispose	933498	84
-MCFastRise	1169	15
+MCFastRise	1211	15
 MCGeneration	78358	24
 MCGenerator	361921	74
 MCKeyed	53870	24
@@ -25,7 +25,7 @@ MCResilience	101481	101
 MCReturn	23240	19
 MCScoped	77166	23
 MCShutdown	1718	50
-MCSkip	2830	16
+MCSkip	2840	16
 MCSupersede	265525	77
 MCWhole	4278523	107
 MCWriteBack	2645	78
