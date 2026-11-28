@@ -8,21 +8,28 @@ nothing changes (`locking.md`). Nothing here is implemented except where it says
 
 ## What the measurements say
 
-On the 7950X3D, 32 threads each dropping a hub of 2 000 effects wait about 294 ms per drop, against
-14.5 ms on one thread, and a creation costs 6.6 µs on each of 32 threads against 645 ns on one, though
-it takes no lithia lock (`BENCHMARKS.md`). The figures from this 2-core container, with the new rows
-and the lock's own figures, already split that time:
+On the 7950X3D, 32 threads each dropping a hub of 2 000 effects wait about 235 ms per drop, against
+13.6 ms on one thread, and a creation costs 6.6 µs on each of 32 threads against 700 ns on one, though
+it takes no lithia lock (`BENCHMARKS.md`). The sweep lock's own figures (`lock_bench.py --stats`) split
+that time:
 
-- A drop of a 2 000-effect hub takes about 22 ms here, but holds the sweep lock for only 0.84 ms. The
-  rest is freeing: about 5 500 instructions per effect (callgrind), against about 3 200 for sweeping it.
-- Freeing a plain source node cost 10 µs. Every node that compares by default (D2) held its comparator
-  as an `Arc`'d closure, and each freed node handed it to tokio's blocking pool as a task of its own,
-  for which tokio started threads. Fixed (a259489): the default comparator is a plain function, and a
-  free now costs about 250 ns.
-- Effects still hand their bodies to the pool, once per operation rather than once per node.
+- **Sweeps that free.** At 32 threads a drop holds the lock 1.7 ms and waits 23 ms for it: a tenth of
+  the 235 ms. On one thread it holds it 0.77 of 13.6 ms. The rest was freeing, and most of that was
+  tokio's blocking pool: a sweep hands its bodies on in parcels of 64, and the pool's threads woke and
+  fought over its one mutex for each (45 000 futex calls for one 2 000-effect drop here). A hub of 10
+  effects took 245 µs to drop while holding the lock for 10 µs. Fixed (approach 4 below): on 2 cores
+  such a drop now takes 5.4 ms instead of 22 ms, a hub of 100 effects 106 µs instead of 1.6 ms.
+- **Sweeps that keep.** A sweep that walks 2 000 effects and frees none (`sweep-kept`) is the lock's
+  own work: at 32 threads it takes 29 ms, of which 24 ms waiting, and each hold grows from 0.76 ms to
+  1.6 ms. This is what approaches 2, 7 and 8 address.
+- **Creation on a shared hub.** 650 ns on one thread, 25 µs on each of 32: the hub's scheduling lock,
+  which every new child takes to subscribe (approach 12). The sweep lock is taken once, at the end.
+- **Freeing a plain source node** cost 10 µs while every default comparator was an `Arc`'d closure,
+  handed to the pool one task per node. Fixed (a259489): about 250 ns.
+- Choosing another lock changes none of these beyond noise.
 
-So the next runs on the 7950X3D decide between three causes: the sweep lock's serial work (its hold
-grows), the allocator (`--features mimalloc` moves it), or lithia's own per-node work (neither does).
+Still unmeasured on many cores: the allocator (`alloc` row, `--features mimalloc`), the id counter
+(`counter` row) and creation of plain sources, which together decide approaches 3, 5, 10 and 11.
 
 ## Approaches
 
@@ -42,8 +49,9 @@ grows), the allocator (`--features mimalloc` moves it), or lithia's own per-node
 
 ### Free differently
 
-4. **A drop queue that never spawns.** Payloads that must drop off the protocol go to tokio's blocking
-   pool, which starts a thread whenever none is idle [2]. A few dedicated drop threads fed by per-thread
+4. **A drop queue that never spawns.** Done: lithia's own drop threads, one to start and another when
+   the queue stalls for 10 ms or outgrows them (spec §10.3). Payloads that must drop off the protocol
+   went to tokio's blocking pool, which starts a thread whenever none is idle [2]. A few dedicated drop threads fed by per-thread
    buffers, handed over in batches with one atomic exchange, as snmalloc returns freed memory to the
    thread that owns it [3], cost one hand-off per batch and no thread start. Epoch-based reclamation
    amortises frees the same way, from per-thread garbage lists [4].
@@ -105,7 +113,7 @@ grows), the allocator (`--features mimalloc` moves it), or lithia's own per-node
 | 1. In-place drops | freeing | low | no |
 | 2. Marks, not maps | sweeps | low | no |
 | 3. Fewer allocations | creation, freeing | low | no |
-| 4. Drop threads | freeing on many threads | low | no |
+| 4. Drop threads (done) | freeing | low | no |
 | 5. Allocator, node pool | creation, freeing | low (pool: medium) | no |
 | 6. Generation regions | rebuilt children | medium | no |
 | 7. Counted support | sweeps, without a lock | high, model first | no |
@@ -117,14 +125,15 @@ grows), the allocator (`--features mimalloc` moves it), or lithia's own per-node
 
 ## A plan
 
-1. Measure on the 7950X3D: the lock's figures, pinning, and mimalloc (`BENCHMARKS.md`). Together they
-   say whether the lock's work, the allocator or lithia's per-node work dominates.
-2. The low-risk constant factors, each with the benchmark before and after: 4 (no thread starts), 1
-   (in-place body drops), 11 (sharded site counts), 2 (marks), 3.
-3. If the allocator dominates on Windows: a recommendation in the README, then 5's node pool or 6.
-4. If the sweep lock's serial work dominates: 7, modelled in `Lifetimes.tla` first; 8 only if 7 does
-   not fit.
-5. If the shared counter shows: 10.
+1. Done: the lock's figures, and approach 4. Next on the 7950X3D: the same runs again, and the full
+   scaling table with `--features mimalloc`, to see what freeing costs now and whether the allocator
+   or the id counter shows in creation.
+2. The low-risk constant factors, each with the benchmark before and after: 2 (marks, which shortens
+   every hold of the sweep lock), 1 (in-place body drops), 11 (sharded site counts), 3.
+3. For sweeps that keep: 7, modelled in `Lifetimes.tla` first; 8 only if 7 does not fit.
+4. For creation on a shared hub: 12.
+5. If the allocator dominates on Windows: a recommendation in the README, then 5's node pool or 6. If
+   the shared counter shows: 10.
 
 ## Sources
 

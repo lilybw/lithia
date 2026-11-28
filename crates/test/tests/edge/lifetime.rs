@@ -156,7 +156,7 @@ async fn effects_held_in_a_value_stop_with_it() {
     assert_eq!(*printed.get(), 1);
     rows.set(Vec::new()); // the old effects are dropped with the old value
     lithia::flush().await;
-    tokio::time::sleep(Duration::from_millis(30)).await; // the replaced value drops on the blocking pool
+    let _ = lithia::test::live_nodes().await; // waits for the replaced value's drop on a drop thread
     first.set("b".to_string());
     lithia::flush().await;
     assert_eq!(*printed.get(), 1, "the dropped effect no longer reacts");
@@ -351,4 +351,36 @@ async fn a_replaced_value_drops_off_the_writing_thread() {
     assert_eq!(dropped.len(), 4, "the written-over and the discarded value, the init value and the first item");
     assert!(dropped.iter().all(|thread: &std::thread::ThreadId| *thread != here), "{dropped:?}");
     drop((n, same, derived));
+}
+
+/// A gate a `Drop` waits on until the test opens it.
+type Gate = Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
+
+/// A value whose drop blocks until its gate opens.
+struct Blocks(Gate);
+
+impl Drop for Blocks {
+    fn drop(&mut self) {
+        let (open, opened): &(std::sync::Mutex<bool>, std::sync::Condvar) = &self.0;
+        let mut now: std::sync::MutexGuard<'_, bool> = open.lock().unwrap();
+        while !*now {
+            now = opened.wait(now).unwrap();
+        }
+    }
+}
+
+#[lithia::test]
+async fn a_drop_that_blocks_holds_up_no_later_drop() {
+    let gate: Gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let blocked: SourceNode<Blocks> = node!(Blocks(gate.clone()));
+    let drops: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let later: SourceNode<Counted> = node!(Counted(drops.clone()));
+    drop(blocked); // its value's drop blocks a drop thread until the gate opens
+    drop(later);
+    let dropped: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(5), lithia_test::until(|| drops.load(Ordering::SeqCst) == 1)).await;
+    let (open, opened): &(std::sync::Mutex<bool>, std::sync::Condvar) = &gate;
+    *open.lock().unwrap() = true;
+    opened.notify_all();
+    assert!(dropped.is_ok(), "the later value dropped while the first drop was blocked");
 }

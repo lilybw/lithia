@@ -7,9 +7,6 @@ use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-#[cfg(not(lithia_loom))]
-use std::sync::mpsc;
-
 use tokio::runtime::Handle;
 
 use crate::graph::node::{NodeRef, Parents};
@@ -20,7 +17,7 @@ crate::sync::thread_local! {
     static PENDING_PARENTS: RefCell<Vec<NodeRef>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Payload drops queued on a pool or the drop thread and not yet run.
+/// Payload drops queued on the drop threads and not yet run.
 #[allow(clippy::disallowed_types)] // counts for test support; loom models drop inline
 static QUEUED: crate::sync::Padded<std::sync::atomic::AtomicUsize> =
     crate::sync::Padded(std::sync::atomic::AtomicUsize::new(0));
@@ -65,9 +62,9 @@ fn drops_inline<K: 'static>() -> bool {
     .contains(&id)
 }
 
-/// Drops `payload` on the runtime's blocking pool, or on lithia's drop thread.
+/// Drops `payload` on lithia's drop threads, in its node's runtime context.
 pub(crate) fn drop_later<T: Send + 'static>(payload: T, runtime: Option<&Handle>) {
-    // Loom models have no blocking pool: drops run inline, still outside every lock.
+    // Loom models have no drop threads: drops run inline, still outside every lock.
     #[cfg(lithia_loom)]
     {
         let _ = runtime;
@@ -77,7 +74,7 @@ pub(crate) fn drop_later<T: Send + 'static>(payload: T, runtime: Option<&Handle>
     drop_on_pool(payload, runtime);
 }
 
-/// A payload bound for a runtime's blocking pool, or for the drop thread without one.
+/// A payload and the runtime of the node it came from, if any.
 #[cfg(not(lithia_loom))]
 type Pending = (Option<Handle>, Payload);
 
@@ -152,7 +149,7 @@ fn drop_on_pool<T: Send + 'static>(payload: T, runtime: Option<&Handle>) {
         .ok()
         .flatten();
     if let Some(payload) = loose {
-        post(runtime.cloned(), Parcel { payloads: vec![payload] });
+        pool::post(Parcel { runtime: runtime.cloned(), payloads: vec![payload] });
     }
     if let Some(full) = full {
         send(full);
@@ -175,49 +172,32 @@ fn send(pending: Vec<Pending>) {
         match parcels.iter_mut().find(|(known, _): &&mut (Option<Handle>, Parcel)| known.as_ref().map(Handle::id) == id)
         {
             Some((_, parcel)) => parcel.payloads.push(payload),
-            None => parcels.push((runtime, Parcel { payloads: vec![payload] })),
+            None => parcels.push((runtime.clone(), Parcel { runtime, payloads: vec![payload] })),
         }
     }
-    for (runtime, parcel) in parcels {
-        post(runtime, parcel);
+    for (_, parcel) in parcels {
+        pool::post(parcel);
     }
 }
 
-#[cfg(not(lithia_loom))]
-fn post(runtime: Option<Handle>, parcel: Parcel) {
-    match runtime {
-        Some(handle) => {
-            drop(handle.spawn_blocking(move || parcel.run()));
-        }
-        None => send_to_drop_thread(parcel),
-    }
-}
-
-/// Payloads on their way to be dropped, each under its own `catch_unwind`; if the runtime never
-/// runs them, they go to the drop thread.
+/// Payloads of one runtime on their way to be dropped, each under its own `catch_unwind`.
 #[cfg(not(lithia_loom))]
 struct Parcel {
+    runtime: Option<Handle>,
     payloads: Vec<Payload>,
 }
 
 #[cfg(not(lithia_loom))]
 impl Parcel {
-    fn run(mut self) {
+    fn run(self) {
+        // In the runtime's context, so a `Drop` may spawn tasks on it (spec §10.3).
+        let _context: Option<tokio::runtime::EnterGuard<'_>> = self.runtime.as_ref().map(Handle::enter);
         // What these drops free in turn, such as nodes whose last handle a value held, goes together.
         let _drops: DropBatch = gather();
-        for payload in std::mem::take(&mut self.payloads) {
+        for payload in self.payloads {
             run_drop(Some(payload));
             let before: usize = QUEUED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             debug_assert!(before > 0, "lithia: more deferred drops ran than were queued");
-        }
-    }
-}
-
-#[cfg(not(lithia_loom))]
-impl Drop for Parcel {
-    fn drop(&mut self) {
-        if !self.payloads.is_empty() {
-            send_to_drop_thread(Parcel { payloads: std::mem::take(&mut self.payloads) });
         }
     }
 }
@@ -229,26 +209,141 @@ fn run_drop(payload: Option<Payload>) {
     }
 }
 
-/// lithia's drop thread, started on first use.
+/// lithia's drop threads: one at first, and another whenever the queue has made no progress for
+/// `STALL` or outgrows them, so a `Drop` that blocks holds up only the drops queued behind it (spec §10.3).
 #[cfg(not(lithia_loom))]
-#[allow(clippy::disallowed_types)] // lithia's own thread, absent from loom builds
-static DROP_THREAD: std::sync::LazyLock<mpsc::Sender<Parcel>> = std::sync::LazyLock::new(|| {
-    let (sender, receiver): (mpsc::Sender<Parcel>, mpsc::Receiver<Parcel>) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("lithia-drop".to_string())
-        .spawn(move || {
-            while let Ok(parcel) = receiver.recv() {
-                parcel.run();
-            }
-        })
-        .expect("lithia: cannot start the drop thread");
-    sender
-});
+#[allow(clippy::disallowed_types)] // lithia's own threads, absent from loom builds
+mod pool {
+    use std::collections::VecDeque;
+    use std::sync::{Condvar, LazyLock, Mutex, MutexGuard, PoisonError};
+    use std::time::Duration;
 
-#[cfg(not(lithia_loom))]
-fn send_to_drop_thread(parcel: Parcel) {
-    if let Err(mpsc::SendError(parcel)) = DROP_THREAD.send(parcel) {
-        parcel.run();
+    use super::Parcel;
+
+    /// How long a queue may wait with no parcel taken before another thread joins.
+    const STALL: Duration = Duration::from_millis(10);
+    /// How long a drop thread beyond the first waits for work before it ends.
+    const KEEP_ALIVE: Duration = Duration::from_secs(10);
+    /// Parcels queued per drop thread beyond which another joins.
+    const BACKLOG: usize = 4;
+    /// Most drop threads at once.
+    const MOST: usize = 64;
+
+    struct State {
+        queue: VecDeque<Parcel>,
+        threads: usize,
+        idle: usize,
+        /// Parcels taken so far, which the watcher reads as progress.
+        taken: u64,
+        watching: bool,
+        watcher: bool,
+    }
+
+    struct Pool {
+        state: Mutex<State>,
+        work: Condvar,
+        watch: Condvar,
+    }
+
+    static POOL: LazyLock<Pool> = LazyLock::new(|| Pool {
+        state: Mutex::new(State {
+            queue: VecDeque::new(),
+            threads: 0,
+            idle: 0,
+            taken: 0,
+            watching: false,
+            watcher: false,
+        }),
+        work: Condvar::new(),
+        watch: Condvar::new(),
+    });
+
+    fn lock() -> MutexGuard<'static, State> {
+        POOL.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Queues `parcel`; wakes an idle thread, or, with none, starts the first or watches the queue.
+    pub(super) fn post(parcel: Parcel) {
+        let mut state: MutexGuard<'static, State> = lock();
+        state.queue.push_back(parcel);
+        if state.idle > 0 {
+            POOL.work.notify_one();
+        } else if state.threads == 0 {
+            start_worker(&mut state);
+        } else {
+            arm(&mut state);
+        }
+    }
+
+    /// Has the watcher watch the queue, which no idle thread will take from.
+    fn arm(state: &mut State) {
+        if state.watching {
+            return;
+        }
+        state.watching = true;
+        if state.watcher {
+            POOL.watch.notify_one();
+        } else {
+            let started: std::io::Result<std::thread::JoinHandle<()>> =
+                std::thread::Builder::new().name("lithia-drop-watch".to_string()).spawn(watch);
+            // Without a watcher the running threads carry on; the next backlog tries again.
+            state.watcher = started.is_ok();
+            state.watching = state.watcher;
+        }
+    }
+
+    fn start_worker(state: &mut State) {
+        match std::thread::Builder::new().name("lithia-drop".to_string()).spawn(work) {
+            Ok(_) => state.threads += 1,
+            Err(error) if state.threads == 0 => panic!("lithia: cannot start a drop thread: {error}"),
+            // The threads running carry on; the watcher tries again after the next stall.
+            Err(_) => {}
+        }
+    }
+
+    fn work() {
+        let mut state: MutexGuard<'static, State> = lock();
+        loop {
+            if let Some(parcel) = state.queue.pop_front() {
+                state.taken += 1;
+                if !state.queue.is_empty() && state.idle == 0 {
+                    arm(&mut state);
+                }
+                drop(state);
+                parcel.run();
+                state = lock();
+                continue;
+            }
+            state.idle += 1;
+            let waited: std::sync::WaitTimeoutResult;
+            (state, waited) = POOL.work.wait_timeout(state, KEEP_ALIVE).unwrap_or_else(PoisonError::into_inner);
+            state.idle -= 1;
+            if waited.timed_out() && state.queue.is_empty() && state.threads > 1 {
+                state.threads -= 1;
+                return;
+            }
+        }
+    }
+
+    /// Starts a drop thread whenever a backlog makes no progress for `STALL`, or outgrows the threads.
+    fn watch() {
+        let mut state: MutexGuard<'static, State> = lock();
+        loop {
+            while !state.watching {
+                state = POOL.watch.wait(state).unwrap_or_else(PoisonError::into_inner);
+            }
+            let taken: u64 = state.taken;
+            (state, _) = POOL.watch.wait_timeout(state, STALL).unwrap_or_else(PoisonError::into_inner);
+            if state.queue.is_empty() {
+                state.watching = false;
+                continue;
+            }
+            let stuck: bool = state.taken == taken && state.idle == 0;
+            let behind: bool = state.queue.len() > state.threads * BACKLOG;
+            if (stuck || behind) && state.threads < MOST {
+                start_worker(&mut state);
+            }
+        }
     }
 }
 

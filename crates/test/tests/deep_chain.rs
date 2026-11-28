@@ -29,7 +29,7 @@ async fn a_long_chain_propagates_and_drops_without_recursion() {
     let base: usize = lithia::test::live_nodes().await;
     // Every node is top-level, so support holds the chain while `source` is held. Dropping the
     // head's handle starts one sweep that lets go of all 20 002 nodes; they are freed
-    // bottom-up, parents through a worklist and bodies on the blocking pool, without recursion.
+    // bottom-up, parents through a worklist and bodies on the drop threads, without recursion.
     drop(tail);
     assert_eq!(lithia::test::live_nodes().await, base, "support still holds the chain");
     // The last anchor goes on a thread with a small stack: freeing 20 002 nodes recursively would overflow it.

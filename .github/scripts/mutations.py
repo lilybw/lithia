@@ -184,6 +184,13 @@ MUTATIONS: list[Mutation] = [
         "edge", "a_scoped_node_that_is_an_anchor_again_holds_what_depends_on_it",
     ),
     Mutation(
+        "D1", "The drop threads' watcher never adds a thread, so a blocked drop holds up those behind it",
+        "crates/lithia/src/lifetime/drops.rs",
+        "            if (stuck || behind) && state.threads < MOST {\n",
+        "            if false && (stuck || behind) && state.threads < MOST {\n",
+        "edge", "a_drop_that_blocks_holds_up_no_later_drop",
+    ),
+    Mutation(
         "Q1", "No comparator by default for a value type with `PartialEq`", "crates/lithia/src/options.rs",
         "        Some(Equals::plain(|old: &K, new: &K| -> bool { old == new }))\n",
         "        None\n",

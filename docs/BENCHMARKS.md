@@ -51,6 +51,10 @@ default), the same handing every unlock to the next waiter (`fair`), the standar
 `parking_lot`'s tried for about ten microseconds before parking (`spin`), and a ticket lock that spins,
 then yields, and never parks (`ticket`). `check.py full` lints lithia built with each.
 
+`python3 .github/scripts/bench_plot.py RESULTS.txt --out plot.html` charts the output of either, saved
+to a file: a chart per row and measure against the thread count, the median thread as a line and the
+fastest to the slowest as a band, and the lock's hold and wait under `--stats`.
+
 ## Current figures
 
 Measured on v0.5.0 after the code review's tuning (2026-11-24), as medians of 14 runs alternated with a
@@ -89,6 +93,43 @@ about ±5%.
 - Mesh run counts vary with scheduling and stay far below n².
 
 ## History
+
+### The sweep lock's own figures, and drop threads (2026-11-28)
+
+The same 7950X3D, system allocator, `lock_bench.py --stats`; `parking_lot` shown, the other four within
+the run-to-run spread of it, as before. Each cell is the median thread's time, then the lock's mean hold
+and mean wait per acquisition:
+
+| Row | 1 | 8 | 32 |
+| --- | ---: | ---: | ---: |
+| `sweeps`, per drop | 13.6 ms; 0.77 ms, 0 | 70.1 ms; 1.35 ms, 3.5 ms | 235 ms; 1.74 ms, 22.6 ms |
+| `sweep-kept`, per drop | 0.95 ms; 0.76 ms, 0 | 4.7 ms; 1.12 ms, 3.0 ms | 28.7 ms; 1.61 ms, 23.6 ms |
+| `sweep-100`, per drop | 2.22 ms; 40 µs, 0 | 7.1 ms; 43 µs, 118 µs | 17.7 ms; 68 µs, 0.99 ms |
+| `sweep-10`, per drop | 245 µs; 10 µs, 0 | 781 µs; 9 µs, 33 µs | 2.36 ms; 11 µs, 164 µs |
+| `churn`, per cycle | 59 µs; 4.5 µs, 0 | 393 µs; 8.5 µs, 3.0 µs | 1.17 ms; 12.2 µs, 52 µs |
+| `create-shared`, per creation | 654 ns | 3.6 µs | 25.5 µs |
+
+With mimalloc, `last-handle` stays at 21–26 ns and `clock` rises from 306 ns to 834 ns per write.
+
+- Where a sweep frees, the lock is a tenth of a drop's time at 32 threads and a twentieth on one: a
+  hub of 10 effects took 245 µs to drop while holding the lock for 10 µs. The rest was tokio's blocking
+  pool, whose threads woke and contended for each parcel of 64 bodies a sweep handed on: one 2 000-effect
+  drop made 45 000 futex calls on this container. Deferred drops now go to lithia's own drop threads
+  (spec §10.3). On 2 cores, medians of three alternated runs, one thread and two:
+
+  | Row | Blocking pool | Drop threads |
+  | --- | ---: | ---: |
+  | `sweeps`, per drop | 22.4 ms; 21.7 ms | 5.4 ms; 5.5 ms |
+  | `sweep-100`, per drop | 1.59 ms; 1.49 ms | 106 µs; 88 µs |
+  | `sweep-10`, per drop | 123 µs; 207 µs | 36 µs; 14 µs |
+  | `sweep-turns`, per drop | 22.0 ms; 22.3 ms | 5.6 ms; 5.7 ms |
+  | `churn`, per cycle | 104 µs; 213 µs | 37 µs; 44 µs |
+
+  `sweep-kept`, `create-source` and `rebuild` free nothing through the pool and do not move.
+- Where a sweep keeps everything, the lock is the time: at 32 threads 24 of 29 ms are spent waiting,
+  and the hold itself doubles, the same work done with 31 other sweeps in flight.
+- Creation on one shared hub grows 40 times by 32 threads, without the sweep lock: each new child
+  takes the hub's scheduling lock to subscribe.
 
 ### Sweep lock taken only where something changes, and five locks compared (2026-11-28)
 

@@ -574,7 +574,7 @@ async fn live_nodes_drains_the_drops_it_raised() {
     );
     lithia::flush().await;
     assert_eq!(lithia::test::live_nodes().await, base + 20);
-    rows.set(Vec::new()); // the old value drops on the blocking pool, and its nodes with it
+    rows.set(Vec::new()); // the old value drops on a drop thread, and its nodes with it
     assert_eq!(lithia::test::live_nodes().await, base);
 }
 

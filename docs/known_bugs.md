@@ -20,8 +20,11 @@ None.
 ## Performance
 
 - One process-wide lock serialises sweeps that may let go of nodes: on a 16-core Ryzen 9 7950X3D, 32
-  threads each dropping a hub of 2 000 effects wait for each other's sweeps in turn, 20 times as long
-  as one alone (`docs/BENCHMARKS.md`). Rises and falls that change nothing no longer take it.
+  threads each sweeping 2 000 effects that stay alive spend 24 of 29 ms waiting for each other
+  (`docs/BENCHMARKS.md`). Where a sweep frees, most of its time was tokio's blocking pool, which deferred
+  drops no longer use. Rises and falls that change nothing take no lock.
+- Creating children on one hub that many threads share grows 40 times by 32 threads: each takes the
+  hub's scheduling lock to subscribe.
 - A creation costs ten times as much on each of 32 threads as on one, though it takes no lithia lock;
   not profiled yet.
 
