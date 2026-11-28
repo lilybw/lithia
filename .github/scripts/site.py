@@ -124,7 +124,7 @@ def build_api(script: str, out: Path) -> None:
         env.pop("RUSTDOCFLAGS", None)
         env["CARGO_ENCODED_RUSTDOCFLAGS"] = "\x1f".join(flags)
         shutil.rmtree(doc, ignore_errors=True)
-        run(["cargo", "doc", "--no-deps", "-p", "lithia", "-p", "lithia-macro", "--locked"], env=env)
+        run(["cargo", "doc", "--no-deps", "-p", "lithate", "-p", "lithia-macro", "--locked"], env=env)
     shutil.copytree(doc, out)
     shutil.copytree(SITE / "fonts", out / "fonts")
     (out / "index.html").write_text(stub("lithia/index.html", "lithia API", script))

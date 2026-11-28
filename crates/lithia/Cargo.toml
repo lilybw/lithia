@@ -1,5 +1,6 @@
 [package]
-name = "lithia"
+# Published as `lithate`, since `lithia` on crates.io is another project; code still names it `lithia`.
+name = "lithate"
 description = "Thread-safe, fine-grained reactive engine for Rust on tokio, roughly after Solid 2.0's signal model."
 version.workspace = true
 edition.workspace = true
@@ -12,6 +13,9 @@ documentation.workspace = true
 readme = "../../README.md"
 keywords = ["reactive", "signals", "tokio", "async", "frp"]
 categories = ["asynchronous", "concurrency"]
+
+[lib]
+name = "lithia"
 
 [features]
 # Lets `#[lithia::main]` and `#[lithia::test]` take `start_paused`, through tokio's clock control.

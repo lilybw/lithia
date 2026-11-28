@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT: Path = Path(__file__).resolve().parents[2]
 OUT: Path = ROOT / "target/mutants.out"
 VERSION: str = "27.1.0"
-PACKAGES: str = "lithia,lithia-validation,lithia-test"
+PACKAGES: str = "lithate,lithia-validation,lithia-test"
 
 
 def main(argv: list[str]) -> int:

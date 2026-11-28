@@ -40,7 +40,7 @@ def main() -> None:
     tests: str = " ".join(f"--test {name}" for name in validation)
     shards: list[dict[str, str]] = [{
         "name": "unit tests and validation cases",
-        "run": f"{MIRI} -p lithia --lib && {MIRI} -p lithia-validation {tests}",
+        "run": f"{MIRI} -p lithate --lib && {MIRI} -p lithia-validation {tests}",
     }]
     for number, modules in enumerate(edge_shards(), start=1):
         filters: str = " ".join(f"{name}::" for name in modules)

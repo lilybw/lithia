@@ -6,7 +6,7 @@
 # Writes `tag` (empty when HEAD is already released) and `previous` to $GITHUB_OUTPUT, and the notes to target/release-notes.md.
 set -euo pipefail
 
-base="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "lithia") | .version')"
+base="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "lithate") | .version')"
 released="$(git tag --points-at HEAD --list "v${base}.*")"
 if [[ -n "$released" ]]; then
     echo "HEAD is already released as ${released}; nothing to do."
@@ -20,12 +20,12 @@ previous="$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true
 
 # Cargo verifies lithia against the packaged lithia-macro only when both are publishable.
 sed -i 's/^publish = false$/publish = true/' Cargo.toml
-cargo package -p lithia-macro -p lithia --locked --allow-dirty
+cargo package -p lithia-macro -p lithate --locked --allow-dirty
 git checkout -- Cargo.toml
 python3 .github/scripts/site.py snapshot --version "${tag#v}" --out target/site-snapshot
 
 rm -rf target/dist && mkdir -p target/dist
-cp "target/package/lithia-macro-${base}.crate" "target/package/lithia-${base}.crate" target/dist/
+cp "target/package/lithia-macro-${base}.crate" "target/package/lithate-${base}.crate" target/dist/
 tar -czf "target/dist/lithia-docs-${tag}.tar.gz" -C target/site-snapshot api spec
 spec="$(printf "%s\n" docs/spec/LITHIA_design_spec_v*.pdf | sort -V | tail -n 1)"
 cp "$spec" target/dist/

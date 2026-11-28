@@ -37,7 +37,9 @@ async fn main() {
 
 ## Using it
 
-lithia is not on crates.io yet. Pin a release tag, or follow `nightly` with `branch = "nightly"`:
+lithia is not on crates.io yet; it will be published as `lithate`, since another project has the name `lithia`
+there, and code will still name it `lithia`. Until then, pin a release tag, or follow `nightly` with
+`branch = "nightly"`:
 
 ```toml
 [dependencies]
