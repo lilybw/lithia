@@ -252,6 +252,74 @@ fn anchors_cross_zero_while_a_sweep_runs() {
     });
 }
 
+/// `m`'s last handle drops while a body on the worker anchors `m` again, its count rising from zero
+/// without the sweep lock. `w`, which only `m`'s anchor supports, ends held by support: never let go,
+/// or held again by the rise. A body's read-only capture keeps `w` alive meanwhile (spec §10.1).
+#[test]
+fn a_rise_without_the_lock_races_a_sweep() {
+    check(|| {
+        with_worker(|| {
+            let scope: ModelScope = ModelScope::new();
+            let slot: Arc<loom::sync::Mutex<Option<lithia::Accessor<u32>>>> = Arc::new(loom::sync::Mutex::new(None));
+            let kept: Arc<loom::sync::Mutex<Option<lithia::Accessor<u32>>>> = slot.clone();
+            let (m, go, keeper_input): (DerivedNode<u32>, SourceNode<bool>, SourceNode<u32>) = scope.batch(|| {
+                let s: SourceNode<u32> = node!(1);
+                let m: DerivedNode<u32> = node!(|s| *s.get());
+                let w: DerivedNode<()> = node!(|m| {
+                    let _ = m.get();
+                });
+                let keeper_input: SourceNode<u32> = node!(0);
+                node!(|keeper_input| {
+                    let _ = (keeper_input.get(), w.get());
+                });
+                let go: SourceNode<bool> = node!(false);
+                node!(|go| {
+                    if *go.get() {
+                        *kept.lock().unwrap() = Some(m.accessor());
+                    }
+                });
+                (m, go, keeper_input)
+            });
+            scope.flush();
+            scope.batch(|| go.set(true));
+            drop(m);
+            scope.flush();
+            drop(keeper_input); // only support can keep `w` now
+            scope.flush();
+            // s, m, w, the riser and its input; the keeper and its input are gone.
+            assert_eq!(scope.live(), 5);
+            drop(slot.lock().unwrap().take());
+            drop(go);
+            scope.flush();
+            assert_eq!(scope.live(), 0);
+        });
+    });
+}
+
+/// A child's last handle drops while its parent's does: the child skips its sweep only if it reads
+/// the parent anchored, and then the parent's sweep reads the child's fall. Either way all are freed.
+#[test]
+fn a_parent_s_fall_races_a_child_s_skipped_sweep() {
+    check(|| {
+        let scope: ModelScope = ModelScope::new();
+        let (p, c): (DerivedNode<u32>, DerivedNode<u32>) = scope.batch(|| {
+            let s: SourceNode<u32> = node!(1);
+            let p: DerivedNode<u32> = node!(|s| *s.get());
+            let c: DerivedNode<u32> = node!(|p| *p.get());
+            node!(|c| {
+                let _ = c.get();
+            });
+            (p, c)
+        });
+        scope.flush();
+        let other: loom::thread::JoinHandle<()> = loom::thread::spawn(move || drop(c));
+        drop(p);
+        other.join().unwrap();
+        scope.flush();
+        assert_eq!(scope.live(), 0);
+    });
+}
+
 /// One sweep's let-go races another sweep's walk over the same nodes; all are freed.
 #[test]
 fn a_let_go_races_another_sweeps_walk() {

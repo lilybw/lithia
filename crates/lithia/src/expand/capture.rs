@@ -75,7 +75,7 @@ impl Lease {
             // handle afterwards takes off an anchor that is there.
             for (node, anchoring, count) in &guard.held {
                 if *anchoring {
-                    crate::lifetime::support::add_anchors(node.header(), *count, || node.clone());
+                    crate::lifetime::support::add_lease_anchors(node.header(), *count, || node.clone());
                 }
             }
             guard.ended = true;
@@ -157,7 +157,7 @@ impl Drop for Captured {
             let before: usize = node.header().lifetime.anchors.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             debug_assert!(before > 0, "lithia: a moved handle dropped an anchor it did not hold");
             if before == 1 {
-                crate::lifetime::support::raise(node);
+                crate::lifetime::support::raise_fallen(node);
             }
         }
     }

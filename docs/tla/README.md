@@ -219,6 +219,12 @@ Undoing each new rule fails the model:
 - sweeps under the sweep lock, with their exact checks that may give up, the region, the trust of held
   nodes outside it, and the references they hold until after the lock; walks that hold again what support
   let go of, when a count rises from zero and when a writer registers;
+- with `FastRise`, rises from zero without the lock: the count rises in one step, marked rising, and the
+  rise ends in another, taking the lock and walking if a sweep holds it or support has let go of a node
+  that still lives; a sweep may read any count that was zero while it ran as zero; and a handle added
+  onto a count still rising takes the lock. With `SkipSupported`, a count that falls to zero raises no
+  starting point while a parent anchors and no node has been scoped. Both are off in the models above
+  them in the table, which keep their counts, and on in the others;
 - disposal: the freed branch becomes ghosts, which are never anchors, then is torn down in one
   operation: support's references, bodies and generations are released, the ghosts leave their parents,
   and their members, targets and surviving descendants are swept once it ends; a node created with only
@@ -256,6 +262,8 @@ tests cover those.
 | `MCKeyed` | An effect creates a keyed source in its run, and a top-level effect on it is created, which only the creation edge supports; the creator's next run holds the source over, then reclaims it or ends and releases it. | 53 870 |
 | `MCDisposal` | Sources `a` and `b`, an effect `e` on both and a child `d` of `e`, created later: disposing of `b` leaves `e` a survivor that `a` alone supports; disposing of `e` takes `d` with it, or `d` is created with only a ghost for a parent. | 71 693 |
 | `MCLateChild` | Sources `a` and `b`, and effects `c` on `a` and `d` on both, created while `a`'s disposal is under way: linked after the walk, before `a` closed, `c` is disposed of and `d` survives; linked after `a` closed, a child disposes of itself. | 13 842 |
+| `MCFastRise` | A source `a` and an effect `e` on it that only support holds: `a`'s last handle drops while two threads clone `a` from `e`'s body, one rising from zero without the lock and one adding onto that rise. | 1 169 |
+| `MCSkip` | A source `a`, an effect `p` on it and an effect `m` on `p`: `a`'s and `m`'s last handles drop on two threads, so `m`'s fall may skip its sweep while `a`'s sweep lets go of `p`. | 2 830 |
 
 ### Findings
 
@@ -308,6 +316,16 @@ model:
 | Undone | Fails | Model | Time |
 | --- | --- | --- | --- |
 | A teardown disposes of a late child whose parents are all ghosts | `OrphansDisposed` | `MCLateChild` | 5 s |
+
+Taking the sweep lock out of rises and falls that change nothing (2026-11-28) was modelled before it was
+written. Undoing each part of it fails the model:
+
+| Undone | Fails | Model | Time |
+| --- | --- | --- | --- |
+| A rise without the lock waits for a sweep under way | `LetGoSound` | `MCFastRise` | 2 s |
+| A handle added onto a rise not done takes the lock | `LetGoSound` | `MCFastRise` | 2 s |
+| Only a parent that anchors lets a fall skip its sweep, not one support holds | `NoLeak` | `MCSkip` | 4 s |
+| No fall skips its sweep once a node has been scoped | `NoLeak` | `MCScopedFast` | 12 s |
 
 ## Running
 

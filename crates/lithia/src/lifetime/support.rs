@@ -15,50 +15,102 @@ use crate::sync::MutexGuard;
 #[cfg(not(lithia_loom))]
 static SWEEP: crate::sync::Padded<crate::lifetime::sweep_lock::SweepLock> =
     crate::sync::Padded(crate::lifetime::sweep_lock::SweepLock::new());
+/// Set once any node is scoped; until then no node can be blocked by a scoped parent.
+#[cfg(not(lithia_loom))]
+static ANY_SCOPED: crate::sync::Padded<crate::sync::AtomicBool> =
+    crate::sync::Padded(crate::sync::AtomicBool::new(false));
+/// Nodes support let go of that still live. A walk can hold something again only while there are some.
+#[cfg(not(lithia_loom))]
+static LET_GO: crate::sync::Padded<crate::sync::AtomicUsize> = crate::sync::Padded(crate::sync::AtomicUsize::new(0));
+/// Sweeps under way; a rise from zero without the lock reads it after its count (spec §10.1).
+#[cfg(not(lithia_loom))]
+static SWEEPING: crate::sync::Padded<crate::sync::AtomicUsize> = crate::sync::Padded(crate::sync::AtomicUsize::new(0));
+// Each loom execution starts from fresh statics, so models running side by side stay deterministic.
 #[cfg(lithia_loom)]
 loom::lazy_static! {
     static ref SWEEP: crate::sync::Mutex<()> = crate::sync::Mutex::new(());
+    static ref ANY_SCOPED: crate::sync::AtomicBool = crate::sync::AtomicBool::new(false);
+    static ref LET_GO: crate::sync::AtomicUsize = crate::sync::AtomicUsize::new(0);
+    static ref SWEEPING: crate::sync::AtomicUsize = crate::sync::AtomicUsize::new(0);
 }
 
 /// Nodes an exact check of a starting point visits before it leaves the question to the walk.
 const START_BUDGET: usize = 64;
 
-/// Set once any node is scoped; until then no node can be blocked by a scoped parent.
-#[allow(clippy::disallowed_types)] // a hint that skips work; loom models always do the work
-static ANY_SCOPED: crate::sync::Padded<std::sync::atomic::AtomicBool> =
-    crate::sync::Padded(std::sync::atomic::AtomicBool::new(false));
+/// Set in an anchor count while the rise from zero that set it is not done (spec §10.1).
+pub(crate) const RISING: usize = 1 << (usize::BITS - 1);
 
-/// Nodes support let go of that still live. A walk can hold something again only while there are some.
-#[allow(clippy::disallowed_types)] // a hint that skips work; loom models always do the work
-static LET_GO: crate::sync::Padded<std::sync::atomic::AtomicUsize> =
-    crate::sync::Padded(std::sync::atomic::AtomicUsize::new(0));
-
-/// Whether a walk may find something to hold again. Loom models always walk, so models running
-/// side by side stay deterministic.
+/// Whether a walk may find something to hold again.
 fn any_let_go() -> bool {
-    cfg!(lithia_loom) || LET_GO.load(Ordering::SeqCst) != 0
+    LET_GO.load(Ordering::SeqCst) != 0
 }
 
 /// Whether `header`'s node is an anchor: not a ghost, with an anchoring outside handle.
 pub(crate) fn is_anchor(header: &Header) -> bool {
-    !header.is_ghost() && header.lifetime.anchors.load(Ordering::SeqCst) > 0
+    !header.is_ghost() && header.lifetime.anchors.load(Ordering::SeqCst) & !RISING > 0
 }
 
-/// Counts `count` more anchors on `node`. A count rises from zero only under the sweep lock, so a
-/// sweep never sees one rise in its midst, and the rise holds again what support let go of (spec §10.1).
+/// Counts `count` more anchors on `node`. A count rises from zero without the sweep lock: either a
+/// sweep that starts later reads it, or the rise reads `SWEEPING` after it and, with a sweep under way
+/// or a node support let go of still alive, finishes under the lock, holding again what that node
+/// reaches. Adding onto a rise not finished takes the lock too (spec §10.1).
 pub(crate) fn add_anchors(header: &Header, count: usize, node: impl FnOnce() -> NodeRef) {
-    let mut seen: usize = header.lifetime.anchors.load(Ordering::SeqCst);
-    while seen != 0 {
-        match header.lifetime.anchors.compare_exchange_weak(seen, seen + count, Ordering::SeqCst, Ordering::SeqCst) {
-            Ok(_) => return,
+    let anchors: &crate::sync::AtomicUsize = &header.lifetime.anchors;
+    let seen: usize = add_to_risen(anchors, count);
+    if seen == usize::MAX {
+        return;
+    }
+    if seen == 0 && anchors.compare_exchange(0, count | RISING, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        // Pairs with the sweep's fence: this rise reads the sweep's `SWEEPING`, or the sweep reads the count.
+        crate::sync::fence(Ordering::SeqCst);
+        if SWEEPING.load(Ordering::SeqCst) == 0 && !any_let_go() {
+            anchors.fetch_and(!RISING, Ordering::SeqCst);
+            return;
+        }
+        let mut keep: Vec<NodeRef> = Vec::new();
+        let mut held: Vec<&'static crate::Site> = Vec::new();
+        {
+            let _lock: SweepGuard<'_> = SWEEP.lock();
+            if !header.is_ghost() && any_let_go() {
+                rehold(node(), &mut keep, &mut held);
+            }
+            anchors.fetch_and(!RISING, Ordering::SeqCst);
+        }
+        release_walk(keep, held);
+        return;
+    }
+    add_locked(header, count, node);
+}
+
+/// Counts `count` more anchors on `node` as a block's lease ends: a rise from zero always takes the
+/// sweep lock (spec §10.1).
+pub(crate) fn add_lease_anchors(header: &Header, count: usize, node: impl FnOnce() -> NodeRef) {
+    if add_to_risen(&header.lifetime.anchors, count) != usize::MAX {
+        add_locked(header, count, node);
+    }
+}
+
+/// Adds `count` to a count that is not zero and not rising, and returns `usize::MAX`; otherwise adds
+/// nothing and returns the count it saw.
+fn add_to_risen(anchors: &crate::sync::AtomicUsize, count: usize) -> usize {
+    let mut seen: usize = anchors.load(Ordering::SeqCst);
+    while seen != 0 && seen & RISING == 0 {
+        match anchors.compare_exchange_weak(seen, seen + count, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return usize::MAX,
             Err(now) => seen = now,
         }
     }
+    seen
+}
+
+/// Adds under the sweep lock; from zero, or onto a rise not finished, it walks as that rise would.
+fn add_locked(header: &Header, count: usize, node: impl FnOnce() -> NodeRef) {
     let mut keep: Vec<NodeRef> = Vec::new();
     let mut held: Vec<&'static crate::Site> = Vec::new();
     {
         let _lock: SweepGuard<'_> = SWEEP.lock();
-        if header.lifetime.anchors.fetch_add(count, Ordering::SeqCst) == 0 && !header.is_ghost() && any_let_go() {
+        let before: usize = header.lifetime.anchors.fetch_add(count, Ordering::SeqCst);
+        if (before == 0 || before & RISING != 0) && !header.is_ghost() && any_let_go() {
             rehold(node(), &mut keep, &mut held);
         }
     }
@@ -138,6 +190,30 @@ pub(crate) fn is_held(header: &Header) -> bool {
     header.lifetime.support.lock().is_some()
 }
 
+/// Records that `node`'s last anchor fell. While a parent of it is an anchor, support reaches it, and
+/// since support flows only downstream nothing lost support through it: no sweep (spec §10.1).
+pub(crate) fn raise_fallen(node: NodeRef) {
+    // Pairs with the sweep's fence: a parent's sweep reads this node's fall, or this reads the parent's.
+    crate::sync::fence(Ordering::SeqCst);
+    // A scoped node, or a node below one without handles, may lose support whatever its parents do.
+    if !ANY_SCOPED.load(Ordering::SeqCst) && has_anchored_parent(&node) {
+        // What the sweep's check would have warned of: a memo support keeps running unread.
+        check_unread(node.header());
+        return;
+    }
+    raise(node);
+}
+
+/// Whether a parent of `node` is an anchor, read after `node`'s own count fell: a parent whose last
+/// anchor falls meanwhile is raised, and its sweep walks through `node` and sees that fall.
+fn has_anchored_parent(node: &NodeRef) -> bool {
+    node.header()
+        .parents
+        .lock()
+        .as_ref()
+        .is_some_and(|parents: &Parents| parents.iter().any(|parent: &NodeRef| is_anchor(parent.header())))
+}
+
 /// Records that `node` may have lost support; sweeps at once unless an operation is under way.
 pub(crate) fn raise(node: NodeRef) {
     if !needs_sweep(&node) {
@@ -165,6 +241,9 @@ pub(crate) fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     let mut keep: Vec<NodeRef> = Vec::new();
     let raised: usize = starts.len();
     let lock: SweepGuard<'_> = SWEEP.lock();
+    // Before any count is read: a rise without the lock sees this sweep, or this sweep sees the rise.
+    SWEEPING.fetch_add(1, Ordering::SeqCst);
+    crate::sync::fence(Ordering::SeqCst);
     // A starting point an anchor still reaches loses nothing downstream, since support flows
     // only forward. The check trusts nothing and gives up after a few nodes.
     let mut lost: Vec<NodeRef> = Vec::new();
@@ -219,6 +298,7 @@ pub(crate) fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     keep.extend(still);
     keep.extend(order);
     keep.extend(search.region.into_values());
+    SWEEPING.fetch_sub(1, Ordering::SeqCst);
     drop(lock);
     for site in unread {
         crate::diag::unread_memo(site);
@@ -359,8 +439,7 @@ impl Search {
 
     /// Whether `node` depends on a scoped node without handles, directly or through nodes without handles.
     fn blocked(&mut self, node: &NodeRef, keep: &mut Vec<NodeRef>) -> bool {
-        // Loom models always take the full path, so models running side by side stay deterministic.
-        if !cfg!(lithia_loom) && !ANY_SCOPED.load(Ordering::SeqCst) {
+        if !ANY_SCOPED.load(Ordering::SeqCst) {
             return false;
         }
         let mut stack: Vec<NodeRef> = vec![node.clone()];

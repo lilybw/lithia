@@ -41,15 +41,17 @@ runs the real engine: the main thread delivers batches and polls runs, worker th
 it, and the model checks the final values once everything settles. Lifetime models also check each
 scope's live count.
 
-- Models: 52, in `crates/test/tests/loom/`. Each one's doc comment says what it races and which case
+- Models: 54, in `crates/test/tests/loom/`. Each one's doc comment says what it races and which case
   it covers.
 - Paths: every model runs with the fast path and again with `LITHIA_LOOM_FAST_PATH=off`, which gives
   every ready run a task of its own.
 - Bound: 3 in `ci.yml`, a minute or two on two threads, and 4 in `extended.yml`.
   `LOOM_MAX_PREEMPTIONS` sets it.
-- Determinism: sweeps keep their maps ordered by `NodeId`, loom builds always take the full path for
-  scoped nodes, and tokens that close together close in epoch order. Models running side by side in
-  one process therefore explore the same interleavings.
+- Determinism: sweeps keep their maps ordered by `NodeId`, the support hints (`SWEEPING`, `LET_GO`,
+  `ANY_SCOPED`) are loom statics that each execution starts fresh, and tokens that close together close
+  in epoch order. Models running side by side in one process therefore explore the same interleavings.
+- Fences: loom treats `SeqCst` accesses as `AcqRel` but checks `SeqCst` fences, so the store-then-load
+  handshakes between a rise or a fall and a sweep use fences (spec §10.1).
 - Wakers: a pending task is parked until its waker moves it back to the queue. A thread waiting for a
   scope fails the model when every task stays parked while nothing else is under way, which is what a
   lost wakeup looks like.
@@ -152,8 +154,8 @@ These make nothing fail, and are harmless:
 
 `.github/scripts/mutations.py` keeps each mutation as code, applies it to a copy of the workspace and
 runs the test named for it, which must fail; `--list` names them. W1–W8 cover the protocol, F1–F5 the
-fast path, S1–S3 support's walks, K1–K3 the wakes that end a stopped, retired or freed run, and Q1–Q2
-the comparator a node takes by default. Two survive, both equivalent to the original: W3 releases a
+fast path, S1–S3 support's walks, R1–R4 rises and falls without the sweep lock, K1–K3 the wakes that
+end a stopped, retired or freed run, and Q1–Q2 the comparator a node takes by default. Two survive, both equivalent to the original: W3 releases a
 write to a child linked after the write's framing, which waits on the written node only through an
 entry, run or handover of that node that releases it as well, so the child reads the same value
 whichever release comes first; F5 runs the kept share once either way.

@@ -170,6 +170,15 @@ jobs:
           - MCKeyed
           - MCDisposal
           - MCLateChild
+          - MCFastRise
+          - MCSkip
+          - MCReturnFast
+          - MCWriterFast
+          - MCGenerationFast
+          - MCScopedFast
+          - MCKeyedFast
+          - MCDisposalFast
+          - MCLateChildFast
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

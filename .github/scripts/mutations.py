@@ -158,6 +158,32 @@ MUTATIONS: list[Mutation] = [
         "edge", "a_runtime_shutting_down_fails_the_strict_children_of_its_runs",
     ),
     Mutation(
+        "R1", "A rise from zero without the lock that ignores a sweep under way", "crates/lithia/src/lifetime/support.rs",
+        "        if SWEEPING.load(Ordering::SeqCst) == 0 && !any_let_go() {\n",
+        "        if !any_let_go() {\n",
+        "loom", "a_rise_without_the_lock_races_a_sweep",
+    ),
+    Mutation(
+        "R2", "No fence between a count's fall and the read of its parents' counts", "crates/lithia/src/lifetime/support.rs",
+        "    // Pairs with the sweep's fence: a parent's sweep reads this node's fall, or this reads the parent's.\n"
+        "    crate::sync::fence(Ordering::SeqCst);\n",
+        "",
+        "loom", "a_parent_s_fall_races_a_child_s_skipped_sweep",
+    ),
+    Mutation(
+        "R3", "A fall skipping its sweep for a parent support holds, not only one that anchors",
+        "crates/lithia/src/lifetime/support.rs",
+        "parents.iter().any(|parent: &NodeRef| is_anchor(parent.header())))",
+        "parents.iter().any(|parent: &NodeRef| is_anchor(parent.header()) || is_held(parent.header())))",
+        "loom", "a_parent_s_fall_races_a_child_s_skipped_sweep",
+    ),
+    Mutation(
+        "R4", "A fall skipping its sweep once a node has been scoped", "crates/lithia/src/lifetime/support.rs",
+        "    if !ANY_SCOPED.load(Ordering::SeqCst) && has_anchored_parent(&node) {\n",
+        "    if has_anchored_parent(&node) {\n",
+        "edge", "a_scoped_node_that_is_an_anchor_again_holds_what_depends_on_it",
+    ),
+    Mutation(
         "Q1", "No comparator by default for a value type with `PartialEq`", "crates/lithia/src/options.rs",
         "        Some(Arc::new(|old: &K, new: &K| -> bool { old == new }))\n",
         "        None\n",

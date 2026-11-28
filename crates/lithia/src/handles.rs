@@ -426,7 +426,7 @@ fn drop_ref<K: NodeValue>(node: &TypedNodeRef<K>, count: &HandleCount, anchoring
     };
     if last {
         let erased: NodeRef = node.clone();
-        crate::lifetime::support::raise(erased);
+        crate::lifetime::support::raise_fallen(erased);
     }
 }
 

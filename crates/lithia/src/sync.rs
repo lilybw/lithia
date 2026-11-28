@@ -78,6 +78,17 @@ macro_rules! atomic {
             }
 
             #[inline]
+            pub(crate) fn compare_exchange(
+                &self,
+                current: $value,
+                new: $value,
+                success: Ordering,
+                failure: Ordering,
+            ) -> Result<$value, $value> {
+                self.0.compare_exchange(current, new, success, failure)
+            }
+
+            #[inline]
             pub(crate) fn fetch_update(
                 &self,
                 set: Ordering,
@@ -140,7 +151,12 @@ atomic!(
 #[cfg(lithia_loom)]
 pub(crate) use loom::sync::MutexGuard;
 #[cfg(lithia_loom)]
+pub(crate) use loom::sync::atomic::fence;
+#[cfg(lithia_loom)]
 pub(crate) use loom::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize};
+/// A memory fence; loom checks `SeqCst` fences, though it treats `SeqCst` accesses as `AcqRel`.
+#[cfg(not(lithia_loom))]
+pub(crate) use std::sync::atomic::fence;
 
 /// A static on cache lines of its own, so writes to its neighbours do not stall its readers on
 /// other cores; 128 bytes, as adjacent-line prefetchers fetch lines in pairs.
