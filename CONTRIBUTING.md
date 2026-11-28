@@ -50,6 +50,7 @@ cargo test -p lithia-validation # the spec's cases
 cargo test -p lithia-test --test edge  # the edge-case tests
 cargo bench -p lithia-bench     # prints a results table; LITHIA_BENCH=spawn,clock runs only those rows
 cargo bench -p lithia-bench --bench allocs  # heap allocations per run, per write and per node
+cargo bench -p lithia-bench --bench scaling # only on request: shared state at 1 to N threads
 RUSTFLAGS="--cfg lithia_loom" CARGO_TARGET_DIR=target/loom cargo test --release -p lithia-test --test loom
 LITHIA_RANDOM_SEEDS=500 cargo test -p lithia-test --test edge --release -- random  # more random graphs
 python3 .github/scripts/tlc.py MCReturn  # one TLA+ model, against its recorded state count; Java 11+

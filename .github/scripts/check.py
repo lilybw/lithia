@@ -9,7 +9,8 @@
 `quick` (the default): fmt, clippy, rustdoc, the workspace tests, the harness tools and the spec
 citations.
 `full`: also clippy under `--cfg lithia_loom` and the loom models with and without the fast path.
-Steps: fmt, clippy, clippy-loom, doc, test, loom, loom-slow, tools, spec-refs. Exits 1 if any fails.
+Steps: fmt, clippy, clippy-scaling, clippy-loom, doc, test, loom, loom-slow, tools, spec-refs. Exits 1 if
+any fails.
 """
 
 from __future__ import annotations
@@ -40,6 +41,9 @@ class Step:
 STEPS: list[Step] = [
     Step("fmt", ["cargo", "fmt", "--all", "--check"]),
     Step("clippy", ["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"]),
+    # `--all-targets` leaves out benches marked `bench = false`, which run only on request.
+    Step("clippy-scaling", ["cargo", "clippy", "-p", "lithia-bench", "--bench", "scaling", "--locked", "--",
+                            "-D", "warnings"]),
     Step("clippy-loom", ["cargo", "clippy", "-p", "lithia", "-p", "lithia-test", "--all-targets", "--locked", "--",
                          "-D", "warnings"], LOOM),
     Step("doc", ["cargo", "doc", "--no-deps", "-p", "lithia", "-p", "lithia-macro", "--locked"],
@@ -51,7 +55,7 @@ STEPS: list[Step] = [
     Step("tools", [sys.executable, "-m", "unittest", "discover", "-s", ".claude/tools", "-q"]),
     Step("spec-refs", [sys.executable, ".github/scripts/spec_refs.py", "--check"]),
 ]
-QUICK: list[str] = ["fmt", "clippy", "doc", "test", "tools", "spec-refs"]
+QUICK: list[str] = ["fmt", "clippy", "clippy-scaling", "doc", "test", "tools", "spec-refs"]
 
 
 def summary(step: Step, output: str) -> str:
@@ -90,9 +94,9 @@ def run(step: Step) -> bool:
     took: str = f"{seconds / 60:.1f} min" if seconds >= 120 else f"{seconds:.0f} s"
     said: str = summary(step, output)
     if done.returncode == 0:
-        print(f"ok    {step.name:<12} {took:>8}  {said}")
+        print(f"ok    {step.name:<15} {took:>8}  {said}")
         return True
-    print(f"FAIL  {step.name:<12} {took:>8}  {said}  (log target/check/{step.name}.log)")
+    print(f"FAIL  {step.name:<15} {took:>8}  {said}  (log target/check/{step.name}.log)")
     for line in failures(output):
         print(f"      {line}")
     return False

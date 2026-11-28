@@ -73,7 +73,9 @@ jobs:
 
       - name: Lint
         if: matrix.suite == 'tests'
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy -p lithia-bench --bench scaling --locked -- -D warnings
 
       - name: Docs
         if: matrix.suite == 'tests'

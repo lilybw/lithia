@@ -1,6 +1,6 @@
 # LITHIA design spec v0.5.0
 
-2026-11-26 · Lily
+2026-11-28 · Lily
 
 What changed in each version is in [`CHANGELOG.md`](https://github.com/lilybw/lithia/blob/nightly/CHANGELOG.md). This spec states the design as it
 stands; the validation cases it names live in `crates/validation`, the details of how lithia is verified in
@@ -1220,7 +1220,7 @@ The benchmarks live in the `lithia-bench` crate: `cargo bench -p lithia-bench` p
 - reruns one node 40 000–140 000 times a second when driven as fast as `flush` allows;
 - makes 10 allocations per run.
 
-They show orders of magnitude and relative costs only. Contention on 8–64 cores, the padding of hot statics and the one sweep lock are not measured yet (16).
+They show orders of magnitude and relative costs only. Contention on 8–64 cores, the padding of hot statics and the one sweep lock are not measured yet (16); `cargo bench -p lithia-bench --bench scaling`, run only on request, measures the sweep lock, the version clock, value cells and the scheduling locks at 1 to N threads for that.
 
 ## 16. Roadmap
 

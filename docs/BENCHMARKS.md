@@ -5,6 +5,26 @@ rows, and `cargo bench -p lithia-bench --bench allocs` counts heap allocations. 
 from a 2-core shared cloud container in release mode. They show orders of magnitude and relative costs:
 measure on your own machine before relying on them. Nothing has been measured on more than two cores.
 
+## Scaling with threads
+
+The spec rows run on one to four threads. `cargo bench -p lithia-bench --bench scaling` runs only when
+asked for, and measures lithia's shared state as threads are added: one column per thread count, the
+powers of two up to the machine's hardware threads and that count itself, or the counts in
+`LITHIA_BENCH_THREADS=1,8,64`. `LITHIA_BENCH` picks rows, as for the spec rows.
+
+| Row | Shared state | A cell is | Reads well when |
+| --- | --- | --- | --- |
+| `last-handle` | the sweep lock | per last-handle drop, one dropping body per thread | flat: no contention |
+| `sweeps` | the sweep lock | per creation / per sweep, each thread creating 2 000 effects support holds, then all dropping their hubs at once | flat |
+| `clock` | the version clock | per write, each thread writing a node of its own | flat |
+| `readers` | value cells | per write rerunning a 10-node chain on 2 workers, while that many threads read it | flat |
+| `fan-out` | runner tasks | per write to 1 000 children, on that many workers | falling: workers help |
+| `fan-in` | scheduling locks | per write, 64 writer tasks into one join, on that many workers | flat or falling |
+| `rebuild` | generations, drops | per rerun rebuilding 100 children, on that many workers | flat |
+
+A sweep-lock row that rises with threads while `clock` stays flat points at the sweep lock rather than at
+the machine. Record a run here with the machine's model and core count, as in the history below.
+
 ## Current figures
 
 Measured on v0.5.0 after the code review's tuning (2026-11-24), as medians of 14 runs alternated with a

@@ -22,5 +22,11 @@ harness = false
 name = "allocs"
 harness = false
 
+# Only on request, as `cargo bench -p lithia-bench --bench scaling`: it matters when the host changes.
+[[bench]]
+name = "scaling"
+harness = false
+bench = false
+
 [lints]
 workspace = true
