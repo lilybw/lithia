@@ -28,6 +28,29 @@ fn a_run_whose_runtime_shut_down_fails_its_node() {
 }
 
 #[test]
+fn a_runtime_shutting_down_fails_the_strict_children_of_its_runs() {
+    let runtime: tokio::runtime::Runtime = tokio::runtime::Runtime::new().unwrap();
+    let (n, sleepy, strict): (SourceNode<u32>, DerivedNode<u32>, DerivedNode<u32>) = runtime.block_on(async {
+        let n: SourceNode<u32> = node!(1);
+        let sleepy: DerivedNode<u32> = node!(async |n| {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            *n.get()
+        });
+        let strict: DerivedNode<u32> = node!(|sleepy| *sleepy.get(), resilience = NONE);
+        tokio::time::sleep(Duration::from_millis(20)).await; // sleepy suspends, and strict runs on its item
+        (n, sleepy, strict)
+    });
+    assert!(matches!(lithia::status(&strict), Status::Ready));
+    drop(runtime);
+    assert!(matches!(lithia::status(&sleepy), Status::Failed(_)));
+    match lithia::status(&strict) {
+        Status::Failed(failure) => assert_eq!(failure.message, "parent failed"),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert_eq!(*n.get(), 1);
+}
+
+#[test]
 fn a_derived_node_needs_a_runtime() {
     let n: SourceNode<u32> = node!(1); // source nodes need none
     let created: std::thread::Result<DerivedNode<u32>> =

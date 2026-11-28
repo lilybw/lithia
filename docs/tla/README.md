@@ -5,8 +5,8 @@
 
 Two TLA+ specifications of the engine, checked by TLC on the small graphs in [`models/`](models):
 
-- [`Scheduling.tla`](Scheduling.tla): the scheduling protocol (design spec §7.2–7.4, §8, §9, §10.4,
-  §11.4);
+- [`Scheduling.tla`](Scheduling.tla): the scheduling protocol (design spec §6.3, §7.2–7.4, §8, §9,
+  §10.4, §11.3, §11.4);
 - [`Lifetimes.tla`](Lifetimes.tla): node lifetimes, support, sweeps, keyed nodes and disposal
   (§10.1–10.5).
 
@@ -36,15 +36,29 @@ speed, `extended.yml` stops it after 270 minutes and passes it if no error was f
 - creator order: a created node waits, registered with its creator, while the creator may still
   replace it, and is woken when the creator settles, starts or ends a run;
 - disposal: ghosts under each one's write lock, their entries, handovers and runs retired, `disposed =
-  FAIL` ghosts counted as failed parents, and the survivors' reruns.
+  FAIL` ghosts counted as failed parents, and the survivors' reruns;
+- creation: a node made from outside, or by its creator's first poll, is linked to its parents and
+  opens an entry, waiting on them, in each epoch a parent still owes; those entries wait for the
+  creation's seed, delivered with the batch that made the node, which is its first run;
+- keyed nodes: a run of their creator holds them back until its first poll reclaims them, maybe with
+  new captures, which reruns them unless a run of theirs is owed already;
+- async source blocks: a created source whose first run is its block; a write cancels that run, or
+  keeps it from starting, and its late items are discarded;
+- `defer`: a batch's deferred function holds a scope token, fires once the batch's epoch settles, runs
+  as a writer of its own, and returns the token once its writes are delivered;
+- runtime shutdown: from then on no task is polled again; a dropped task's run finalizes without a
+  successor, and its node settles its runnable entries, closes its handover, fails, and tells the
+  children of the epochs the run served.
 
 A process's pending frame visits, seeds, releases and resumes are sets, handled in every order: a
 superset of the engine's. Bodies are abstract: a run writes any subset of its targets, freely while the
 clock stays within `MaxClock`, and changes its value or not; a node outside `Changing` never changes.
 
-Not modelled: node creation and first runs, lifetimes (in `Lifetimes.tla`), keyed reclaiming and its
-reruns, async source blocks and the writes that stop them, runtime shutdown, `defer` and the rerun
-rate. A created node stays held by its creator. The loom models and the edge tests cover those.
+Not modelled: lifetimes (in `Lifetimes.tla`) and the rerun rate, a diagnostic that counts run starts
+and warns without changing any step. A created node stays held by its creator, a node is created at
+most once, and every run of a keyed node's creator reclaims it at its first poll. After a shutdown no
+run starts on the fast path either, though a poll under way may still start one. The loom models and
+the edge tests cover those.
 
 ### Properties
 
@@ -64,6 +78,12 @@ rate. A created node stays held by its creator. The loom models and the edge tes
 | `YieldsHeld` | A run holds its epochs open until a poll that does not yield, so `flush` waits for a generator's items. |
 | `GhostsRetired` | A retired ghost never has an entry, a handover, a run or a queued run again. |
 | `SurvivorsRerun` | When the scope's count is zero, every survivor of a disposal has run since. |
+| `SeededFirst` | A created node never starts a run before its creation is delivered. |
+| `FirstRuns` | When the scope's count is zero, every created node whose creation is delivered has run, unless its parents fail it or a write stopped it, as a block, before it started. |
+| `RefreshRan` | When the scope's count is zero, every keyed node reclaimed with new captures has run since. |
+| `BlocksStop` | A block a write stopped has no run in flight that may still publish. |
+| `DeferAfterChanges` | A deferred function fires only once every child of a node its batch wrote has released a run started after the write. |
+| `DefersRan` | When the scope's count is zero, every deferred function has run and delivered its writes. |
 | `Terminates` | Under weak fairness, every behaviour reaches a state with no work left. |
 
 ### Models
@@ -85,6 +105,12 @@ rate. A created node stays held by its creator. The loom models and the edge tes
 | `MCReflow` | A write to a source and a reflow of the async node below it: the node reruns, a run already under way is waited for, and the child sees the reflow as a change. | 1 657 084 |
 | `MCReflowBack` | A child whose body reflows its parent (Case P with a reflow): the parent reruns on the child's chain, and the child, cut, reruns once the epoch settles. | 1 278 |
 | `MCDispose` | Disposing of a node a write reaches: its run is torn down, the child it fails (`disposed = FAIL`, `resilience = NONE`) fails, and the other survivor reruns. | 933 498 |
+| `MCCreate` | A node created from outside below an async node a write reaches (Case N): its entries in the epochs its parent still owes wait for its seed, and it runs its first run. | 183 924 |
+| `MCCreateRun` | A node its creator's run creates, reading the creator, under two writes: it is seeded in the epochs the run serves, waits on the creator there, and starts once decided. | 226 219 |
+| `MCKeyedRerun` | A keyed node without parents that its creator's runs reclaim, under two writes: it waits until reclaimed, and a reclaim with new captures reruns it, also while a run of its is under way. | 139 861 |
+| `MCBlock` | An async source block, created from outside, and its child, under a write: the write stops the block, before it starts or while it runs, and its late items are discarded. | 54 156 |
+| `MCDefer` | A writer of a source an async node reads defers a function that writes the source again: the function runs once the writer's epoch has settled, and `flush` waits for it. | 935 |
+| `MCShutdown` | An async node and its child (`resilience = NONE`) under a write while the runtime shuts down: dropped tasks give their nodes up, which fail, their children fail with them, and `flush` returns. | 1 718 |
 
 States are the distinct states TLC finds once it has explored every behaviour. `MCDiamond` and
 `MCSharedTarget` are too large to explore outside `extended.yml`.
@@ -153,6 +179,29 @@ Undoing each feature's rule in the model fails it, on two shared cores here:
 | Settling, joining and finishing wake gated nodes | `Terminates` | `MCCreator` | 10 min |
 | A reflow makes its node run | `ReflowRan` | `MCReflowBack` | 5 s |
 
+Extending the model to creation, keyed reruns, async source blocks, `defer` and shutdown (2026-11-27)
+found one more fault in v0.5.0's engine: a run task dropped because its runtime shut down failed its
+node, but told none of its children, which had been released already, at the run's first poll or as it
+finalized: one under `resilience = NONE` or `PARTIAL` stayed `Ready` beside its failed parent.
+`ResilienceConsistent` fails on `MCShutdown` in 46 seconds. The node now tells the children of the
+epochs the dropped run served through child epochs, as a run failing after its release does. Edge
+test: `a_runtime_shutting_down_fails_the_strict_children_of_its_runs`; kept mutation W8.
+
+Undoing each new rule fails the model:
+
+| Undone | Fails | Model | Time |
+| --- | --- | --- | --- |
+| A shutdown tells the children of the dropped run's epochs | `ResilienceConsistent` | `MCShutdown` | 7 s |
+| A node decides nothing before its seed | `SeededFirst` | `MCCreate` | 9 s |
+| Linking opens entries in the epochs a parent still owes | `ScopeConsistent` | `MCCreate` | 2.5 min |
+| A poll's creations are delivered with its batch | `Terminates` | `MCCreateRun` | 31 s |
+| A keyed node waits until its creator's run reclaims it | `CreatorFirst` | `MCKeyedRerun` | 33 s |
+| A reclaim with new captures reruns its node | `RefreshRan` | `MCKeyedRerun` | 7 s |
+| A write cancels the block's run | `BlocksStop` | `MCBlock` | 3 s |
+| A run start closes a stopped block's epochs | `BlocksStop` | `MCBlock` | 4 s |
+| A deferred function fires once its epoch has settled | `DeferAfterChanges` | `MCDefer` | 2 s |
+| A deferred function holds a scope token until its writes are delivered | `DefersRan` | `MCDefer` | 3 s |
+
 ## Lifetimes
 
 ### What it models
@@ -174,11 +223,13 @@ Undoing each feature's rule in the model fails it, on two shared cores here:
   operation: support's references, bodies and generations are released, the ghosts leave their parents,
   and their members, targets and surviving descendants are swept once it ends; a node created with only
   torn-down ghosts for parents is disposed of at once, and one created under a torn-down creator is held
-  by neither its creator nor support.
+  by neither its creator nor support; a node linked to a ghost after the walk, before the ghost was torn
+  down, is handled by that teardown: disposed of with it if all its parents are ghosts, swept as a
+  survivor otherwise.
 
 A sweep reads anchor counts while other threads drop handles, so it may count any anchor that fell
-during it. Not modelled: values, scheduling (in `Scheduling.tla`), and children linked to a node while
-disposal tears it down. The loom models and the edge tests cover those.
+during it. Not modelled: values and scheduling (in `Scheduling.tla`). The loom models and the edge
+tests cover those.
 
 ### Properties
 
@@ -191,6 +242,7 @@ disposal tears it down. The loom models and the edge tests cover those.
 | `SupportHolds` | Once lithia has nothing left to do, support holds every unscoped top-level node with parents that an anchor reaches, except ghosts. |
 | `GenerationsExact` | A node is in its creator's generation exactly when it names that creator, and a holdover holds only keyed members of it. |
 | `GhostsReleased` | A torn-down ghost holds nothing, and support never holds it. |
+| `OrphansDisposed` | Once lithia has nothing left to do, a node whose parents are all ghosts is a ghost too. |
 | `Terminates` | Under weak fairness, every behaviour reaches a state with nothing left to do. |
 
 ### Models
@@ -203,6 +255,7 @@ disposal tears it down. The loom models and the edge tests cover those.
 | `MCScoped` | A scoped effect, its dependent, and a writer whose body keeps the dependent alive. | 77 166 |
 | `MCKeyed` | An effect creates a keyed source in its run, and a top-level effect on it is created, which only the creation edge supports; the creator's next run holds the source over, then reclaims it or ends and releases it. | 53 870 |
 | `MCDisposal` | Sources `a` and `b`, an effect `e` on both and a child `d` of `e`, created later: disposing of `b` leaves `e` a survivor that `a` alone supports; disposing of `e` takes `d` with it, or `d` is created with only a ghost for a parent. | 71 693 |
+| `MCLateChild` | Sources `a` and `b`, and effects `c` on `a` and `d` on both, created while `a`'s disposal is under way: linked after the walk, before `a` closed, `c` is disposed of and `d` survives; linked after `a` closed, a child disposes of itself. | 13 842 |
 
 ### Findings
 
@@ -247,6 +300,14 @@ Undoing each rule of the new parts fails the model:
 | A ghost is never an anchor | `NoLeak` | `MCDisposal` | 5 min |
 | Teardown sweeps the survivors | `NoLeak` | `MCDisposal` | 35 s |
 | A run's end sweeps the holdover it releases | `NoLeak` | `MCKeyed` | 4 min |
+
+Extending it to children linked to a node while disposal tears it down (2026-11-27) found no fault:
+the engine's teardown already hands back the children linked after its walk. Undoing that fails the
+model:
+
+| Undone | Fails | Model | Time |
+| --- | --- | --- | --- |
+| A teardown disposes of a late child whose parents are all ghosts | `OrphansDisposed` | `MCLateChild` | 5 s |
 
 ## Running
 

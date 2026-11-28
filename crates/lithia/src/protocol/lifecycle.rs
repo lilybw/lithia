@@ -378,8 +378,18 @@ pub(crate) fn finalize(node: &NodeRef, shared: &Arc<RunControl>, end: End) -> To
 
 /// Gives up on a node whose run task was dropped because its runtime shut down (spec §11.3).
 pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunControl>) -> Tokens {
-    let mut pending: Tokens = finalize(node, shared, End::Shutdown);
     let header: &Header = node.header();
+    // The epochs the dropped run served: their children are told of the failure (spec §9.2).
+    let served: ServedEpochs = {
+        let guard: SchedGuard<'_> = header.lock_sched();
+        match &guard.run {
+            Some(slot) if slot.id == shared.id() => {
+                slot.served.iter().map(|s: &Served| (s.epoch.clone(), s.writers.clone())).collect()
+            }
+            _ => Vec::new(),
+        }
+    };
+    let mut pending: Tokens = finalize(node, shared, End::Shutdown);
     let mut work: Work = Work::default();
     {
         let mut guard: SchedGuard<'_> = header.lock_sched();
@@ -400,10 +410,15 @@ pub(crate) fn abandon(node: &NodeRef, shared: &Arc<RunControl>) -> Tokens {
         let handover: ServedList = std::mem::take(&mut sched.handover);
         close_served(node, sched, handover, &mut work);
     }
-    if !header.is_ghost() {
+    let ghost: bool = header.is_ghost();
+    if !ghost {
         header.fail(Failure::new("runtime shut down", *header.site));
     }
     pending.append(drain_deferred(work));
+    if !ghost && !served.is_empty() {
+        // They were released before the node failed: the failure reaches them as an item that changed nothing.
+        pending.append(deliver_children(node, &served, Batch::default(), Stamp::NONE, true));
+    }
     pending
 }
 
