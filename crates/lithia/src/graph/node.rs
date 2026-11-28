@@ -73,7 +73,7 @@ pub(crate) enum Body<K: NodeValue> {
 /// Internal record of one node; type-erased behind every handle.
 pub(crate) struct Node<K: NodeValue> {
     pub(crate) header: Header,
-    /// Emptied only by disposal under `disposed = FAIL`.
+    /// Emptied only by disposal under `disposed = FAIL` (spec §5.2, §10.5).
     pub(crate) value: ArcCell<K>,
     /// Empty for source nodes; taken on disposal.
     pub(crate) body: Mutex<BodySlot<K>>,

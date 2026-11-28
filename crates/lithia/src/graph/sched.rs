@@ -203,7 +203,8 @@ impl Sched {
         self.handover.iter_mut().find(|s: &&mut Served| s.epoch.id == epoch && !s.released)
     }
 
-    /// The live subscribers in id order, pruning freed ones; the caller drops them after unlocking.
+    /// The live subscribers in id order, the order ties break in (spec §7.5), pruning freed ones;
+    /// the caller drops them after unlocking.
     pub(crate) fn children(&mut self) -> Children {
         self.subscribers.live()
     }

@@ -65,9 +65,11 @@ jobs:
         if: matrix.suite == 'tests' && matrix.os == 'ubuntu-latest'
         run: cargo fmt --all --check
 
-      - name: Harness tools
+      - name: Harness tools, and the code's citations of the spec
         if: matrix.suite == 'tests' && matrix.os == 'ubuntu-latest'
-        run: python3 -m unittest discover -s .claude/tools -q
+        run: |
+          python3 -m unittest discover -s .claude/tools -q
+          python3 .github/scripts/spec_refs.py --check
 
       - name: Lint
         if: matrix.suite == 'tests'

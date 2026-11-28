@@ -6,9 +6,10 @@
 
   check.py [quick|full] [--only STEP,...]
 
-`quick` (the default): fmt, clippy, rustdoc, the workspace tests and the harness tools.
+`quick` (the default): fmt, clippy, rustdoc, the workspace tests, the harness tools and the spec
+citations.
 `full`: also clippy under `--cfg lithia_loom` and the loom models with and without the fast path.
-Steps: fmt, clippy, clippy-loom, doc, test, loom, loom-slow, tools. Exits 1 if any step fails.
+Steps: fmt, clippy, clippy-loom, doc, test, loom, loom-slow, tools, spec-refs. Exits 1 if any fails.
 """
 
 from __future__ import annotations
@@ -48,8 +49,9 @@ STEPS: list[Step] = [
     Step("loom-slow", ["cargo", "test", "-p", "lithia-test", "--test", "loom", "--release", "--locked"],
          {**LOOM, "LITHIA_LOOM_FAST_PATH": "off"}),
     Step("tools", [sys.executable, "-m", "unittest", "discover", "-s", ".claude/tools", "-q"]),
+    Step("spec-refs", [sys.executable, ".github/scripts/spec_refs.py", "--check"]),
 ]
-QUICK: list[str] = ["fmt", "clippy", "doc", "test", "tools"]
+QUICK: list[str] = ["fmt", "clippy", "doc", "test", "tools", "spec-refs"]
 
 
 def summary(step: Step, output: str) -> str:

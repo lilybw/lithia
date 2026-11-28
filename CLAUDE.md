@@ -22,6 +22,10 @@ conventions, `docs/VERIFICATION.md` what checks it, `docs/known_bugs.md` what is
   search it by path. Each header records its source's hash: `.claude/generate-outlines.py --status`
   says which are stale, CI's `outlines` workflow tabulates it on every push, and running the script
   without arguments brings them up to date.
+- The code cites the spec where it implements it, as `spec §7.4`: `python3 .github/scripts/spec_refs.py
+  7.4` lists those places (`--file PATH` the reverse, `--coverage` every section's count), and
+  `--check`, part of `check.py`, fails on a citation of a section the spec doesn't have. Cite the
+  section in the doc comment or a comment of the code you write that implements it.
 
 ## Checks
 

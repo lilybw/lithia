@@ -18,7 +18,9 @@ version replaces the file (git history keeps the old one); from 1.0 each release
    TLA+, loom, cargo-mutants, a test, a user report, and so on.
 5. Reprint the PDF: `python3 .github/scripts/spec_pdf.py` (pandoc and Playwright's Chromium), then
    check the new text is in it: `pdftotext docs/spec/LITHIA_design_spec_v*.pdf - | grep -c "PHRASE"`.
-6. If the README's example or claims are affected, update them; the example is a doctest
+6. Renumbering or removing a section breaks the code's citations of it: `python3
+   .github/scripts/spec_refs.py --check` lists them, and `spec_refs.py N.M` where a section is cited.
+7. If the README's example or claims are affected, update them; the example is a doctest
    (`cargo test -p lithia --doc`).
 
 A behaviour change also gets a validation case in `crates/validation` that pins it down, and the

@@ -241,6 +241,8 @@ class Rust:
                 tight = not prev
             if w == "!" and prev and (prev[-1].isalnum() or prev[-1] == "_"):
                 tight = True
+            if prev == "*" and w in ("mut", "const"):
+                tight = True  # a raw pointer, the only `*` in a signature
             text += w if tight else " " + w
             prev = w
         text = re.sub(r",\s*(?=[)\]}>])", "", text).rstrip(",")

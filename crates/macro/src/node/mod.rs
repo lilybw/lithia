@@ -35,6 +35,7 @@ pub(crate) fn expand(input: NodeInput) -> syn::Result<TokenStream> {
     let site: TokenStream = site(&input.tokens);
     let chains: Chains = Chains::of(&resolved);
     let Chains { bind, create: options, same: same_options }: &Chains = &chains;
+    // Without `init`, `K::default()`, or a compile error naming `init` when `K` has none (spec §4.4).
     let init: TokenStream = match &resolved.init {
         Some(init) => init.to_token_stream(),
         None => quote!(<_ as ::lithia::__private::InitDefault>::__lithia_init()),

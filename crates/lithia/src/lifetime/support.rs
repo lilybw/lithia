@@ -407,7 +407,7 @@ impl Search {
 }
 
 /// Marks `node` scoped: support and its run's generation let go of it, and only its own
-/// handles support it from now on.
+/// handles support it from now on (spec §10.2).
 pub(crate) fn scope(node: &NodeRef) {
     let _op: Operation = crate::lifetime::op::enter();
     let header: &Header = node.header();

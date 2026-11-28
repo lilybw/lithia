@@ -168,6 +168,7 @@ pub(crate) fn after_poll(
     );
     let mut failed: bool = false;
     if let Outcome::Panicked(message) = outcome {
+        // The node fails, and its children as their resilience says (spec §9.1, §9.2).
         diag::run_panicked(header.site, message);
         // Only the current run fails the node, as only it publishes: writes and run starts are held off.
         let _write: MutexGuard<'_, ()> = header.write.lock();

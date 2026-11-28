@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-//! The yielder a generator body publishes items through (spec §8.2).
+//! The yielder a generator body publishes items through (spec §3.6, §8).
 
 use super::*;
 

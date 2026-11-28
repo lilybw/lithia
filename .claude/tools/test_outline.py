@@ -62,6 +62,8 @@ mod tests {
     #[test]
     fn works() {}
 }
+
+unsafe fn raw(p: *mut u8) -> *const u8 { p }
 '''
 
 
@@ -93,6 +95,9 @@ class RustOutline(unittest.TestCase):
             self.assertIn(line, out)
         for absent in ("SPDX", "#[inline]", "nested", "hidden", "trailing note", "use std::fmt"):
             self.assertNotIn(absent, out)
+
+    def test_raw_pointers(self) -> None:
+        self.assertIn("   55 unsafe fn raw(p: *mut u8) -> *const u8", outline_rust(RUST, False))
 
     def test_attribute_line_numbers(self) -> None:
         lines: list[str] = outline_rust(RUST, False)

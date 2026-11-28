@@ -185,6 +185,7 @@ impl<K: NodeValue> RunFuture<K> {
         let outcome: Outcome = context::entered(&frame, || {
             let polled: Result<Polled<K>, PanicPayload> = {
                 let _paused: crate::exec::fast_path::Paused = crate::exec::fast_path::pause();
+                // A panic in the body ends the run and fails its node (spec §9.1).
                 catch_unwind(AssertUnwindSafe(|| match state {
                     RunState::Sync(f) => Poll::Ready(Some(f())),
                     RunState::Item(future) => future.as_mut().poll(cx).map(Some),

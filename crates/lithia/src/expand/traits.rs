@@ -11,7 +11,7 @@
     note = "derived nodes and async source nodes start with `init`, or `K::default()` when it is left out"
 )]
 pub trait InitDefault: Sized {
-    /// The value a node starts with when `init` is left out.
+    /// The value a node starts with when `init` is left out (spec §4.4).
     fn __lithia_init() -> Self;
 }
 
