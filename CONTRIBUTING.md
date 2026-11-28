@@ -9,9 +9,9 @@ keeping the code, the tests and the spec in step.
 2. Open a pull request into `nightly`. CI ([`ci.yml`](.github/workflows/ci.yml)) must pass, and the
    maintainer reviews. The slower checks of [`extended.yml`](.github/workflows/extended.yml) run too but
    do not gate a merge. [`docs/VERIFICATION.md`](docs/VERIFICATION.md) lists what each one runs.
-3. Once merged, the push to `nightly` is released as the next `v<version>.<n>` and the docs site is
-   rebuilt. A `nightly` commit on which the extended checks have passed too is a release candidate, which
-   the maintainer may publish to crates.io (below).
+3. Once merged, the push to `nightly` runs the full test matrix again. A `nightly` commit on which the
+   extended checks have passed too is a release candidate, which the maintainer may publish to crates.io
+   (below); a published version becomes a GitHub release, and the docs site is rebuilt.
 
 Changes reach `nightly` through pull requests; the maintainer may also push directly.
 
@@ -33,13 +33,14 @@ publishes a release candidate, which Cargo picks only when asked for it.
   maintainer's approval. With `auth: trusted`, crates.io's trusted publishing gives the job a token
   that lives for the job only; set it up on crates.io for `publish.yml` and the `crates-io`
   environment once both crates exist. The first release needs `auth: token`: a token with only the
-  `publish-new` and `publish-update` scopes for the two crates, stored as the environment's
-  `CARGO_REGISTRY_TOKEN` secret, with its expiry date as the environment's `CRATES_IO_TOKEN_EXPIRES`
-  variable. The job refuses a token that expires more than seven days ahead, or that can read
-  `/api/v1/me`, which only a token not limited by scopes can; afterwards it revokes the token, so each
-  token publishes once.
-- **Afterwards.** The job tags `v<version>` and makes a GitHub release with both packages and the
-  spec PDF. A run that failed between the two crates can be run again: a crate crates.io has is skipped.
+  `publish-new` and `publish-update` scopes for the two crates, stored as the `CRATES_IO_PUBLISH`
+  secret (of the repository, or of the environment, which keeps it from other jobs), with its expiry
+  date as the `CRATES_IO_TOKEN_EXPIRES` variable. The job refuses a token that expires more than seven
+  days ahead, or that can read `/api/v1/me`, which only a token not limited by scopes can; afterwards it
+  revokes the token, so each token publishes once.
+- **Afterwards.** The job tags `v<version>` and makes a GitHub release with both packages, the docs and
+  the spec PDF, then rebuilds the docs site (not for a pre-release). A run that failed between the two
+  crates can be run again: a crate crates.io has is skipped.
 
 ## Layout
 

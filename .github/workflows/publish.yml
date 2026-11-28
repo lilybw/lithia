@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       auth:
-        description: "trusted: crates.io trusted publishing; token: the crates-io environment's CARGO_REGISTRY_TOKEN, which must expire within a week"
+        description: "trusted: crates.io trusted publishing; token: the CRATES_IO_PUBLISH secret, which must expire within a week"
         required: true
         type: choice
         options: [trusted, token]
@@ -87,6 +87,14 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps -p lithate -p lithia-macro --locked
 
+      - name: Install pandoc
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends pandoc
+
+      - name: The docs site's pages for this version, API reference and spec
+        run: |
+          python3 .github/scripts/site.py snapshot --version "$VERSION" --out target/site-snapshot
+          tar -czf "target/package/lithia-docs-v$VERSION.tar.gz" -C target/site-snapshot api spec
+
       - name: Install cargo-semver-checks
         if: needs.candidate.outputs.previous != ''
         uses: taiki-e/install-action@v2
@@ -106,6 +114,7 @@ jobs:
           path: |
             target/package/lithia-macro-${{ inputs.version }}.crate
             target/package/lithate-${{ inputs.version }}.crate
+            target/package/lithia-docs-v${{ inputs.version }}.tar.gz
           if-no-files-found: error
 
   publish:
@@ -132,20 +141,20 @@ jobs:
       - name: The environment's token, refused unless it expires within a week and only publishes
         if: inputs.auth == 'token'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_PUBLISH }}
           CRATES_IO_TOKEN_EXPIRES: ${{ vars.CRATES_IO_TOKEN_EXPIRES }}
         run: python3 .github/scripts/release.py token
 
       - name: lithia-macro, then lithate, skipping either crates.io has
         env:
-          CARGO_REGISTRY_TOKEN: ${{ inputs.auth == 'trusted' && steps.trusted.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ inputs.auth == 'trusted' && steps.trusted.outputs.token || secrets.CRATES_IO_PUBLISH }}
         run: python3 .github/scripts/release.py publish --version "$VERSION"
 
       # Whatever happened, a stored token has been in a job; it publishes nothing more.
       - name: Revoke the environment's token
         if: always() && inputs.auth == 'token'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_PUBLISH }}
         run: python3 .github/scripts/release.py revoke
 
       - uses: actions/download-artifact@v4
@@ -153,7 +162,7 @@ jobs:
           name: packages
           path: target/dist
 
-      - name: Tag and GitHub release, with the packages and the spec
+      - name: Tag and GitHub release, with the packages, the docs and the spec
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.candidate.outputs.tag }}
@@ -167,3 +176,13 @@ jobs:
           if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
           gh release create "$TAG" target/dist/* --target "$GITHUB_SHA" --title "lithia $VERSION" \
             --notes-file target/release-notes.md "${flags[@]}"
+
+  # The docs site lists every release; pre-releases stay off it.
+  pages:
+    needs: [candidate, publish]
+    if: ${{ !inputs.dry-run && needs.candidate.outputs.prerelease != 'true' }}
+    uses: ./.github/workflows/pages.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
