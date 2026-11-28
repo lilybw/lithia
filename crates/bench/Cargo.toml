@@ -11,6 +11,7 @@ homepage = "https://lilybw.com/lithia/"
 documentation = "https://lilybw.com/lithia/api/lithia/"
 
 [dependencies]
+core_affinity = { workspace = true }
 lithia = { workspace = true }
 tokio = { workspace = true }
 

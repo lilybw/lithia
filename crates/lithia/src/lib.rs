@@ -63,6 +63,10 @@ pub mod __private {
     pub use crate::site::{SiteCounter, fn_path};
     pub use tokio;
 
+    /// The sweep lock's figures; only under `--cfg lithia_lock_stats`.
+    #[cfg(all(lithia_lock_stats, not(lithia_loom)))]
+    pub use crate::lifetime::sweep_lock::stats as sweep_lock_stats;
+
     /// Executor and harness for loom models; only under `--cfg lithia_loom`.
     #[cfg(lithia_loom)]
     pub mod model {

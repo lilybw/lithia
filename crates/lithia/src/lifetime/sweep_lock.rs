@@ -10,6 +10,84 @@
 #[cfg(lithia_loom)]
 pub(crate) type SweepGuard<'a> = crate::sync::MutexGuard<'a, ()>;
 
+/// The sweep lock's acquisitions and the time spent waiting for it and holding it, in a build with
+/// `--cfg lithia_lock_stats`, for the scaling benchmark.
+#[cfg(all(lithia_lock_stats, not(lithia_loom)))]
+pub mod stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    static ACQUIRED: AtomicU64 = AtomicU64::new(0);
+    static WAITED_NS: AtomicU64 = AtomicU64::new(0);
+    static HELD_NS: AtomicU64 = AtomicU64::new(0);
+    static LONGEST_NS: AtomicU64 = AtomicU64::new(0);
+
+    /// What the lock went through since the last `take`.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct LockStats {
+        /// Times the lock was taken.
+        pub acquired: u64,
+        /// Time spent waiting to take it, over all acquisitions.
+        pub waited: Duration,
+        /// Time it was held, over all acquisitions.
+        pub held: Duration,
+        /// The longest single hold.
+        pub longest: Duration,
+    }
+
+    /// Returns the figures gathered since the last call and starts again from zero.
+    pub fn take() -> LockStats {
+        LockStats {
+            acquired: ACQUIRED.swap(0, Ordering::Relaxed),
+            waited: Duration::from_nanos(WAITED_NS.swap(0, Ordering::Relaxed)),
+            held: Duration::from_nanos(HELD_NS.swap(0, Ordering::Relaxed)),
+            longest: Duration::from_nanos(LONGEST_NS.swap(0, Ordering::Relaxed)),
+        }
+    }
+
+    pub(crate) fn acquired(waited: Duration) {
+        ACQUIRED.fetch_add(1, Ordering::Relaxed);
+        WAITED_NS.fetch_add(waited.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn released(held: Duration) {
+        let nanos: u64 = held.as_nanos() as u64;
+        HELD_NS.fetch_add(nanos, Ordering::Relaxed);
+        LONGEST_NS.fetch_max(nanos, Ordering::Relaxed);
+    }
+}
+
+/// The sweep lock as held, timed in a build with `--cfg lithia_lock_stats`.
+pub(crate) struct Held<'a> {
+    _guard: SweepGuard<'a>,
+    #[cfg(all(lithia_lock_stats, not(lithia_loom)))]
+    since: std::time::Instant,
+}
+
+impl<'a> Held<'a> {
+    /// Takes `lock` with `take`, timing the wait when stats are on.
+    #[inline]
+    pub(crate) fn take(take: impl FnOnce() -> SweepGuard<'a>) -> Held<'a> {
+        #[cfg(all(lithia_lock_stats, not(lithia_loom)))]
+        {
+            let start: std::time::Instant = std::time::Instant::now();
+            let guard: SweepGuard<'a> = take();
+            let since: std::time::Instant = std::time::Instant::now();
+            stats::acquired(since - start);
+            Held { _guard: guard, since }
+        }
+        #[cfg(not(all(lithia_lock_stats, not(lithia_loom))))]
+        Held { _guard: take() }
+    }
+}
+
+#[cfg(all(lithia_lock_stats, not(lithia_loom)))]
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        stats::released(self.since.elapsed());
+    }
+}
+
 #[cfg(not(lithia_loom))]
 pub(crate) use imp::{SweepGuard, SweepLock};
 

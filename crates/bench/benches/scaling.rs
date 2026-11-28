@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! How lithia's shared state behaves as threads are added, for the 8–64 cores it targets (spec §15).
-//! Run on purpose: `cargo bench -p lithia-bench --bench scaling`; `LITHIA_BENCH_THREADS=1,8,64` picks counts.
+//! Run on purpose: `cargo bench -p lithia-bench --bench scaling`; `LITHIA_BENCH_THREADS=1,8,64` picks counts,
+//! `LITHIA_BENCH_PIN=dense|spread` pins worker threads, and `--cfg lithia_lock_stats` adds the sweep lock's figures.
 
 #![allow(clippy::type_complexity)]
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,8 +28,53 @@ const BENCHES: &[Scaling] = &[
     },
     Scaling {
         name: "sweeps",
-        reads: "Each thread creates 2 000 effects support holds, then drops its hub at once (the sweep lock): per creation / per sweep",
+        reads: "Each thread creates 2 000 effects support holds, then drops its hub at once: per creation / per drop, sweep and freeing, median (fastest–slowest)",
         measure: sweeps,
+    },
+    Scaling {
+        name: "sweep-10",
+        reads: "Each thread drops a hub of 10 effects support holds, all at once: per sweep, median (fastest–slowest thread)",
+        measure: sweep_10,
+    },
+    Scaling {
+        name: "sweep-100",
+        reads: "The same with 100 effects per hub: per sweep, median (fastest–slowest thread)",
+        measure: sweep_100,
+    },
+    Scaling {
+        name: "sweep-kept",
+        reads: "2 000 effects per hub, each also reading an anchored source: the sweep walks them all and lets go of none",
+        measure: sweep_kept,
+    },
+    Scaling {
+        name: "sweep-turns",
+        reads: "2 000 effects per hub, the hubs dropped one at a time: one sweep's cost with that many graphs alive",
+        measure: sweep_turns,
+    },
+    Scaling {
+        name: "churn",
+        reads: "Each thread creates a hub and 10 effects, flushes and drops the hub, 200 times: per cycle, median (fastest–slowest)",
+        measure: churn,
+    },
+    Scaling {
+        name: "create-source",
+        reads: "Each thread creates 2 000 plain source nodes, then drops them: per creation / per free, median (fastest–slowest)",
+        measure: create_source,
+    },
+    Scaling {
+        name: "create-shared",
+        reads: "Each thread creates 2 000 effects on one hub all threads share: per creation, median (fastest–slowest)",
+        measure: create_shared,
+    },
+    Scaling {
+        name: "alloc",
+        reads: "No lithia: each thread allocates 2 000 node-sized boxes, then frees them: per allocation / per free",
+        measure: alloc,
+    },
+    Scaling {
+        name: "counter",
+        reads: "No lithia: each thread adds to one shared counter, as every creation does to NodeId's: per addition",
+        measure: counter,
     },
     Scaling {
         name: "clock",
@@ -58,7 +104,44 @@ const BENCHES: &[Scaling] = &[
 ];
 
 fn runtime(threads: usize) -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build().unwrap()
+    let mut builder: tokio::runtime::Builder = tokio::runtime::Builder::new_multi_thread();
+    builder.worker_threads(threads).enable_all();
+    if let Some(order) = pin_order() {
+        // The workers start first; threads of the blocking pool, started later, stay unpinned.
+        let started: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        builder.on_thread_start(move || {
+            let index: usize = started.fetch_add(1, Ordering::Relaxed);
+            if index < threads {
+                core_affinity::set_for_current(order[index % order.len()]);
+            }
+        });
+    }
+    builder.build().unwrap()
+}
+
+/// The logical CPUs to pin workers to, in order: `LITHIA_BENCH_PIN=dense` takes them as numbered,
+/// `spread` every other one first, which on most machines is one per physical core first.
+fn pin_order() -> Option<Vec<core_affinity::CoreId>> {
+    let mode: String = std::env::var("LITHIA_BENCH_PIN").ok()?;
+    let cores: Vec<core_affinity::CoreId> = core_affinity::get_core_ids()?;
+    match mode.as_str() {
+        "dense" => Some(cores),
+        "spread" => Some(cores.iter().step_by(2).chain(cores.iter().skip(1).step_by(2)).copied().collect()),
+        _ => None,
+    }
+}
+
+/// The median and the range of per-thread durations, each divided by `count`.
+fn spread(mut each: Vec<Duration>, count: u64) -> String {
+    each.sort_unstable();
+    if each.is_empty() {
+        return "-".to_string();
+    }
+    let median: Duration = each[each.len() / 2];
+    if each.len() == 1 {
+        return per(median, count);
+    }
+    format!("{} ({}–{})", per(median, count), per(each[0], count), per(each[each.len() - 1], count))
 }
 
 fn per(duration: Duration, count: u64) -> String {
@@ -138,47 +221,247 @@ fn last_handle_drops(threads: usize) -> String {
     per(each, DROPS)
 }
 
-/// Each of `threads` tasks creates effects support holds on a hub of its own, then all drop their hubs.
-fn sweeps(threads: usize) -> String {
-    const WATCHERS: u64 = 2_000;
+/// How the hubs of [`hubs`] are dropped.
+#[derive(Clone, Copy, PartialEq)]
+enum Drops {
+    /// All at once.
+    Together,
+    /// One at a time, so no two sweeps overlap.
+    Turns,
+}
+
+/// Each of `threads` tasks creates `watchers` effects support holds on a hub of its own, then drops
+/// the hub; with `kept`, each effect also reads an anchored source of its task, so the sweep lets go of
+/// none. Returns each task's time per creation and its drop's time, which includes freeing.
+fn hubs(threads: usize, watchers: u64, kept: bool, drops: Drops) -> (Vec<Duration>, Vec<Duration>) {
     let rt: tokio::runtime::Runtime = runtime(threads);
-    let (create, sweep): (Duration, Duration) = rt.block_on(lithia_task(async move {
+    rt.block_on(lithia_task(async move {
         let barrier: Arc<tokio::sync::Barrier> = Arc::new(tokio::sync::Barrier::new(threads));
+        let turns: Arc<tokio::sync::Mutex<()>> = Arc::new(tokio::sync::Mutex::new(()));
         let times: Arc<Mutex<Vec<(Duration, Duration)>>> = Arc::new(Mutex::new(Vec::new()));
         let tasks: Vec<lithia::JoinHandle<()>> = (0..threads)
             .map(|_| {
                 let barrier: Arc<tokio::sync::Barrier> = barrier.clone();
+                let turns: Arc<tokio::sync::Mutex<()>> = turns.clone();
                 let times: Arc<Mutex<Vec<(Duration, Duration)>>> = times.clone();
                 lithia::spawn(async move {
                     let hub: SourceNode<u64> = node!(0);
+                    let keep: SourceNode<u64> = node!(0);
                     barrier.wait().await;
                     let start: Instant = Instant::now();
-                    for _ in 0..WATCHERS {
-                        node!(|hub| {
-                            let _ = hub.get();
-                        });
+                    for _ in 0..watchers {
+                        if kept {
+                            node!(|hub, keep| {
+                                let _ = (hub.get(), keep.get());
+                            });
+                        } else {
+                            node!(|hub| {
+                                let _ = hub.get();
+                            });
+                        }
                     }
                     let create: Duration = start.elapsed();
                     lithia::flush().await;
                     barrier.wait().await;
+                    let turn: Option<tokio::sync::MutexGuard<'_, ()>> =
+                        if drops == Drops::Turns { Some(turns.lock().await) } else { None };
                     let start: Instant = Instant::now();
-                    drop(hub); // one sweep lets go of every watcher
+                    drop(hub);
                     let sweep: Duration = start.elapsed();
+                    drop(turn);
                     times.lock().unwrap().push((create, sweep));
+                    barrier.wait().await;
+                    drop(keep); // the kept effects go now, unmeasured
+                    lithia::flush().await;
                 })
             })
             .collect();
         for task in tasks {
             task.await.unwrap();
         }
-        let (mut create, mut sweep): (Duration, Duration) = (Duration::ZERO, Duration::ZERO);
-        for (c, s) in times.lock().unwrap().iter() {
-            create += *c;
-            sweep += *s;
+        let times: Vec<(Duration, Duration)> = times.lock().unwrap().clone();
+        (
+            times.iter().map(|(c, _): &(Duration, Duration)| *c).collect(),
+            times.iter().map(|(_, s): &(Duration, Duration)| *s).collect(),
+        )
+    }))
+}
+
+/// Each of `threads` tasks creates effects support holds on a hub of its own, then all drop their hubs.
+fn sweeps(threads: usize) -> String {
+    const WATCHERS: u64 = 2_000;
+    let (create, sweep): (Vec<Duration>, Vec<Duration>) = hubs(threads, WATCHERS, false, Drops::Together);
+    let mean: Duration = create.iter().sum::<Duration>() / create.len().max(1) as u32;
+    format!("{} / {}", per(mean, WATCHERS), spread(sweep, 1))
+}
+
+fn sweep_10(threads: usize) -> String {
+    spread(hubs(threads, 10, false, Drops::Together).1, 1)
+}
+
+fn sweep_100(threads: usize) -> String {
+    spread(hubs(threads, 100, false, Drops::Together).1, 1)
+}
+
+fn sweep_kept(threads: usize) -> String {
+    spread(hubs(threads, 2_000, true, Drops::Together).1, 1)
+}
+
+fn sweep_turns(threads: usize) -> String {
+    spread(hubs(threads, 2_000, false, Drops::Turns).1, 1)
+}
+
+/// Runs `body` on `threads` lithia tasks started together and returns each task's elapsed time.
+fn on_tasks<F, Fut>(threads: usize, body: F) -> Vec<Duration>
+where
+    F: Fn(usize) -> Fut + Send + Sync + Clone + 'static,
+    Fut: std::future::Future<Output = Duration> + Send + 'static,
+{
+    let rt: tokio::runtime::Runtime = runtime(threads);
+    rt.block_on(lithia_task(async move {
+        let times: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
+        let tasks: Vec<lithia::JoinHandle<()>> = (0..threads)
+            .map(|index: usize| {
+                let times: Arc<Mutex<Vec<Duration>>> = times.clone();
+                let body: F = body.clone();
+                lithia::spawn(async move {
+                    let took: Duration = body(index).await;
+                    times.lock().unwrap().push(took);
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
         }
-        (create / threads as u32, sweep / threads as u32)
-    }));
-    format!("{} / {}", per(create, WATCHERS), per(sweep, 1))
+        let times: Vec<Duration> = times.lock().unwrap().clone();
+        times
+    }))
+}
+
+/// Each task creates a hub and 10 effects on it, flushes and drops the hub, again and again.
+fn churn(threads: usize) -> String {
+    const CYCLES: u64 = 200;
+    let barrier: Arc<tokio::sync::Barrier> = Arc::new(tokio::sync::Barrier::new(threads));
+    let each: Vec<Duration> = on_tasks(threads, move |_: usize| {
+        let barrier: Arc<tokio::sync::Barrier> = barrier.clone();
+        async move {
+            barrier.wait().await;
+            let start: Instant = Instant::now();
+            for _ in 0..CYCLES {
+                let hub: SourceNode<u64> = node!(0);
+                for _ in 0..10 {
+                    node!(|hub| {
+                        let _ = hub.get();
+                    });
+                }
+                lithia::flush().await;
+                drop(hub);
+            }
+            start.elapsed()
+        }
+    });
+    spread(each, CYCLES)
+}
+
+/// Each task creates plain source nodes, which link to nothing, then drops them, which frees them.
+fn create_source(threads: usize) -> String {
+    const NODES: u64 = 2_000;
+    let barrier: Arc<tokio::sync::Barrier> = Arc::new(tokio::sync::Barrier::new(threads));
+    let frees: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
+    let freed: Arc<Mutex<Vec<Duration>>> = frees.clone();
+    let each: Vec<Duration> = on_tasks(threads, move |_: usize| {
+        let barrier: Arc<tokio::sync::Barrier> = barrier.clone();
+        let frees: Arc<Mutex<Vec<Duration>>> = frees.clone();
+        async move {
+            let mut kept: Vec<SourceNode<u64>> = Vec::with_capacity(NODES as usize);
+            barrier.wait().await;
+            let start: Instant = Instant::now();
+            for value in 0..NODES {
+                kept.push(node!(value));
+            }
+            let took: Duration = start.elapsed();
+            barrier.wait().await;
+            let start: Instant = Instant::now();
+            drop(kept);
+            frees.lock().unwrap().push(start.elapsed());
+            took
+        }
+    });
+    let frees: Vec<Duration> = freed.lock().unwrap().clone();
+    format!("{} / {}", spread(each, NODES), spread(frees, NODES))
+}
+
+/// Every task creates effects on one hub they all share.
+fn create_shared(threads: usize) -> String {
+    const WATCHERS: u64 = 2_000;
+    let barrier: Arc<tokio::sync::Barrier> = Arc::new(tokio::sync::Barrier::new(threads));
+    let hub: SourceNode<u64> = node!(0);
+    let each: Vec<Duration> = on_tasks(threads, move |_: usize| {
+        let barrier: Arc<tokio::sync::Barrier> = barrier.clone();
+        let hub: SourceNode<u64> = hub.clone();
+        async move {
+            barrier.wait().await;
+            let start: Instant = Instant::now();
+            for _ in 0..WATCHERS {
+                node!(|hub| {
+                    let _ = hub.get();
+                });
+            }
+            start.elapsed()
+        }
+    });
+    spread(each, WATCHERS)
+}
+
+/// About the size of a node record, so the allocator sees what creations ask of it.
+type NodeSized = [u64; 112];
+
+/// No lithia: each task allocates boxes the size of a node, then frees them.
+fn alloc(threads: usize) -> String {
+    const BOXES: u64 = 2_000;
+    let barrier: Arc<tokio::sync::Barrier> = Arc::new(tokio::sync::Barrier::new(threads));
+    let frees: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
+    let freed: Arc<Mutex<Vec<Duration>>> = frees.clone();
+    let each: Vec<Duration> = on_tasks(threads, move |_: usize| {
+        let barrier: Arc<tokio::sync::Barrier> = barrier.clone();
+        let frees: Arc<Mutex<Vec<Duration>>> = frees.clone();
+        async move {
+            let mut boxes: Vec<Box<NodeSized>> = Vec::with_capacity(BOXES as usize);
+            barrier.wait().await;
+            let start: Instant = Instant::now();
+            for value in 0..BOXES {
+                boxes.push(std::hint::black_box(Box::new([value; 112])));
+            }
+            let took: Duration = start.elapsed();
+            let start: Instant = Instant::now();
+            drop(std::hint::black_box(boxes));
+            frees.lock().unwrap().push(start.elapsed());
+            took
+        }
+    });
+    let frees: Vec<Duration> = freed.lock().unwrap().clone();
+    format!("{} / {}", spread(each, BOXES), spread(frees, BOXES))
+}
+
+/// One counter every task adds to, as every creation adds to the `NodeId` counter.
+static SHARED: AtomicU64 = AtomicU64::new(0);
+
+/// No lithia: each task adds to [`SHARED`] in a loop.
+fn counter(threads: usize) -> String {
+    const ADDS: u64 = 20_000;
+    let barrier: Arc<tokio::sync::Barrier> = Arc::new(tokio::sync::Barrier::new(threads));
+    let each: Vec<Duration> = on_tasks(threads, move |_: usize| {
+        let barrier: Arc<tokio::sync::Barrier> = barrier.clone();
+        async move {
+            barrier.wait().await;
+            let start: Instant = Instant::now();
+            for _ in 0..ADDS {
+                std::hint::black_box(SHARED.fetch_add(1, Ordering::SeqCst));
+            }
+            start.elapsed()
+        }
+    });
+    spread(each, ADDS)
 }
 
 /// Each of `threads` writers writes a node of its own, all starting together.
@@ -355,6 +638,26 @@ fn rebuild(threads: usize) -> String {
     per(elapsed, ROUNDS)
 }
 
+/// A cell, followed in a build with `--cfg lithia_lock_stats` by what the sweep lock went through
+/// while it was measured: acquisitions, mean and longest hold, mean wait.
+fn with_lock_stats(measure: impl FnOnce() -> String) -> String {
+    #[cfg(lithia_lock_stats)]
+    {
+        let _ = lithia::__private::sweep_lock_stats::take();
+        let cell: String = measure();
+        let stats: lithia::__private::sweep_lock_stats::LockStats = lithia::__private::sweep_lock_stats::take();
+        format!(
+            "{cell} [{} takes, held {} / {} max, waited {}]",
+            stats.acquired,
+            per(stats.held, stats.acquired),
+            per(stats.longest, 1),
+            per(stats.waited, stats.acquired)
+        )
+    }
+    #[cfg(not(lithia_lock_stats))]
+    measure()
+}
+
 fn main() {
     // Cargo passes `--bench`; nothing else is read from the command line.
     let counts: Vec<usize> = thread_counts();
@@ -373,7 +676,7 @@ fn main() {
         if only.as_deref().is_some_and(|list: &str| !list.split(',').any(|wanted: &str| wanted.trim() == bench.name)) {
             continue;
         }
-        let cells: Vec<String> = counts.iter().map(|n: &usize| (bench.measure)(*n)).collect();
+        let cells: Vec<String> = counts.iter().map(|n: &usize| with_lock_stats(|| (bench.measure)(*n))).collect();
         println!("| {} | {} | {} |", bench.name, cells.join(" | "), bench.reads);
     }
 }

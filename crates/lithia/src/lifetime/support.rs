@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use crate::graph::ids::NodeId;
 use crate::graph::node::{ChangeSender, Header, NodeRef, Parents, WeakNodeRef};
 use crate::lifetime::op::Operation;
-use crate::lifetime::sweep_lock::SweepGuard;
+use crate::lifetime::sweep_lock::Held;
 use crate::sync::MutexGuard;
 
 #[cfg(not(lithia_loom))]
@@ -70,7 +70,7 @@ pub(crate) fn add_anchors(header: &Header, count: usize, node: impl FnOnce() -> 
         let mut keep: Vec<NodeRef> = Vec::new();
         let mut held: Vec<&'static crate::Site> = Vec::new();
         {
-            let _lock: SweepGuard<'_> = SWEEP.lock();
+            let _lock: Held<'_> = Held::take(|| SWEEP.lock());
             if !header.is_ghost() && any_let_go() {
                 rehold(node(), &mut keep, &mut held);
             }
@@ -108,7 +108,7 @@ fn add_locked(header: &Header, count: usize, node: impl FnOnce() -> NodeRef) {
     let mut keep: Vec<NodeRef> = Vec::new();
     let mut held: Vec<&'static crate::Site> = Vec::new();
     {
-        let _lock: SweepGuard<'_> = SWEEP.lock();
+        let _lock: Held<'_> = Held::take(|| SWEEP.lock());
         let before: usize = header.lifetime.anchors.fetch_add(count, Ordering::SeqCst);
         if (before == 0 || before & RISING != 0) && !header.is_ghost() && any_let_go() {
             rehold(node(), &mut keep, &mut held);
@@ -123,7 +123,7 @@ pub(crate) fn add_writer(node: &NodeRef, targets: &[NodeRef]) {
     let mut keep: Vec<NodeRef> = Vec::new();
     let mut held: Vec<&'static crate::Site> = Vec::new();
     {
-        let _lock: SweepGuard<'_> = SWEEP.lock();
+        let _lock: Held<'_> = Held::take(|| SWEEP.lock());
         for target in targets {
             target.header().lifetime.writers.lock().push(std::sync::Arc::downgrade(node));
         }
@@ -240,7 +240,7 @@ fn needs_sweep(node: &NodeRef) -> bool {
 pub(crate) fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     let mut keep: Vec<NodeRef> = Vec::new();
     let raised: usize = starts.len();
-    let lock: SweepGuard<'_> = SWEEP.lock();
+    let lock: Held<'_> = Held::take(|| SWEEP.lock());
     // Before any count is read: a rise without the lock sees this sweep, or this sweep sees the rise.
     SWEEPING.fetch_add(1, Ordering::SeqCst);
     crate::sync::fence(Ordering::SeqCst);

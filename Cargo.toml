@@ -37,11 +37,14 @@ proc-macro2 = "1"
 trybuild = "1"
 loom = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Pins the scaling benchmark's threads (`LITHIA_BENCH_PIN`).
+core_affinity = "0.8"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = [
     "cfg(lithia_loom)",
     'cfg(lithia_sweep_lock, values("parking_lot", "fair", "std", "spin", "ticket"))',
+    "cfg(lithia_lock_stats)",
 ] }
 missing_debug_implementations = "allow"

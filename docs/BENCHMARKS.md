@@ -10,12 +10,25 @@ magnitude and relative costs: measure on your own machine before relying on them
 The spec rows run on one to four threads. `cargo bench -p lithia-bench --bench scaling` runs only when
 asked for, and measures lithia's shared state as threads are added: one column per thread count, the
 powers of two up to the machine's hardware threads and that count itself, or the counts in
-`LITHIA_BENCH_THREADS=1,8,64`. `LITHIA_BENCH` picks rows, as for the spec rows.
+`LITHIA_BENCH_THREADS=1,8,64`. `LITHIA_BENCH` picks rows, as for the spec rows. `LITHIA_BENCH_PIN=dense`
+pins worker `i` to logical CPU `i`, and `spread` to every other logical CPU first, which on most machines
+is one per physical core first; a build with `RUSTFLAGS="--cfg lithia_lock_stats"` follows each cell with
+what the sweep lock went through: acquisitions, mean and longest hold, mean wait. Rows that time one
+operation per thread give its median and, in brackets, the fastest and slowest thread: a wide range is
+threads waiting for each other.
 
 | Row | Shared state | A cell is | Reads well when |
 | --- | --- | --- | --- |
 | `last-handle` | the sweep lock | per last-handle drop, one dropping body per thread | flat: no contention |
-| `sweeps` | the sweep lock | per creation / per sweep, each thread creating 2 000 effects support holds, then all dropping their hubs at once | flat |
+| `sweeps` | the sweep lock, freeing | per creation / per hub drop (sweep and freeing), each thread creating 2 000 effects support holds, then all dropping their hubs at once | flat |
+| `sweep-10`, `sweep-100` | the sweep lock, freeing | per hub drop, with 10 or 100 effects per hub | flat |
+| `sweep-kept` | the sweep lock | per hub drop whose 2 000 effects also read an anchored source: the sweep walks them and lets go of none, so nothing is freed | flat |
+| `sweep-turns` | freeing, the allocator | per hub drop of 2 000 effects, the hubs dropped one at a time, so sweeps never overlap | flat: one sweep alone |
+| `churn` | all of them | per cycle of a hub and 10 effects created, flushed and dropped, 200 per thread | flat |
+| `create-source` | ids, the allocator | per creation / per free of plain source nodes, which link to nothing | flat |
+| `create-shared` | a hub's subscriber list | per effect created on one hub every thread shares | rising: one hub is one lock |
+| `alloc` | the allocator, no lithia | per allocation / per free of a node-sized box | flat |
+| `counter` | one atomic, no lithia | per addition to one shared counter, as each creation adds to `NodeId`'s | rising: it is one cache line |
 | `clock` | the version clock | per write, each thread writing a node of its own | flat |
 | `readers` | value cells | per write rerunning a 10-node chain on 2 workers, while that many threads read it | flat |
 | `fan-out` | runner tasks | per write to 1 000 children, on that many workers | falling: workers help |
@@ -23,17 +36,19 @@ powers of two up to the machine's hardware threads and that count itself, or the
 | `rebuild` | generations, drops | per rerun rebuilding 100 children, on that many workers | flat |
 
 A sweep-lock row that rises with threads while `clock` stays flat points at the sweep lock rather than at
-the machine. Record a run here with the machine's model and core count, as in the history below.
+the machine; with the lock's figures, a hold that stays flat while the wait grows is the lock's queue, a
+hold that grows is work under it, and a cell that grows while both stay small is elsewhere: `alloc` and
+`counter` show what the allocator and one shared counter cost alone. Record a run here with the machine's model and core count, as in the history below.
 
 ### Comparing sweep locks
 
-`python3 .github/scripts/lock_bench.py` runs the rows the sweep lock decides (`last-handle`, `sweeps`
-and `rebuild`, or those after `--rows`) once per lock, each built with `--cfg lithia_sweep_lock="NAME"`
-in its own directory under `target/locks`, and prints a table per row with a lock on each line;
-`--locks` and `--threads` narrow it. The locks: `parking_lot`'s mutex as it is (the default), the same
-handing every unlock to the next waiter (`fair`), the standard library's (`std`), `parking_lot`'s
-tried for about ten microseconds before parking (`spin`), and a ticket lock that spins, then yields,
-and never parks (`ticket`). `check.py full` lints lithia built with each.
+`python3 .github/scripts/lock_bench.py` runs the rows the sweep lock takes part in (or those after
+`--rows`) once per lock, with the lock's figures under `--stats`, each built with `--cfg
+lithia_sweep_lock="NAME"` in its own directory under `target/locks`, and prints a table per row with a
+lock on each line; `--locks` and `--threads` narrow it. The locks: `parking_lot`'s mutex as it is (the
+default), the same handing every unlock to the next waiter (`fair`), the standard library's (`std`),
+`parking_lot`'s tried for about ten microseconds before parking (`spin`), and a ticket lock that spins,
+then yields, and never parks (`ticket`). `check.py full` lints lithia built with each.
 
 ## Current figures
 

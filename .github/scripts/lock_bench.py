@@ -4,13 +4,14 @@
 
 """Runs the scaling benchmark once per sweep lock and prints one table per row, a lock per line.
 
-  lock_bench.py [--locks parking_lot,fair,std,spin,ticket] [--rows last-handle,sweeps,rebuild]
-                [--threads 1,2,4,...]
+  lock_bench.py [--locks parking_lot,fair,std,spin,ticket] [--rows ROW,...] [--threads 1,2,4,...] [--stats]
   lock_bench.py --check    lints lithia built with each lock, as `check.py full` does
 
 Each lock is a build with `--cfg lithia_sweep_lock="NAME"` in its own target directory under
-target/locks, so switching between them rebuilds nothing twice. The tables also go to
-target/locks/results.md. The locks (crates/lithia/src/lifetime/sweep_lock.rs):
+target/locks, so switching between them rebuilds nothing twice. `--stats` adds `--cfg lithia_lock_stats`,
+which follows each cell with the lock's acquisitions, mean and longest hold and mean wait. The rows are
+those the sweep lock takes part in, unless `--rows` names others; `LITHIA_BENCH_PIN` passes through.
+The tables also go to target/locks/results.md. The locks (crates/lithia/src/lifetime/sweep_lock.rs):
 
   parking_lot  parking_lot's mutex, unfair unlocks (the default build)
   fair         parking_lot's mutex, every unlock handed to the next waiter
@@ -31,7 +32,8 @@ from pathlib import Path
 ROOT: Path = Path(__file__).resolve().parents[2]
 OUT: Path = ROOT / "target/locks"
 LOCKS: list[str] = ["parking_lot", "fair", "std", "spin", "ticket"]
-ROWS: list[str] = ["last-handle", "sweeps", "rebuild"]
+ROWS: list[str] = ["last-handle", "sweeps", "sweep-10", "sweep-100", "sweep-kept", "sweep-turns", "churn",
+                   "create-shared", "rebuild"]
 Table = dict[str, list[str]]
 
 
@@ -45,11 +47,12 @@ def option(argv: list[str], name: str, default: list[str]) -> list[str]:
     return default
 
 
-def run(lock: str, rows: list[str], threads: list[str]) -> tuple[str, list[str], Table]:
+def run(lock: str, rows: list[str], threads: list[str], stats: bool) -> tuple[str, list[str], Table]:
     """Builds and runs the benchmark with `lock`: the host line, the thread counts, and each row's cells."""
     env: dict[str, str] = dict(os.environ)
-    env["RUSTFLAGS"] = f'{env.get("RUSTFLAGS", "")} --cfg lithia_sweep_lock="{lock}"'.strip()
-    env["CARGO_TARGET_DIR"] = str(OUT / lock)
+    flags: str = f'--cfg lithia_sweep_lock="{lock}"' + (" --cfg lithia_lock_stats" if stats else "")
+    env["RUSTFLAGS"] = f'{env.get("RUSTFLAGS", "")} {flags}'.strip()
+    env["CARGO_TARGET_DIR"] = str(OUT / (f"{lock}-stats" if stats else lock))
     env["LITHIA_BENCH"] = ",".join(rows)
     if threads:
         env["LITHIA_BENCH_THREADS"] = ",".join(threads)
@@ -111,7 +114,7 @@ def main(argv: list[str]) -> int:
     host: str = ""
     counts: list[str] = []
     for lock in locks:
-        host, counts, results[lock] = run(lock, rows, threads)
+        host, counts, results[lock] = run(lock, rows, threads, "--stats" in argv)
     report: list[str] = [host, ""]
     for row in rows:
         report += [f"### {row}", "", f"| Lock | {' | '.join(counts)} |", f"|---|{'---|' * len(counts)}"]
