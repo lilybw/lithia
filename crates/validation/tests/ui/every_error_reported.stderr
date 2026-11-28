@@ -1,0 +1,17 @@
+error: `init` applies to derived nodes and async source nodes; a source node starts with its value
+ --> tests/ui/every_error_reported.rs:7:40
+  |
+7 |     let _n: SourceNode<u32> = node!(1, init = 0, resilience = NONE, bogus = 2);
+  |                                        ^^^^
+
+error: `resilience` applies to derived nodes only; a source node has no parents
+ --> tests/ui/every_error_reported.rs:7:50
+  |
+7 |     let _n: SourceNode<u32> = node!(1, init = 0, resilience = NONE, bogus = 2);
+  |                                                  ^^^^^^^^^^
+
+error: unknown option `bogus`; expected one of init, equals, no_equals, key, batches, resilience, disposed
+ --> tests/ui/every_error_reported.rs:7:69
+  |
+7 |     let _n: SourceNode<u32> = node!(1, init = 0, resilience = NONE, bogus = 2);
+  |                                                                     ^^^^^

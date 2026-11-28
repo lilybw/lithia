@@ -38,81 +38,143 @@ class Mutation:
 
 MUTATIONS: list[Mutation] = [
     Mutation(
-        "W1", "A parent framed again before its release arrived counted once", "crates/lithia/src/protocol.rs",
-        "                        entry.waiting.add(index);\n                        entry.runnable = false;",
-        "                        entry.waiting.ensure(index);\n                        entry.runnable = false;",
+        "W1", "A parent framed again before its release arrived counted once", "crates/lithia/src/protocol/propagate.rs",
+        "                    entry.waiting.add(index);\n                    entry.due.remove(Due::RUNNABLE);",
+        "                    entry.waiting.ensure(index);\n                    entry.due.remove(Due::RUNNABLE);",
         "loom", "two_runs_write_one_source_in_one_epoch",
     ),
     Mutation(
-        "W2", "A superseded run's published first item not carried to its successor", "crates/lithia/src/protocol.rs",
+        "W2", "A superseded run's published first item not carried to its successor", "crates/lithia/src/protocol/lifecycle.rs",
         "            carry_published(node, shared, own_stamp);\n",
         "            let _ = (node, shared, own_stamp);\n",
         "loom", "a_change_published_before_a_supersede_reaches_the_children",
     ),
     Mutation(
         "W3", "A written node's release reaching its subscribers at release time, not those it framed "
-        "(uncaught: no test creates a node between a write's framing and its release)",
-        "crates/lithia/src/protocol.rs",
-        "        for (node, stamp) in &writes {\n            let children: Vec<NodeRef> = counted.next().unwrap_or_default();\n",
+        "(equivalent: a child linked in between waits on the written node only through an entry, run or "
+        "handover that releases it too; the early release reads the same value, and the later one is ignored)",
+        "crates/lithia/src/protocol/deliver.rs",
+        "        for (node, stamp) in &writes {\n            let children: Children = counted.next().unwrap_or_default();\n",
         "        for (node, stamp) in &writes {\n            let _ = counted.next();\n"
-        "            let children: Vec<NodeRef> = node.header().subscribers();\n",
+        "            let children: Children = node.header().subscribers();\n",
         "edge", "", caught=False,
     ),
     Mutation(
-        "W4", "A WHOLE_EPOCHS node never running past its bound", "crates/lithia/src/protocol.rs",
+        "W4", "A `batches = WHOLE` node never running past its bound", "crates/lithia/src/protocol/propagate.rs",
         "        if sched.whole_deferred >= WHOLE_EPOCHS_BOUND {\n",
         "        if sched.whole_deferred >= u32::MAX {\n",
-        "edge", "a_whole_epochs_join_runs_once_input_has_kept_it_waiting_too_long",
+        "edge", "a_whole_batches_join_runs_once_input_has_kept_it_waiting_too_long",
     ),
     Mutation(
-        "F1", "The fast path keeping runs of another runtime", "crates/lithia/src/inline.rs",
+        "F1", "The fast path keeping runs of another runtime", "crates/lithia/src/exec/fast_path.rs",
         "    open.is_some() && open == node\n",
         "    open.is_some() || open == node\n",
         "edge", "bodies_run_on_their_own_runtime_on_the_fast_path_too",
     ),
     Mutation(
-        "F2", "Runs left past a task's budget dropped instead of handed on", "crates/lithia/src/inline.rs",
+        "F2", "Runs left past a task's budget dropped instead of handed on", "crates/lithia/src/exec/fast_path.rs",
         "    left.extend(queue.drain(..));\n",
         "    queue.clear();\n",
         "edge", "a_wide_fan_out_runs_every_child_once_per_write",
     ),
     Mutation(
-        "F3", "A runner task dropped before its poll dropping its runs", "crates/lithia/src/inline.rs",
+        "F3", "A runner task dropped before its poll dropping its runs", "crates/lithia/src/exec/fast_path.rs",
         "        for weak in self.queue.drain(..) {\n            if let Some(node) = weak.upgrade() {\n"
         "                node.spawn_run();\n            }\n        }\n",
         "        self.queue.clear();\n",
         "edge", "ready_runs_packed_for_a_runtime_that_shuts_down_fail_like_runs",
     ),
     Mutation(
-        "F4", "Tokens of one epoch closed together counted as one", "crates/lithia/src/protocol.rs",
-        "        epochs[at].close_tokens(same);\n",
-        "        epochs[at].close_tokens(1);\n",
+        "F4", "Tokens of one epoch closed together counted as one", "crates/lithia/src/graph/epoch.rs",
+        "            epoch.close_tokens(count as usize);\n",
+        "            epoch.close_tokens(1);\n",
         "deep_chain", "",
     ),
     Mutation(
         "F5", "The share a task keeps packed into a runner task as well (equivalent: still runs once)",
-        "crates/lithia/src/inline.rs",
+        "crates/lithia/src/exec/fast_path.rs",
         "    if keep(&nodes[..share]) {\n        nodes.drain(..share);\n    }\n",
         "    let _ = keep(&nodes[..share]);\n",
         "edge", "", caught=False,
     ),
     Mutation(
-        "S1", "A walk from a scoped or held anchor stopping at it", "crates/lithia/src/support.rs",
+        "S1", "A walk from a scoped or held anchor stopping at it", "crates/lithia/src/lifetime/support.rs",
         "        if !stop || header.id == start {\n",
         "        if !stop {\n",
         "edge", "a_scoped_node_that_is_an_anchor_again_holds_what_depends_on_it",
     ),
     Mutation(
-        "S2", "A new writer holding nothing again", "crates/lithia/src/support.rs",
+        "S2", "A new writer holding nothing again", "crates/lithia/src/lifetime/support.rs",
         "            rehold(node.clone(), &mut keep, &mut held);\n",
         "            let _ = &mut held;\n",
         "edge", "a_new_writer_holds_again_what_support_let_go_of",
     ),
     Mutation(
-        "S3", "A rise from zero never walking", "crates/lithia/src/support.rs",
+        "S3", "A rise from zero never walking", "crates/lithia/src/lifetime/support.rs",
         "    cfg!(lithia_loom) || LET_GO.load(Ordering::SeqCst) != 0\n",
         "    cfg!(lithia_loom)\n",
         "edge", "an_anchor_that_returns_holds_again_what_support_let_go_of",
+    ),
+    Mutation(
+        "K1", "A write stopping a block without waking it", "crates/lithia/src/protocol/lifecycle.rs",
+        "        diag::Diag::Superseded { site: node.header().site, run: shared.id() }.emit();\n        shared.wake();\n",
+        "        diag::Diag::Superseded { site: node.header().site, run: shared.id() }.emit();\n",
+        "loom", "a_write_wakes_the_parked_block_it_stops",
+    ),
+    Mutation(
+        "K2", "Disposal retiring a run without waking it", "crates/lithia/src/protocol/lifecycle.rs",
+        "    if let Some(shared) = shared {\n        shared.cancel();\n        shared.wake();\n    }\n    drain(work);\n",
+        "    if let Some(shared) = shared {\n        shared.cancel();\n    }\n    drain(work);\n",
+        "loom", "disposal_wakes_a_parked_run",
+    ),
+    Mutation(
+        "K3", "A freed node cancelling its run without waking it", "crates/lithia/src/graph/node.rs",
+        "            slot.shared.cancel();\n            slot.shared.wake();\n",
+        "            slot.shared.cancel();\n",
+        "loom", "freeing_a_node_wakes_its_parked_run",
+    ),
+    Mutation(
+        "W5", "A run failing after its release telling no child", "crates/lithia/src/protocol/lifecycle.rs",
+        "    let tells: bool = failed && !first;\n",
+        "    let tells: bool = false;\n",
+        "edge", "a_failure_after_the_first_suspension_reaches_strict_children",
+    ),
+    Mutation(
+        "W6", "An absorbed change settling beside a superseded run's handover", "crates/lithia/src/protocol/propagate.rs",
+        "        None => &sched.handover,\n",
+        "        None => return false,\n",
+        "edge", "flush_waits_for_the_successor_of_the_run_that_absorbed_its_write",
+    ),
+    Mutation(
+        "W7", "A framing walk opening entries below a ghost", "crates/lithia/src/protocol/propagate.rs",
+        "                Some(_) if header.is_ghost() || parent.is_ghost() => None,\n",
+        "                Some(_) if header.is_ghost() => None,\n",
+        "loom", "a_write_frames_through_a_node_being_disposed",
+    ),
+    Mutation(
+        "W8", "A shutdown not telling the children of the dropped run's epochs", "crates/lithia/src/protocol/lifecycle.rs",
+        "    if !ghost && !served.is_empty() {\n",
+        "    if false && !served.is_empty() {\n",
+        "edge", "a_runtime_shutting_down_fails_the_strict_children_of_its_runs",
+    ),
+    Mutation(
+        "Q1", "No comparator by default for a value type with `PartialEq`", "crates/lithia/src/options.rs",
+        "        Some(Equals::plain(|old: &K, new: &K| -> bool { old == new }))\n",
+        "        None\n",
+        "edge", "equal_values_change_nothing_by_default",
+    ),
+    Mutation(
+        "Q3", "The default comparator a closure, so each node allocates it and each free defers its drop",
+        "crates/lithia/src/options.rs",
+        "        Some(Equals::plain(|old: &K, new: &K| -> bool { old == new }))\n",
+        "        Some(Equals::shared(|old: &K, new: &K| -> bool { old == new }))\n",
+        "lib", "the_default_comparator_is_a_plain_function",
+    ),
+    Mutation(
+        "Q2", "`()` compared by default, so an effect's runs stop reaching its children", "crates/lithia/src/options.rs",
+        "        if TypeId::of::<K>() == TypeId::of::<()>() {\n",
+        "        if false {\n",
+        "edge", "units_no_equals_and_generic_code_propagate_every_value",
     ),
 ]
 
@@ -120,6 +182,7 @@ SUITES: dict[str, list[str]] = {
     "edge": ["-p", "lithia-test", "--test", "edge"],
     "deep_chain": ["-p", "lithia-test", "--test", "deep_chain"],
     "loom": ["-p", "lithia-test", "--test", "loom", "--release"],
+    "lib": ["-p", "lithate", "--lib"],
 }
 
 

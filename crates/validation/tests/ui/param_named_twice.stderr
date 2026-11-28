@@ -1,5 +1,5 @@
 error: dependencies are named by plain identifiers, each once
- --> tests/ui/param_named_twice.rs:8:48
+ --> tests/ui/param_named_twice.rs:8:46
   |
-8 |     let _twice: DerivedNode<i32> = effect!(|a, a| *a.get());
-  |                                                ^
+8 |     let _twice: DerivedNode<i32> = node!(|a, a| *a.get());
+  |                                              ^

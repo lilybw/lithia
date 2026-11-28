@@ -1,0 +1,5 @@
+error: a closure that returns an async block makes a node whose value is a future; write `async |…| { … }` or `async move |…| { … }` for an async body
+ --> tests/ui/closure_returns_async_block.rs:8:46
+  |
+8 |     let _later: DerivedNode<u32> = node!(|n| async move { *n.get() });
+  |                                              ^^^^^

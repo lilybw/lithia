@@ -1,0 +1,41 @@
+// node!(|n| self.total.set(*n.get() + self.base))
+
+{
+    fn __lithia_scope () {
+    } fn __lithia_path () -> & 'static str {
+        :: lithia :: __private :: fn_path (:: core :: any :: type_name_of_val (& __lithia_scope ) )
+    } static __LITHIA_HELD : :: lithia :: __private :: SiteCounter = :: lithia :: __private :: SiteCounter :: new () ;
+    static __LITHIA_SITE : :: lithia :: Site = :: lithia :: Site :: __new (:: core :: file ! () , :: core :: line ! () , :: core :: column ! () , :: core :: module_path ! () , __lithia_path , if :: core :: cfg ! (debug_assertions ) {
+        "| n | self . total . set (* n . get () + self . base)"
+    } else {
+        ""
+    } , & __LITHIA_HELD , ) ;
+    let __lithia_deps : [:: lithia :: __private :: NodeHandle ; 1usize ] = [:: lithia :: __private :: node_ref (& n ) ] ;
+    # [allow (unused_imports ) ] use :: lithia :: __private :: {
+        CaptureAny as _ , FieldAny as _ , MoveAny as _
+    } ;
+    let __lithia_cap = :: lithia :: __private :: Capturing :: begin () ;
+    # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let n = {
+        let __lithia_ro : :: lithia :: __private :: ReadOnly = __lithia_cap . read_only (true ) ;
+        (n ) . __lithia_capture ()
+    } ;
+    let __lithia_paths : bool = true && (self . total ) . __lithia_is_handle () && (self . base ) . __lithia_is_handle () ;
+    if __lithia_paths {
+        (self . total ) . __lithia_field () ;
+        (self . base ) . __lithia_field () ;
+    } # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let __self = {
+        let __lithia_ro : :: lithia :: __private :: ReadOnly = __lithia_cap . read_only (__lithia_paths ) ;
+        (self ) . __lithia_capture ()
+    } ;
+    let __lithia_captured : :: lithia :: __private :: Captured = __lithia_cap . finish () ;
+    :: lithia :: __private :: derived (& __LITHIA_SITE , & __lithia_deps , & __lithia_captured , < _ as :: lithia :: __private :: InitDefault > :: __lithia_init () , move || {
+        # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let n = & n ;
+        # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let __self = & __self ;
+        __self . total . set (* n . get () + __self . base )
+    } , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+        # [allow (unused_imports ) ] use :: lithia :: __private :: {
+            ImplicitViaEq as _ , ImplicitViaNone as _
+        } ;
+        (&& __lithia_p ) . __lithia_implicit ()
+    } )
+}

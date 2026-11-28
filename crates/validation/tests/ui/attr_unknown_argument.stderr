@@ -1,0 +1,11 @@
+error: unknown argument `bogus`; expected flavor, worker_threads or start_paused
+ --> tests/ui/attr_unknown_argument.rs:4:16
+  |
+4 | #[lithia::test(bogus = 1, worker_threads = 0)]
+  |                ^^^^^
+
+error: worker_threads is at least 1
+ --> tests/ui/attr_unknown_argument.rs:4:44
+  |
+4 | #[lithia::test(bogus = 1, worker_threads = 0)]
+  |                                            ^

@@ -1,0 +1,5 @@
+error: names starting with `__lithia` are node!'s own
+ --> tests/ui/reserved_name.rs:7:40
+  |
+7 |     let _line: SourceNode<u32> = node!(__LITHIA_SITE.line);
+  |                                        ^^^^^^^^^^^^^

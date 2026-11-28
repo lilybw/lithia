@@ -1,19 +1,22 @@
 [package]
 name = "lithia-test"
-description = "Unit and integration tests for lithia's edge cases."
+description = "Helpers shared by lithia's test crates, and its edge-case tests."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
+repository = "https://github.com/lilybw/lithia"
+homepage = "https://lilybw.com/lithia/"
+documentation = "https://lilybw.com/lithia/api/lithia/"
 
 [dependencies]
-lithia = { workspace = true }
+lithia = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true }
-
-[dev-dependencies]
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
 trybuild = { workspace = true }
 
 [target.'cfg(lithia_loom)'.dev-dependencies]

@@ -8,19 +8,19 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lithia::{Accessor, Changes, DerivedNode, Setter, SourceNode, Status, effect};
+use lithia::{Accessor, Changes, DerivedNode, Ref, Setter, SourceNode, Status, node};
 use tokio::sync::oneshot;
 
 // Case A: nested creation and a write-back stop.
 // Must compile, add exactly one element, run the expansion once and leave callcount at 1.
 #[lithia::test]
 async fn case_a_nested_creation() {
-    let array: SourceNode<Vec<Accessor<i32>>> = effect!(Vec::new());
-    let callcount: SourceNode<i32> = effect!(0);
+    let array: SourceNode<Vec<Accessor<i32>>> = node!(Vec::new());
+    let callcount: SourceNode<i32> = node!(0);
 
-    let _expansion: DerivedNode<()> = effect!(|array| {
+    let _expansion: DerivedNode<()> = node!(|array| {
         callcount.update(|n: &i32| n + 1);
-        let c: SourceNode<i32> = effect!(42);
+        let c: SourceNode<i32> = node!(42);
         println!("expansion memo run {}", callcount.get()); // prints 1: bodies see their own writes
         array.update(|old: &Vec<Accessor<i32>>| {
             // applied; `_expansion` itself is cut (7.4)
@@ -40,11 +40,11 @@ async fn case_a_nested_creation() {
 // Case B: diamond.
 #[lithia::test]
 async fn case_b_diamond() {
-    let a: SourceNode<i32> = effect!(1);
-    let b: DerivedNode<i32> = effect!(|a| *a.get() + 1);
-    let c: DerivedNode<i32> = effect!(|a| *a.get() * 10);
-    let runs: SourceNode<u32> = effect!(0);
-    let d: DerivedNode<i32> = effect!(|b, c| {
+    let a: SourceNode<i32> = node!(1);
+    let b: DerivedNode<i32> = node!(|a| *a.get() + 1);
+    let c: DerivedNode<i32> = node!(|a| *a.get() * 10);
+    let runs: SourceNode<u32> = node!(0);
+    let d: DerivedNode<i32> = node!(|b, c| {
         runs.update(|n: &u32| n + 1);
         *b.get() + *c.get()
     });
@@ -59,9 +59,9 @@ async fn case_b_diamond() {
 // Case C: clamping cycle.
 #[lithia::test]
 async fn case_c_clamp_cycle() {
-    let x: SourceNode<i32> = effect!(0);
-    let runs: SourceNode<u32> = effect!(0);
-    let _clamp: DerivedNode<()> = effect!(|x| {
+    let x: SourceNode<i32> = node!(0);
+    let runs: SourceNode<u32> = node!(0);
+    let _clamp: DerivedNode<()> = node!(|x| {
         runs.update(|n: &u32| n + 1);
         if *x.get() > 10 {
             x.set(10);
@@ -77,16 +77,16 @@ async fn case_c_clamp_cycle() {
 async fn case_d_optimistic_async() {
     let (tx, rx): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
     let gate: Arc<Mutex<Option<oneshot::Receiver<()>>>> = Arc::new(Mutex::new(Some(rx)));
-    let id: SourceNode<u32> = effect!(7);
-    let name: DerivedNode<String> = effect!(async |id| {
+    let id: SourceNode<u32> = node!(7);
+    let name: DerivedNode<String> = node!(async |id| {
         let rx: Option<oneshot::Receiver<()>> = gate.lock().unwrap().take();
         if let Some(rx) = rx {
             rx.await.ok();
         }
         format!("user-{}", id.get())
     });
-    let seen: SourceNode<Vec<String>> = effect!(Vec::new());
-    let _view: DerivedNode<()> = effect!(|name| {
+    let seen: SourceNode<Vec<String>> = node!(Vec::new());
+    let _view: DerivedNode<()> = node!(|name| {
         let current: String = (*name.get()).clone();
         seen.update(|old: &Vec<String>| {
             let mut v: Vec<String> = old.clone();
@@ -100,13 +100,13 @@ async fn case_d_optimistic_async() {
     assert_eq!(*seen.get(), vec![String::new(), "user-7".to_string()]); // prior value, then the async result
 }
 
-// Case E: panic, recovery and fragility.
+// Case E: panic, recovery and resilience.
 #[lithia::test]
-async fn case_e_panic_and_fragility() {
-    let n: SourceNode<i32> = effect!(1);
-    let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get());
-    let strict: DerivedNode<i32> = effect!(|inv| *inv.get() + 1, fragility = FRAGILE);
-    let lenient: DerivedNode<i32> = effect!(|inv| *inv.get() + 2);
+async fn case_e_panic_and_resilience() {
+    let n: SourceNode<i32> = node!(1);
+    let inv: DerivedNode<i32> = node!(|n| 100 / *n.get());
+    let strict: DerivedNode<i32> = node!(|inv| *inv.get() + 1, resilience = NONE);
+    let lenient: DerivedNode<i32> = node!(|inv| *inv.get() + 2);
     lithia::flush().await;
 
     n.set(0); // integer division by zero panics
@@ -125,12 +125,12 @@ async fn case_e_panic_and_fragility() {
 // Case F: ghosts.
 #[lithia::test]
 async fn case_f_ghosts_and_views() {
-    let s: SourceNode<i32> = effect!(1);
+    let s: SourceNode<i32> = node!(1);
     let reader: Accessor<i32> = s.accessor();
     let writer: Setter<i32> = s.setter();
-    let t: SourceNode<i32> = effect!(5, ghost = ON_GHOST_EMIT_LATEST);
-    let child: DerivedNode<i32> = effect!(|s| *s.get() * 2);
-    // effect!(|writer| 0) would not compile: `Setter` does not implement `Readable`
+    let t: SourceNode<i32> = node!(5, disposed = MASK);
+    let child: DerivedNode<i32> = node!(|s| *s.get() * 2);
+    // node!(|writer| 0) would not compile: `Setter` does not implement `Readable`
     lithia::flush().await;
 
     lithia::dispose(&s);
@@ -147,7 +147,7 @@ async fn case_f_ghosts_and_views() {
 // Case G: async source node.
 #[lithia::test]
 async fn case_g_async_source() {
-    let user: SourceNode<String> = effect!(
+    let user: SourceNode<String> = node!(
         async {
             tokio::time::sleep(Duration::from_millis(10)).await;
             "loaded".to_string()
@@ -159,7 +159,7 @@ async fn case_g_async_source() {
     lithia::test::settled(&user).await;
     assert_eq!(user.get().as_str(), "loaded");
 
-    let slow: SourceNode<u32> = effect!(async {
+    let slow: SourceNode<u32> = node!(async {
         tokio::time::sleep(Duration::from_millis(10)).await;
         1
     });
@@ -171,11 +171,11 @@ async fn case_g_async_source() {
 // Case H: sibling of a write cycle.
 #[lithia::test]
 async fn case_h_cycle_sibling() {
-    let x: SourceNode<i32> = effect!(0);
-    let _clamp: DerivedNode<()> = effect!(|x| if *x.get() > 10 {
+    let x: SourceNode<i32> = node!(0);
+    let _clamp: DerivedNode<()> = node!(|x| if *x.get() > 10 {
         x.set(10);
     });
-    let shown: DerivedNode<i32> = effect!(|x| *x.get());
+    let shown: DerivedNode<i32> = node!(|x| *x.get());
     x.set(15);
     lithia::flush().await;
     assert_eq!(*shown.get(), 10); // the sibling's final value is the clamped one; it may briefly see 15 first
@@ -183,8 +183,8 @@ async fn case_h_cycle_sibling() {
 
 // Case I: returning a derived node.
 fn counter() -> DerivedNode<i32> {
-    let c: SourceNode<i32> = effect!(0);
-    effect!(|c| *c.get() + 1)
+    let c: SourceNode<i32> = node!(0);
+    node!(|c| *c.get() + 1)
 }
 
 #[lithia::test]
@@ -198,13 +198,13 @@ async fn case_i_returned_memo() {
 // Case J: an effect lives while its parent can change.
 #[lithia::test]
 async fn case_j_an_effect_lives_while_its_parent_can_change() {
-    let count: SourceNode<i32> = effect!(0);
-    let runs: SourceNode<u32> = effect!(0);
-    effect!(|count| runs.update(|n: &u32| n + 1)); // lives while `count` is held
+    let count: SourceNode<i32> = node!(0);
+    let runs: SourceNode<u32> = node!(0);
+    node!(|count| runs.update(|n: &u32| n + 1)); // lives while `count` is held
     let base: usize = lithia::test::live_nodes().await;
     {
-        let local: SourceNode<i32> = effect!(0);
-        effect!(|local| runs.update(|n: &u32| n + 1)); // writing `runs` does not keep it alive
+        let local: SourceNode<i32> = node!(0);
+        node!(|local| runs.update(|n: &u32| n + 1)); // writing `runs` does not keep it alive
         lithia::flush().await;
         assert_eq!(lithia::test::live_nodes().await, base + 2);
     } // `local` drops here, and its effect is freed with it
@@ -216,14 +216,14 @@ async fn case_j_an_effect_lives_while_its_parent_can_change() {
 
 #[lithia::test]
 async fn case_k_generator() {
-    let count_to: SourceNode<u32> = effect!(3);
-    let tick: DerivedNode<u32> = effect!(|count_to| {
+    let count_to: SourceNode<u32> = node!(3);
+    let tick: DerivedNode<u32> = node!(|count_to| {
         for i in 1..=*count_to.get() {
             yield i;
         }
     });
-    let seen: SourceNode<Vec<u32>> = effect!(Vec::new());
-    let _log: DerivedNode<()> = effect!(|tick| {
+    let seen: SourceNode<Vec<u32>> = node!(Vec::new());
+    let _log: DerivedNode<()> = node!(|tick| {
         let t: u32 = *tick.get();
         seen.update(|old: &Vec<u32>| {
             let mut v: Vec<u32> = old.clone();
@@ -245,8 +245,8 @@ async fn case_k_generator() {
 async fn case_l_yield() {
     let (tx, rx): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
     let gate: Arc<Mutex<Option<oneshot::Receiver<()>>>> = Arc::new(Mutex::new(Some(rx)));
-    let url: SourceNode<String> = effect!("a".to_string());
-    let status: DerivedNode<String> = effect!(async |url| {
+    let url: SourceNode<String> = node!("a".to_string());
+    let status: DerivedNode<String> = node!(async |url| {
         yield "loading".to_string();
         let rx: Option<oneshot::Receiver<()>> = gate.lock().unwrap().take();
         if let Some(rx) = rx {
@@ -265,9 +265,9 @@ async fn case_l_yield() {
 // Case M: clamping through a memo.
 #[lithia::test]
 async fn case_m_clamp_through_memo() {
-    let x: SourceNode<i32> = effect!(0);
-    let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
-    let _clamp: DerivedNode<()> = effect!(|doubled| if *doubled.get() > 20 {
+    let x: SourceNode<i32> = node!(0);
+    let doubled: DerivedNode<i32> = node!(|x| *x.get() * 2);
+    let _clamp: DerivedNode<()> = node!(|doubled| if *doubled.get() > 20 {
         x.set(10);
     });
     x.set(15);
@@ -283,16 +283,17 @@ async fn case_n_created_mid_propagation() {
     let started_rx: Arc<Mutex<mpsc::Receiver<()>>> = Arc::new(Mutex::new(started_rx));
     let go_rx: Arc<Mutex<mpsc::Receiver<()>>> = Arc::new(Mutex::new(go_rx));
     let base: usize = lithia::test::live_nodes().await;
-    let a: SourceNode<i32> = effect!(1);
-    let slow: DerivedNode<i32> = effect!(|a| {
+    let a: SourceNode<i32> = node!(1);
+    let slow: DerivedNode<i32> = node!(|a| {
         started_tx.send(()).unwrap();
-        go_rx.lock().unwrap().recv().unwrap(); // still running while `m` is created
+        // Still running while `m` is created; blocking hands the worker's queue on.
+        tokio::task::block_in_place(|| go_rx.lock().unwrap().recv().unwrap());
         *a.get()
     });
-    let holder: SourceNode<Option<DerivedNode<i32>>> = effect!(None);
-    let _maker: DerivedNode<()> = effect!(|a| {
-        started_rx.lock().unwrap().recv().unwrap();
-        holder.set(Some(effect!(|slow| *slow.get() + 1)));
+    let holder: SourceNode<Option<DerivedNode<i32>>> = node!(None);
+    let _maker: DerivedNode<()> = node!(|a| {
+        tokio::task::block_in_place(|| started_rx.lock().unwrap().recv().unwrap());
+        holder.set(Some(node!(|slow| *slow.get() + 1)));
         go_tx.send(()).unwrap();
     });
     lithia::flush().await;
@@ -305,8 +306,8 @@ async fn case_n_created_mid_propagation() {
 // Case O: a run that yields nothing.
 #[lithia::test]
 async fn case_o_yield_nothing() {
-    let on: SourceNode<bool> = effect!(true);
-    let last: DerivedNode<u32> = effect!(
+    let on: SourceNode<bool> = node!(true);
+    let last: DerivedNode<u32> = node!(
         |on| {
             if *on.get() {
                 yield 7;
@@ -326,9 +327,9 @@ async fn case_o_yield_nothing() {
 // Case P: unconditional write-back.
 #[lithia::test]
 async fn case_p_unconditional_writeback() {
-    let x: SourceNode<i32> = effect!(0);
-    let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
-    let _back: DerivedNode<()> = effect!(|doubled| x.set(*doubled.get() / 2 + 1));
+    let x: SourceNode<i32> = node!(0);
+    let doubled: DerivedNode<i32> = node!(|x| *x.get() * 2);
+    let _back: DerivedNode<()> = node!(|doubled| x.set(*doubled.get() / 2 + 1));
     x.set(5);
     lithia::flush().await; // returns: the writer check applies at every step
     assert_eq!((*x.get(), *doubled.get()), (6, 12));
@@ -337,21 +338,21 @@ async fn case_p_unconditional_writeback() {
 // Case Q: a cut scoped to its item.
 #[lithia::test]
 async fn case_q_cut_scoped_to_its_item() {
-    let tick: SourceNode<u32> = effect!(async {
+    let tick: SourceNode<u32> = node!(async {
         for i in 1..=2u32 {
             tokio::time::sleep(Duration::from_millis(10)).await;
             yield i;
         }
     });
-    let prefs: SourceNode<u32> = effect!(0);
-    let audit: SourceNode<u32> = effect!(0);
-    let login: DerivedNode<u32> = effect!(|tick, prefs| {
+    let prefs: SourceNode<u32> = node!(0);
+    let audit: SourceNode<u32> = node!(0);
+    let login: DerivedNode<u32> = node!(|tick, prefs| {
         if *tick.get() == 1 {
             audit.set(1);
         } // writes on item 1 only
         *prefs.get()
     });
-    let _sync: DerivedNode<()> = effect!(|login, tick| if *tick.get() == 2 {
+    let _sync: DerivedNode<()> = node!(|login, tick| if *tick.get() == 2 {
         prefs.set(42);
     });
     lithia::test::settled(&tick).await;
@@ -361,10 +362,10 @@ async fn case_q_cut_scoped_to_its_item() {
 // Case R: an equal parent stops propagation.
 #[lithia::test]
 async fn case_r_equal_parent_stops_propagation() {
-    let a: SourceNode<i32> = effect!(1);
-    let parity: DerivedNode<i32> = effect!(|a| *a.get() % 2, equals = lithia::eq);
-    let runs: SourceNode<u32> = effect!(0);
-    let _e: DerivedNode<()> = effect!(|parity| runs.update(|n: &u32| n + 1));
+    let a: SourceNode<i32> = node!(1);
+    let parity: DerivedNode<i32> = node!(|a| *a.get() % 2, equals = lithia::eq);
+    let runs: SourceNode<u32> = node!(0);
+    let _e: DerivedNode<()> = node!(|parity| runs.update(|n: &u32| n + 1));
     lithia::flush().await;
     a.set(3); // parity stays 1
     lithia::flush().await;
@@ -374,8 +375,8 @@ async fn case_r_equal_parent_stops_propagation() {
 // Case S: a loop through node creation is cut.
 #[lithia::test]
 async fn case_s_loop_through_creation() {
-    let n: SourceNode<u32> = effect!(0);
-    let _holder: DerivedNode<Option<DerivedNode<()>>> = effect!(|n| { Some(effect!(|n| n.update(|v: &u32| v + 1))) });
+    let n: SourceNode<u32> = node!(0);
+    let _holder: DerivedNode<Option<DerivedNode<()>>> = node!(|n| { Some(node!(|n| n.update(|v: &u32| v + 1))) });
     lithia::flush().await; // returns: the child the rerun makes writes under the first child's lineage
     assert_eq!(*n.get(), 1);
 }
@@ -383,17 +384,17 @@ async fn case_s_loop_through_creation() {
 // Case T: a refused writer releases its children.
 #[lithia::test]
 async fn case_t_cut_writer_releases_children() {
-    let x: SourceNode<i32> = effect!(0);
-    let y: SourceNode<i32> = effect!(0);
-    let doubled: DerivedNode<i32> = effect!(|x| *x.get() * 2);
-    let clamp: DerivedNode<bool> = effect!(|doubled| {
+    let x: SourceNode<i32> = node!(0);
+    let y: SourceNode<i32> = node!(0);
+    let doubled: DerivedNode<i32> = node!(|x| *x.get() * 2);
+    let clamp: DerivedNode<bool> = node!(|doubled| {
         let over: bool = *doubled.get() > 20;
         if over {
             x.set(10);
         }
         over
     });
-    let shown: DerivedNode<i32> = effect!(|clamp, y| *y.get());
+    let shown: DerivedNode<i32> = node!(|clamp, y| *y.get());
     x.set(15);
     lithia::flush().await; // returns only because the refused `clamp` settles unchanged
     assert!(!*clamp.get()); // then it reran once the epoch settled, on doubled = 20 (7.4)
@@ -406,13 +407,13 @@ async fn case_t_cut_writer_releases_children() {
 #[lithia::test]
 async fn case_u_loader_feeds_its_creator() {
     let base: usize = lithia::test::live_nodes().await;
-    let id: SourceNode<u32> = effect!(1);
-    let cache: SourceNode<Option<String>> = effect!(None, equals = lithia::eq);
-    let view: DerivedNode<(String, Option<DerivedNode<()>>)> = effect!(|id, cache| {
+    let id: SourceNode<u32> = node!(1);
+    let cache: SourceNode<Option<String>> = node!(None, equals = lithia::eq);
+    let view: DerivedNode<(String, Option<DerivedNode<()>>)> = node!(|id, cache| {
         let current: Option<String> = (*cache.get()).clone();
         let loader: Option<DerivedNode<()>> = match current.as_ref() {
             Some(_) => None,
-            None => Some(effect!(async |id| {
+            None => Some(node!(async |id| {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 cache.set(Some(format!("user-{}", id.get())));
             })),
@@ -428,9 +429,9 @@ async fn case_u_loader_feeds_its_creator() {
 // Case V: reflow reruns children on an equal value.
 #[lithia::test]
 async fn case_v_reflow() {
-    let a: SourceNode<i32> = effect!(1, equals = lithia::eq);
-    let runs: SourceNode<u32> = effect!(0);
-    let _child: DerivedNode<()> = effect!(|a| runs.update(|n: &u32| n + 1));
+    let a: SourceNode<i32> = node!(1, equals = lithia::eq);
+    let runs: SourceNode<u32> = node!(0);
+    let _child: DerivedNode<()> = node!(|a| runs.update(|n: &u32| n + 1));
     lithia::flush().await;
     a.set(1); // equal, so nothing propagates
     lithia::flush().await;
@@ -444,11 +445,11 @@ async fn case_v_reflow() {
 #[lithia::test]
 async fn case_w_reflow_from_its_own_body() {
     let base: usize = lithia::test::live_nodes().await;
-    let me: SourceNode<Option<DerivedNode<u32>>> = effect!(None);
-    let tick: SourceNode<u32> = effect!(0);
-    let body_runs: SourceNode<u32> = effect!(0);
-    let child_runs: SourceNode<u32> = effect!(0);
-    let node: DerivedNode<u32> = effect!(
+    let me: SourceNode<Option<DerivedNode<u32>>> = node!(None);
+    let tick: SourceNode<u32> = node!(0, no_equals);
+    let body_runs: SourceNode<u32> = node!(0);
+    let child_runs: SourceNode<u32> = node!(0);
+    let node: DerivedNode<u32> = node!(
         |tick| {
             body_runs.update(|n: &u32| n + 1);
             if let Some(handle) = &*me.get() {
@@ -458,7 +459,7 @@ async fn case_w_reflow_from_its_own_body() {
         },
         equals = lithia::eq
     );
-    let _child: DerivedNode<()> = effect!(|node| child_runs.update(|n: &u32| n + 1));
+    let _child: DerivedNode<()> = node!(|node| child_runs.update(|n: &u32| n + 1));
     lithia::flush().await;
     me.set(Some(node.clone())); // a value cycle, broken at the end (10.1)
     tick.set(0); // the same value: only the reflow can reach the child
@@ -473,9 +474,9 @@ async fn case_w_reflow_from_its_own_body() {
 // Case X: defer feeds a value back on purpose.
 #[lithia::test]
 async fn case_x_defer_feeds_back_on_purpose() {
-    let x: SourceNode<u32> = effect!(0);
-    let runs: SourceNode<u32> = effect!(0);
-    let _bump: DerivedNode<()> = effect!(|x| {
+    let x: SourceNode<u32> = node!(0);
+    let runs: SourceNode<u32> = node!(0);
+    let _bump: DerivedNode<()> = node!(|x| {
         runs.update(|n: &u32| n + 1);
         if *x.get() == 0 {
             let later: SourceNode<u32> = x.clone();
@@ -494,7 +495,7 @@ async fn case_x_defer_feeds_back_on_purpose() {
 // Case Y: changes() yields the current value first and ends at disposal.
 #[lithia::test]
 async fn case_y_changes() {
-    let n: SourceNode<u32> = effect!(1);
+    let n: SourceNode<u32> = node!(1);
     let mut stream: Changes<u32> = n.changes();
     assert_eq!(*stream.next().await.unwrap(), 1); // the current value first
     n.set(2);
@@ -506,11 +507,11 @@ async fn case_y_changes() {
 // Case Z: modify publishes a changed copy.
 #[lithia::test]
 async fn case_z_modify() {
-    let history: SourceNode<Vec<u32>> = effect!(Vec::new(), equals = lithia::eq);
-    let runs: SourceNode<u32> = effect!(0);
-    let _watch: DerivedNode<()> = effect!(|history| runs.update(|n: &u32| n + 1));
+    let history: SourceNode<Vec<u32>> = node!(Vec::new(), equals = lithia::eq);
+    let runs: SourceNode<u32> = node!(0);
+    let _watch: DerivedNode<()> = node!(|history| runs.update(|n: &u32| n + 1));
     lithia::flush().await;
-    let before: Arc<Vec<u32>> = history.get();
+    let before: Ref<Vec<u32>> = history.get();
     history.modify(|v: &mut Vec<u32>| v.push(1));
     lithia::flush().await;
     assert_eq!(*history.get(), vec![1]);
@@ -524,10 +525,10 @@ async fn case_z_modify() {
 // Case AA: spawn_blocking from a body.
 #[lithia::test]
 async fn case_aa_spawn_blocking_from_a_body() {
-    let input: SourceNode<u32> = effect!(3);
-    let result: SourceNode<u32> = effect!(0);
-    let runs: SourceNode<u32> = effect!(0);
-    let work: DerivedNode<()> = effect!(async |input, result| {
+    let input: SourceNode<u32> = node!(3);
+    let result: SourceNode<u32> = node!(0);
+    let runs: SourceNode<u32> = node!(0);
+    let work: DerivedNode<()> = node!(async |input, result| {
         runs.update(|n: &u32| n + 1);
         let (n, out): (u32, SourceNode<u32>) = (*input.get(), result.clone());
         lithia::spawn_blocking(move || out.set(n * n)).await.unwrap(); // one of this run's deliveries (7.1)
@@ -536,14 +537,14 @@ async fn case_aa_spawn_blocking_from_a_body() {
     assert_eq!((*result.get(), *runs.get()), (9, 1)); // the write-back is attributed, so `work` is cut
 }
 
-// Case AB: SEMI_FRAGILE fails only when every parent has failed.
+// Case AB: `resilience = PARTIAL` fails only when every parent has failed.
 #[lithia::test]
-async fn case_ab_semi_fragile() {
-    let a: SourceNode<i32> = effect!(1);
-    let b: SourceNode<i32> = effect!(1);
-    let inv_a: DerivedNode<i32> = effect!(|a| 100 / *a.get());
-    let inv_b: DerivedNode<i32> = effect!(|b| 100 / *b.get());
-    let sum: DerivedNode<i32> = effect!(|inv_a, inv_b| *inv_a.get() + *inv_b.get(), fragility = SEMI_FRAGILE);
+async fn case_ab_partial_resilience() {
+    let a: SourceNode<i32> = node!(1);
+    let b: SourceNode<i32> = node!(1);
+    let inv_a: DerivedNode<i32> = node!(|a| 100 / *a.get());
+    let inv_b: DerivedNode<i32> = node!(|b| 100 / *b.get());
+    let sum: DerivedNode<i32> = node!(|inv_a, inv_b| *inv_a.get() + *inv_b.get(), resilience = PARTIAL);
     lithia::flush().await;
     a.set(0); // one parent fails
     lithia::flush().await;
@@ -556,39 +557,42 @@ async fn case_ab_semi_fragile() {
 // Case AC: a ghost with a surviving child.
 #[lithia::test]
 async fn case_ac_ghost_with_a_surviving_child() {
-    let kept: SourceNode<i32> = effect!(1);
-    let doomed: SourceNode<i32> = effect!(10, ghost = ON_GHOST_SET_AS_PENDING);
-    let both: DerivedNode<i32> = effect!(|kept, doomed| *kept.get() + *doomed.get());
+    let kept: SourceNode<i32> = node!(1);
+    let doomed: SourceNode<i32> = node!(10, disposed = PEND);
+    let both: DerivedNode<i32> = node!(|kept, doomed| *kept.get() + *doomed.get());
     lithia::flush().await;
     lithia::dispose(&doomed); // `both` survives through `kept` (10.4)
     lithia::flush().await;
-    assert!(matches!(lithia::status(&doomed), Status::Ghost));
+    assert!(matches!(lithia::status(&doomed), Status::Pending)); // `PEND` shows a parent pending forever
     kept.set(2);
     lithia::flush().await;
     assert_eq!(*both.get(), 12); // the ghost still reads its last value
     assert!(matches!(lithia::status(&both), Status::Ready)); // a pending parent fails nobody
 }
 
-// Case AD: ALWAYS_PROPAGATE.
+// Case AD: a ghost under `disposed = MASK` or `disposed = PEND` fails no child, whatever its resilience.
 #[lithia::test]
-async fn case_ad_always_propagate() {
-    let a: SourceNode<i32> = effect!(1, equals = lithia::eq, flags = ALWAYS_PROPAGATE);
-    let runs: SourceNode<u32> = effect!(0);
-    let _child: DerivedNode<()> = effect!(|a| runs.update(|n: &u32| n + 1));
+async fn case_ad_kept_ghosts_fail_no_child() {
+    let masked: SourceNode<i32> = node!(1, disposed = MASK);
+    let pending: SourceNode<i32> = node!(2, disposed = PEND);
+    let k: SourceNode<i32> = node!(10);
+    let strict: DerivedNode<i32> =
+        node!(|masked, pending, k| *masked.get() + *pending.get() + *k.get(), resilience = NONE);
     lithia::flush().await;
-    let before: Arc<i32> = a.get();
-    a.set(1); // equal: the old value is kept...
+    lithia::dispose(&masked);
+    lithia::dispose(&pending); // `strict` survives through `k` (10.4)
+    k.set(20);
     lithia::flush().await;
-    assert!(Arc::ptr_eq(&before, &a.get()));
-    assert_eq!(*runs.get(), 2); // ...but the child reruns anyway (6.4)
+    assert_eq!(*strict.get(), 23); // both ghosts read their last values
+    assert!(matches!(lithia::status(&strict), Status::Ready));
 }
 
 // Case AE: a panicking body still propagates its writes.
 #[lithia::test]
 async fn case_ae_panic_still_propagates_writes() {
-    let go: SourceNode<bool> = effect!(false);
-    let log: SourceNode<Vec<&'static str>> = effect!(Vec::new());
-    let faulty: DerivedNode<()> = effect!(|go| {
+    let go: SourceNode<bool> = node!(false);
+    let log: SourceNode<Vec<&'static str>> = node!(Vec::new());
+    let faulty: DerivedNode<()> = node!(|go| {
         if *go.get() {
             log.update(|v: &Vec<&'static str>| {
                 let mut w: Vec<&'static str> = v.clone();
@@ -598,8 +602,8 @@ async fn case_ae_panic_still_propagates_writes() {
             panic!("boom");
         }
     });
-    let seen: SourceNode<usize> = effect!(0);
-    let _reader: DerivedNode<()> = effect!(|log| seen.set(log.get().len()));
+    let seen: SourceNode<usize> = node!(0);
+    let _reader: DerivedNode<()> = node!(|log| seen.set(log.get().len()));
     lithia::flush().await;
     go.set(true);
     lithia::flush().await;
@@ -612,12 +616,12 @@ async fn case_ae_panic_still_propagates_writes() {
 async fn case_af_live_nodes_catch_a_value_cycle() {
     let base: usize = lithia::test::live_nodes().await;
     {
-        let _tmp: SourceNode<i32> = effect!(0);
+        let _tmp: SourceNode<i32> = node!(0);
     }
     assert_eq!(lithia::test::live_nodes().await, base); // freed when its last handle dropped
     {
-        let holder: SourceNode<Option<DerivedNode<bool>>> = effect!(None);
-        let child: DerivedNode<bool> = effect!(|holder| holder.get().is_some());
+        let holder: SourceNode<Option<DerivedNode<bool>>> = node!(None);
+        let child: DerivedNode<bool> = node!(|holder| holder.get().is_some());
         holder.set(Some(child.clone())); // the holder's value holds its own subscriber (10.1)
         lithia::flush().await;
     }
@@ -629,8 +633,8 @@ async fn case_af_live_nodes_catch_a_value_cycle() {
 fn case_ag_graph_across_runtimes() {
     let rt_a: tokio::runtime::Runtime = tokio::runtime::Runtime::new().unwrap();
     let rt_b: tokio::runtime::Runtime = tokio::runtime::Runtime::new().unwrap();
-    let src: SourceNode<i32> = rt_a.block_on(async { effect!(1) });
-    let doubled: DerivedNode<i32> = rt_b.block_on(async { effect!(|src| *src.get() * 2) });
+    let src: SourceNode<i32> = rt_a.block_on(async { node!(1) });
+    let doubled: DerivedNode<i32> = rt_b.block_on(async { node!(|src| *src.get() * 2) });
     rt_a.block_on(async {
         src.set(5);
         lithia::flush().await; // waits for `doubled`, whose runs stay on rt_b (11.3)

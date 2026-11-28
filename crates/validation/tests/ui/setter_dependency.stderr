@@ -1,8 +1,8 @@
 error[E0277]: `Setter<i32>` cannot be read, so it cannot be a dependency
- --> tests/ui/setter_dependency.rs:9:36
+ --> tests/ui/setter_dependency.rs:9:43
   |
-9 |     let _child: DerivedNode<i32> = effect!(|writer| 0);
-  |                                    ^^^^^^^^^^^^^^^^^^^ not `Readable`
+9 |     let _child: DerivedNode<i32> = node!(|writer| 0);
+  |                                           ^^^^^^ not `Readable`
   |
   = help: the trait `Readable` is not implemented for `Setter<i32>`
   = note: dependencies are nodes or `Accessor`s; a `Setter` is write-only, and being notified of changes would read it
@@ -23,8 +23,8 @@ help: the following other types implement trait `Readable`
   | readable!(Accessor);
   | ------------------- in this macro invocation
 note: required by a bound in `lithia::__private::node_ref`
- --> $WORKSPACE/crates/lithia/src/create.rs
+ --> $WORKSPACE/crates/lithia/src/expand/create.rs
   |
   | pub fn node_ref<R: Readable>(handle: &R) -> NodeHandle {
   |                    ^^^^^^^^ required by this bound in `node_ref`
-  = note: this error originates in the macro `effect` which comes from the expansion of the macro `readable` (in Nightly builds, run with -Z macro-backtrace for more info)
+  = note: this error originates in the macro `readable` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -5,37 +5,71 @@
 
 use std::collections::{HashMap, HashSet};
 
-use proc_macro2::{Ident, TokenStream, TokenTree};
+use proc_macro2::{Ident, Spacing, TokenStream, TokenTree};
 use syn::parse::{ParseStream, Parser};
 use syn::punctuated::Punctuated;
+use syn::visit_mut::VisitMut;
 use syn::{Block, Expr, Macro, Pat, Stmt, Token};
 
-/// Macros whose string literal arguments name captured values inline, as in `"{count}"`.
-const FORMAT_MACROS: &[&str] = &[
-    "print",
-    "println",
-    "eprint",
-    "eprintln",
-    "format",
-    "format_args",
-    "write",
-    "writeln",
-    "panic",
-    "assert",
-    "assert_eq",
-    "assert_ne",
-    "debug_assert",
-    "debug_assert_eq",
-    "debug_assert_ne",
-    "unreachable",
-    "todo",
-    "unimplemented",
+/// Macros that format their arguments, by the position of their format string; `{count}` inside
+/// it names a captured value inline, and their arguments are only read.
+const FORMAT_MACROS: &[(&str, usize)] = &[
+    ("print", 0),
+    ("println", 0),
+    ("eprint", 0),
+    ("eprintln", 0),
+    ("format", 0),
+    ("format_args", 0),
+    ("panic", 0),
+    ("unreachable", 0),
+    ("todo", 0),
+    ("unimplemented", 0),
+    ("anyhow", 0),
+    ("bail", 0),
+    ("eyre", 0),
+    ("write", 1),
+    ("writeln", 1),
+    ("assert", 1),
+    ("debug_assert", 1),
+    ("ensure", 1),
+    ("assert_eq", 2),
+    ("assert_ne", 2),
+    ("debug_assert_eq", 2),
+    ("debug_assert_ne", 2),
 ];
+
+/// `tracing`'s (and `log`'s) event and span macros, whose fields take `%` and `?` sigils.
+const TRACING_MACROS: &[&str] = &[
+    "trace",
+    "debug",
+    "info",
+    "warn",
+    "error",
+    "event",
+    "span",
+    "trace_span",
+    "debug_span",
+    "info_span",
+    "warn_span",
+    "error_span",
+];
+
+/// Keywords a token walk never takes for a name.
+const KEYWORDS: &[&str] = &[
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
+    "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self",
+    "static", "struct", "super", "trait", "true", "try", "type", "unsafe", "use", "where", "while", "yield",
+];
+
+/// The named fields that follow a captured name, as in `state.rows.selected`.
+pub(crate) type FieldPath = Vec<Ident>;
+/// The names bound in one block scope.
+type Bindings = HashSet<String>;
 
 /// Collects free, lowercase identifiers in expression position, in first-use order.
 #[derive(Default)]
 pub(crate) struct Captures {
-    scopes: Vec<HashSet<String>>,
+    scopes: Vec<Bindings>,
     seen: HashSet<String>,
     pub(crate) found: Vec<Ident>,
     pub(crate) uses_self: bool,
@@ -53,7 +87,7 @@ struct Uses {
     /// Used directly other than to read it.
     written: bool,
     /// Field paths used, each with whether a use of it may write.
-    paths: Vec<(Vec<Ident>, bool)>,
+    paths: Vec<(FieldPath, bool)>,
 }
 
 /// How a capture's handles are classified for writer edges.
@@ -64,7 +98,7 @@ pub(crate) enum Class {
     /// Everything recorded inside it may be written.
     Write,
     /// Used only through field paths; each path that may write, by its fields.
-    Paths { all: Vec<Vec<Ident>>, written: Vec<Vec<Ident>> },
+    Paths { all: Vec<FieldPath>, written: Vec<FieldPath> },
 }
 
 /// Macros whose arguments are plain expressions, evaluated as written.
@@ -73,13 +107,17 @@ const TRANSPARENT_MACROS: &[&str] = &["vec", "dbg"];
 /// Methods that only read a handle.
 const READ_METHODS: &[&str] = &["get", "try_get", "changes", "accessor"];
 
-/// Whether a name is lowercase in the capture rule's sense: not a constant, type or variant.
+/// Whether a name is lowercase in the capture rule's sense: not a constant, type or variant. Leading
+/// underscores are skipped, so `_LIMIT` is a constant and `_count` a variable.
 fn is_lowercase(name: &str) -> bool {
     let name: &str = name.strip_prefix("r#").unwrap_or(name);
     if name == "_" || name == "self" || name == "crate" || name == "super" {
         return false;
     }
-    name.chars().next().is_some_and(|first: char| first.is_ascii_lowercase() || first == '_')
+    match name.trim_start_matches('_').chars().next() {
+        Some(first) => first.is_lowercase() || first.is_ascii_digit(),
+        None => true,
+    }
 }
 
 impl Captures {
@@ -88,7 +126,7 @@ impl Captures {
     }
 
     fn is_bound(&self, name: &str) -> bool {
-        self.scopes.iter().any(|scope: &HashSet<String>| scope.contains(name))
+        self.scopes.iter().any(|scope: &Bindings| scope.contains(name))
     }
 
     fn bind(&mut self, name: &Ident) {
@@ -124,10 +162,10 @@ impl Captures {
     }
 
     /// Records a use of the field path `base.fields…`; `read` when the use only reads it.
-    fn path_use(&mut self, base: &Ident, fields: Vec<Ident>, read: bool) {
+    fn path_use(&mut self, base: &Ident, fields: FieldPath, read: bool) {
         let written: bool = !read || self.opaque > 0;
         if let Some(uses) = self.capture(base) {
-            match uses.paths.iter_mut().find(|(known, _): &&mut (Vec<Ident>, bool)| *known == fields) {
+            match uses.paths.iter_mut().find(|(known, _): &&mut (FieldPath, bool)| *known == fields) {
                 Some((_, was)) => *was |= written,
                 None => uses.paths.push((fields, written)),
             }
@@ -146,12 +184,12 @@ impl Captures {
             return Class::Write;
         }
         Class::Paths {
-            all: uses.paths.iter().map(|(fields, _): &(Vec<Ident>, bool)| fields.clone()).collect(),
+            all: uses.paths.iter().map(|(fields, _): &(FieldPath, bool)| fields.clone()).collect(),
             written: uses
                 .paths
                 .iter()
-                .filter(|(_, written): &&(Vec<Ident>, bool)| *written)
-                .map(|(fields, _): &(Vec<Ident>, bool)| fields.clone())
+                .filter(|(_, written): &&(FieldPath, bool)| *written)
+                .map(|(fields, _): &(FieldPath, bool)| fields.clone())
                 .collect(),
         }
     }
@@ -172,13 +210,13 @@ impl Captures {
     }
 
     /// A field path: a captured name, or `self`, followed by named fields only.
-    fn field_path(expr: &Expr) -> Option<(&Ident, Vec<Ident>)> {
+    fn field_path(expr: &Expr) -> Option<(&Ident, FieldPath)> {
         match expr {
             Expr::Field(field) => {
                 let syn::Member::Named(member) = &field.member else {
                     return None;
                 };
-                let (base, mut fields): (&Ident, Vec<Ident>) = match &*field.base {
+                let (base, mut fields): (&Ident, FieldPath) = match &*field.base {
                     Expr::Field(_) => Captures::field_path(&field.base)?,
                     other => (Captures::bare_name(other)?, Vec::new()),
                 };
@@ -309,7 +347,7 @@ impl Captures {
                     self.pop();
                 }
             }
-            Expr::Macro(mac) => self.mac(&mac.mac),
+            Expr::Macro(mac) => self.mac(&mac.mac, false),
             Expr::Struct(lit) => {
                 for field in &lit.fields {
                     self.expr(&field.expr);
@@ -398,10 +436,31 @@ impl Captures {
             syn::Item::Fn(f) => Some(&f.sig.ident),
             syn::Item::Const(c) => Some(&c.ident),
             syn::Item::Static(s) => Some(&s.ident),
+            syn::Item::Use(used) => return self.use_tree(&used.tree, None),
             _ => None,
         };
         if let Some(ident) = ident {
             self.bind(ident);
+        }
+    }
+
+    /// Binds the names a `use` item brings in; `last` is the path segment `self` would name.
+    fn use_tree(&mut self, tree: &syn::UseTree, last: Option<&Ident>) {
+        match tree {
+            syn::UseTree::Path(path) => self.use_tree(&path.tree, Some(&path.ident)),
+            syn::UseTree::Name(name) if name.ident == "self" => {
+                if let Some(last) = last {
+                    self.bind(last);
+                }
+            }
+            syn::UseTree::Name(name) => self.bind(&name.ident),
+            syn::UseTree::Rename(rename) => self.bind(&rename.rename),
+            syn::UseTree::Group(group) => {
+                for tree in &group.items {
+                    self.use_tree(tree, last);
+                }
+            }
+            syn::UseTree::Glob(_) => {}
         }
     }
 
@@ -418,7 +477,7 @@ impl Captures {
             }
             Stmt::Item(_) => {}
             Stmt::Expr(expr, _) => self.expr(expr),
-            Stmt::Macro(mac) => self.mac(&mac.mac),
+            Stmt::Macro(mac) => self.mac(&mac.mac, true),
         }
     }
 
@@ -468,57 +527,219 @@ impl Captures {
         }
     }
 
-    fn mac(&mut self, mac: &Macro) {
+    /// Visits a macro call; `statement` when it stands as a statement, whose bindings then reach the
+    /// statements after it, as `tokio::pin!`'s do.
+    fn mac(&mut self, mac: &Macro, statement: bool) {
         let name: String =
             mac.path.segments.last().map(|segment: &syn::PathSegment| segment.ident.to_string()).unwrap_or_default();
-        if name == "effect"
-            && let Ok(nested) = syn::parse2::<crate::effect::EffectInput>(mac.tokens.clone())
-        {
-            nested.visit_captures(self);
+        let known: bool = match name.as_str() {
+            "node" => match syn::parse2::<crate::node::NodeInput>(mac.tokens.clone()) {
+                Ok(nested) => {
+                    nested.visit_captures(self);
+                    true
+                }
+                Err(_) => false,
+            },
+            "matches" => self.matches_mac(mac),
+            "select" => self.select_mac(mac),
+            _ if TRACING_MACROS.contains(&name.as_str()) => self.tracing_mac(mac),
+            _ => match FORMAT_MACROS.iter().find(|(known, _): &&(&str, usize)| *known == name) {
+                Some((_, at)) => self.format_mac(mac, Some(*at)),
+                None => false,
+            },
+        };
+        if known {
             return;
         }
-        if FORMAT_MACROS.contains(&name.as_str())
-            && let Ok(args) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(mac.tokens.clone())
-        {
-            {
-                let mut named: HashSet<String> = HashSet::new();
-                for arg in &args {
-                    if let Expr::Assign(assign) = arg
-                        && let Expr::Path(path) = &*assign.left
-                        && let Some(ident) = path.path.get_ident()
-                    {
-                        named.insert(ident.to_string());
-                        self.read_expr(&assign.right);
-                        continue;
-                    }
-                    self.read_expr(arg);
-                }
-                for arg in &args {
-                    if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) = arg {
-                        for name in inline_args(&text.value()) {
-                            if !named.contains(&name) {
-                                self.read_ident(&Ident::new(&name, text.span()));
-                            }
-                        }
-                    }
-                }
-                return;
-            }
-        }
         if TRANSPARENT_MACROS.contains(&name.as_str()) {
-            return self.opaque_mac(mac);
+            return self.opaque_mac(mac, statement);
         }
         // Other macros: best effort, and every use inside may write.
         self.opaque += 1;
-        self.opaque_mac(mac);
+        self.opaque_mac(mac, statement);
         self.opaque -= 1;
     }
 
-    fn opaque_mac(&mut self, mac: &Macro) {
+    /// Arguments that are expressions, only read, with the format string at `at` (or, when `None`,
+    /// the first string literal) scanned for inline names. False if they do not parse.
+    fn format_mac(&mut self, mac: &Macro, at: Option<usize>) -> bool {
+        let Ok(args) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(mac.tokens.clone()) else {
+            return false;
+        };
+        let mut named: HashSet<String> = HashSet::new();
+        for arg in &args {
+            if let Expr::Assign(assign) = arg
+                && let Expr::Path(path) = &*assign.left
+                && let Some(ident) = path.path.get_ident()
+            {
+                named.insert(ident.to_string());
+                self.read_expr(&assign.right);
+                continue;
+            }
+            self.read_expr(arg);
+        }
+        self.scan_format(&args, at, &named);
+        true
+    }
+
+    /// Reads the names the format string at `at`, or the first string literal, uses inline.
+    fn scan_format(&mut self, args: &Punctuated<Expr, Token![,]>, at: Option<usize>, named: &HashSet<String>) {
+        let literal: Option<&syn::LitStr> = match at {
+            Some(at) => args.iter().nth(at).and_then(string_literal),
+            None => args.iter().find_map(string_literal),
+        };
+        if let Some(text) = literal {
+            for name in inline_args(&text.value()) {
+                if !named.contains(&name) {
+                    self.read_ident(&Ident::new(&name, text.span()));
+                }
+            }
+        }
+    }
+
+    /// `matches!(value, pattern if guard)`: the guard sees the pattern's bindings.
+    fn matches_mac(&mut self, mac: &Macro) -> bool {
+        let parser = |input: ParseStream<'_>| -> syn::Result<(Expr, Pat, Option<Expr>)> {
+            let value: Expr = input.parse()?;
+            input.parse::<Token![,]>()?;
+            let pat: Pat = Pat::parse_multi_with_leading_vert(input)?;
+            let guard: Option<Expr> = if input.peek(Token![if]) {
+                input.parse::<Token![if]>()?;
+                Some(input.parse()?)
+            } else {
+                None
+            };
+            input.parse::<Option<Token![,]>>()?;
+            Ok((value, pat, guard))
+        };
+        let Ok((value, pat, guard)) = parser.parse2(mac.tokens.clone()) else {
+            return false;
+        };
+        self.expr(&value);
+        self.push();
+        self.pat(&pat);
+        if let Some(guard) = &guard {
+            self.expr(guard);
+        }
+        self.pop();
+        true
+    }
+
+    /// `tokio::select!` and `futures::select!`: `pattern = future [, if condition] => handler`, with
+    /// `else`, `default` or `complete` arms; each handler sees its pattern's bindings.
+    fn select_mac(&mut self, mac: &Macro) -> bool {
+        let parser = |input: ParseStream<'_>| -> syn::Result<Vec<SelectArm>> {
+            let mut arms: Vec<SelectArm> = Vec::new();
+            if input.peek(syn::Ident) && input.peek2(Token![;]) {
+                input.parse::<Ident>()?;
+                input.parse::<Token![;]>()?;
+            }
+            while !input.is_empty() {
+                let bare: bool = input.peek(Token![else])
+                    || input.peek(Token![default])
+                    || (input.peek(syn::Ident) && input.peek2(Token![=>]));
+                let (pat, future, condition): (Option<Pat>, Option<Expr>, Option<Expr>) = if bare {
+                    if input.peek(Token![else]) {
+                        input.parse::<Token![else]>()?;
+                    } else if input.peek(Token![default]) {
+                        input.parse::<Token![default]>()?;
+                    } else {
+                        input.parse::<Ident>()?;
+                    }
+                    (None, None, None)
+                } else {
+                    let pat: Pat = Pat::parse_single(input)?;
+                    input.parse::<Token![=]>()?;
+                    let future: Expr = input.parse()?;
+                    let condition: Option<Expr> = if input.peek(Token![,]) && input.peek2(Token![if]) {
+                        input.parse::<Token![,]>()?;
+                        input.parse::<Token![if]>()?;
+                        Some(input.parse()?)
+                    } else {
+                        None
+                    };
+                    (Some(pat), Some(future), condition)
+                };
+                input.parse::<Token![=>]>()?;
+                let handler: Expr = input.parse()?;
+                input.parse::<Option<Token![,]>>()?;
+                arms.push(SelectArm { pat, future, condition, handler });
+            }
+            Ok(arms)
+        };
+        let Ok(arms) = parser.parse2(mac.tokens.clone()) else {
+            return false;
+        };
+        for arm in &arms {
+            if let Some(future) = &arm.future {
+                self.expr(future);
+            }
+            if let Some(condition) = &arm.condition {
+                self.expr(condition);
+            }
+            self.push();
+            if let Some(pat) = &arm.pat {
+                self.pat(pat);
+            }
+            self.expr(&arm.handler);
+            self.pop();
+        }
+        true
+    }
+
+    /// `tracing`'s fields: `name = %value`, `?value`, `target: …`, then a format string and its
+    /// arguments; everything is only read. False if a part does not parse.
+    fn tracing_mac(&mut self, mac: &Macro) -> bool {
+        let mut message: bool = false;
+        for part in split_commas(mac.tokens.clone()) {
+            let trees: Vec<TokenTree> = part.into_iter().collect();
+            if trees.is_empty() {
+                continue;
+            }
+            // `target: …`, `parent: …` and `name: …` take an expression.
+            if let [TokenTree::Ident(_), TokenTree::Punct(colon), rest @ ..] = &trees[..]
+                && colon.as_char() == ':'
+                && colon.spacing() == Spacing::Alone
+                && !message
+            {
+                let Ok(value) = syn::parse2::<Expr>(rest.iter().cloned().collect()) else {
+                    return false;
+                };
+                self.read_expr(&value);
+                continue;
+            }
+            if !message
+                && let [TokenTree::Literal(_)] = &trees[..]
+                && let Ok(text) = syn::parse2::<syn::LitStr>(trees.iter().cloned().collect())
+            {
+                message = true;
+                for name in inline_args(&text.value()) {
+                    self.read_ident(&Ident::new(&name, text.span()));
+                }
+                continue;
+            }
+            // A field or named argument: the name before `=` names nothing in the body.
+            let start: usize = field_value_start(&trees);
+            let mut value: &[TokenTree] = &trees[start..];
+            if let [TokenTree::Punct(sigil), rest @ ..] = value
+                && matches!(sigil.as_char(), '%' | '?')
+            {
+                value = rest;
+            }
+            let Ok(value) = syn::parse2::<Expr>(value.iter().cloned().collect()) else {
+                return false;
+            };
+            self.read_expr(&value);
+        }
+        true
+    }
+
+    fn opaque_mac(&mut self, mac: &Macro, statement: bool) {
         if let Ok(args) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(mac.tokens.clone()) {
             for arg in &args {
                 self.expr(arg);
             }
+            self.scan_format(&args, None, &HashSet::new());
             return;
         }
         let repeat = |input: ParseStream<'_>| -> syn::Result<(Expr, Expr)> {
@@ -533,13 +754,107 @@ impl Captures {
             return;
         }
         if let Ok(stmts) = Block::parse_within.parse2(mac.tokens.clone()) {
-            self.push();
+            if !statement {
+                self.push();
+            }
             for stmt in &stmts {
                 self.stmt(stmt);
             }
-            self.pop();
+            if !statement {
+                self.pop();
+            }
+            return;
+        }
+        // Unparsable: every name that could be a variable is taken for one the macro may write.
+        self.opaque += 1;
+        self.token_walk(mac.tokens.clone());
+        self.opaque -= 1;
+    }
+
+    /// Takes every free lowercase name in `tokens` that is not a field, method, path segment, macro
+    /// name, label, keyword or binding's type annotation for a use that may write.
+    fn token_walk(&mut self, tokens: TokenStream) {
+        let trees: Vec<TokenTree> = tokens.into_iter().collect();
+        for (index, tree) in trees.iter().enumerate() {
+            match tree {
+                TokenTree::Group(group) => self.token_walk(group.stream()),
+                TokenTree::Ident(ident) => {
+                    let before: Option<char> = index.checked_sub(1).and_then(|at: usize| punct(&trees[at]));
+                    let after: Option<&TokenTree> = trees.get(index + 1);
+                    let named_after: bool = matches!(after, Some(TokenTree::Punct(p)) if p.as_char() == '!'
+                        || (p.as_char() == ':' && p.spacing() == Spacing::Joint)
+                        || (p.as_char() == ':' && p.spacing() == Spacing::Alone));
+                    let skip: bool = matches!(before, Some('.' | ':' | '\''))
+                        || named_after
+                        || KEYWORDS.contains(&ident.to_string().as_str());
+                    if !skip {
+                        self.use_ident(ident);
+                    }
+                }
+                _ => {}
+            }
         }
     }
+}
+
+/// One arm of a `select!`.
+struct SelectArm {
+    pat: Option<Pat>,
+    future: Option<Expr>,
+    condition: Option<Expr>,
+    handler: Expr,
+}
+
+fn string_literal(expr: &Expr) -> Option<&syn::LitStr> {
+    match expr {
+        Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) => Some(text),
+        _ => None,
+    }
+}
+
+fn punct(tree: &TokenTree) -> Option<char> {
+    match tree {
+        TokenTree::Punct(p) => Some(p.as_char()),
+        _ => None,
+    }
+}
+
+/// A token stream split at its top-level commas.
+fn split_commas(tokens: TokenStream) -> Vec<TokenStream> {
+    let mut parts: Vec<TokenStream> = vec![TokenStream::new()];
+    for tree in tokens {
+        match &tree {
+            TokenTree::Punct(p) if p.as_char() == ',' => parts.push(TokenStream::new()),
+            _ => {
+                if let Some(last) = parts.last_mut() {
+                    last.extend(std::iter::once(tree));
+                }
+            }
+        }
+    }
+    parts
+}
+
+/// Where a field's value starts: after its top-level `=` (not `==`, `=>`, `<=`, `>=` or `!=`), else 0.
+fn field_value_start(trees: &[TokenTree]) -> usize {
+    for (index, tree) in trees.iter().enumerate() {
+        if let TokenTree::Punct(p) = tree
+            && p.as_char() == '='
+            && p.spacing() == Spacing::Alone
+        {
+            let joined: bool = index
+                .checked_sub(1)
+                .and_then(|at: usize| match &trees[at] {
+                    TokenTree::Punct(prev) if prev.spacing() == Spacing::Joint => Some(prev.as_char()),
+                    _ => None,
+                })
+                .is_some();
+            if !joined {
+                return index + 1;
+            }
+        }
+    }
+    0
 }
 
 /// Names used inline in a format string: `{name}` and `{name:…}`.
@@ -576,15 +891,49 @@ pub(crate) fn inline_args(text: &str) -> Vec<String> {
 fn push_name(out: &mut Vec<String>, name: &str) {
     let valid: bool = name.chars().next().is_some_and(|c: char| c.is_ascii_alphabetic() || c == '_')
         && name.chars().all(|c: char| c.is_ascii_alphanumeric() || c == '_');
-    if valid && is_lowercase(name) && !out.iter().any(|existing: &String| existing == name) {
+    // `{self}` names the receiver, which a body captures as a clone.
+    if valid && (is_lowercase(name) || name == "self") && !out.iter().any(|existing: &String| existing == name) {
         out.push(name.to_string());
     }
 }
 
-/// Replaces `self` with `__self` in a token stream, leaving `self::` paths alone.
-pub(crate) fn rewrite_self(tokens: TokenStream) -> TokenStream {
+/// Renames a body's `self` to `__self`, the clone it captures; nested items keep their own `self`,
+/// and `self::` paths are left alone.
+pub(crate) struct RewriteSelf;
+
+impl VisitMut for RewriteSelf {
+    fn visit_expr_path_mut(&mut self, node: &mut syn::ExprPath) {
+        let path: &mut syn::Path = &mut node.path;
+        if node.qself.is_none() && path.leading_colon.is_none() && path.segments.len() == 1 {
+            let segment: &mut syn::PathSegment = &mut path.segments[0];
+            if segment.ident == "self" && segment.arguments.is_none() {
+                segment.ident = Ident::new("__self", segment.ident.span());
+            }
+        }
+    }
+
+    fn visit_item_mut(&mut self, _: &mut syn::Item) {}
+
+    fn visit_macro_mut(&mut self, node: &mut Macro) {
+        let name: String =
+            node.path.segments.last().map(|segment: &syn::PathSegment| segment.ident.to_string()).unwrap_or_default();
+        // A formatting macro's format string, or a tracing macro's message, may name `self` inline.
+        let format: Option<Option<usize>> =
+            match FORMAT_MACROS.iter().find(|(known, _): &&(&str, usize)| *known == name) {
+                Some((_, at)) => Some(Some(*at)),
+                None => TRACING_MACROS.contains(&name.as_str()).then_some(None),
+            };
+        node.tokens = rename_self_tokens(std::mem::take(&mut node.tokens), format);
+    }
+}
+
+/// A macro's tokens with `self` renamed as plain tokens, since they need not parse; `format` names the
+/// argument holding the format string, or, as `Some(None)`, the first lone string literal.
+fn rename_self_tokens(tokens: TokenStream, format: Option<Option<usize>>) -> TokenStream {
     let trees: Vec<TokenTree> = tokens.into_iter().collect();
     let mut out: Vec<TokenTree> = Vec::with_capacity(trees.len());
+    let mut argument: usize = 0;
+    let mut renamed_format: bool = false;
     for (index, tree) in trees.iter().enumerate() {
         match tree {
             TokenTree::Ident(ident) if ident == "self" => {
@@ -592,28 +941,77 @@ pub(crate) fn rewrite_self(tokens: TokenStream) -> TokenStream {
                     (trees.get(index + 1), trees.get(index + 2)),
                     (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b))) if a.as_char() == ':' && b.as_char() == ':'
                 );
-                if path_follows {
-                    out.push(tree.clone());
+                out.push(if path_follows {
+                    tree.clone()
                 } else {
-                    out.push(TokenTree::Ident(Ident::new("__self", ident.span())));
-                }
+                    TokenTree::Ident(Ident::new("__self", ident.span()))
+                });
             }
             TokenTree::Group(group) => {
                 let mut rebuilt: proc_macro2::Group =
-                    proc_macro2::Group::new(group.delimiter(), rewrite_self(group.stream()));
+                    proc_macro2::Group::new(group.delimiter(), rename_self_tokens(group.stream(), None));
                 rebuilt.set_span(group.span());
                 out.push(TokenTree::Group(rebuilt));
             }
+            TokenTree::Literal(literal) if !renamed_format => {
+                let alone: bool = (index == 0 || punct(&trees[index - 1]) == Some(','))
+                    && trees.get(index + 1).is_none_or(|next: &TokenTree| punct(next) == Some(','));
+                let at_format: bool = match format {
+                    Some(Some(at)) => argument == at && alone,
+                    Some(None) => alone && syn::parse2::<syn::LitStr>(tree.clone().into()).is_ok(),
+                    None => false,
+                };
+                renamed_format |= at_format;
+                let renamed: Option<proc_macro2::Literal> = at_format
+                    .then(|| rename_inline_self(&literal.to_string()))
+                    .flatten()
+                    .and_then(|text: String| text.parse::<proc_macro2::Literal>().ok());
+                out.push(match renamed {
+                    Some(mut renamed) => {
+                        renamed.set_span(literal.span());
+                        TokenTree::Literal(renamed)
+                    }
+                    None => tree.clone(),
+                });
+            }
             other => out.push(other.clone()),
+        }
+        if punct(tree) == Some(',') {
+            argument += 1;
         }
     }
     out.into_iter().collect()
+}
+
+/// A string literal's source with each inline `{self}` or `{self:…}` argument renamed `__self`.
+fn rename_inline_self(text: &str) -> Option<String> {
+    let mut out: String = String::with_capacity(text.len() + 8);
+    let mut changed: bool = false;
+    let mut rest: &str = text;
+    while let Some(at) = rest.find('{') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if rest.starts_with("{{") {
+            out.push_str("{{");
+            rest = &rest[2..];
+        } else if rest.starts_with("{self") && matches!(rest.as_bytes().get(5), Some(b'}' | b':')) {
+            out.push_str("{__self");
+            rest = &rest[5..];
+            changed = true;
+        } else {
+            out.push('{');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    changed.then_some(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proc_macro2::Span;
+    use quote::ToTokens;
 
     fn captured(src: &str) -> Vec<String> {
         let expr: Expr = syn::parse_str(src).expect("parses");
@@ -641,8 +1039,8 @@ mod tests {
 
     #[test]
     fn sees_into_nested_effects() {
-        assert_eq!(captured("Some(effect!(|n| n.update(|v: &u32| v + 1)))"), vec!["n"]);
-        assert_eq!(captured("effect!(async |id| { cache.set(id.get()); })"), vec!["id", "cache"]);
+        assert_eq!(captured("Some(node!(|n| n.update(|v: &u32| v + 1)))"), vec!["n"]);
+        assert_eq!(captured("node!(async |id| { cache.set(id.get()); })"), vec!["id", "cache"]);
     }
 
     #[test]
@@ -655,10 +1053,10 @@ mod tests {
     fn sees_keys_of_nested_effects() {
         // A key closure's parameters name variables of the enclosing body, read by reference.
         assert_eq!(
-            captured("effect!(|tick| *tick.get(), key = |row, user| (row.id, user.0))"),
+            captured("node!(|tick| *tick.get(), key = |row, user| (row.id, user.0))"),
             vec!["tick", "row", "user"]
         );
-        assert_eq!(captured("effect!(title.clone(), key = row.id)"), vec!["title", "row"]);
+        assert_eq!(captured("node!(title.clone(), key = row.id)"), vec!["title", "row"]);
     }
 
     fn classes(src: &str) -> Vec<(String, Class)> {
@@ -672,7 +1070,7 @@ mod tests {
         names.into_iter().map(|name: String| (name.clone(), captures.class(&name))).collect()
     }
 
-    fn fields(paths: &[&[&str]]) -> Vec<Vec<Ident>> {
+    fn fields(paths: &[&[&str]]) -> Vec<FieldPath> {
         paths
             .iter()
             .map(|path: &&[&str]| path.iter().map(|f: &&str| Ident::new(f, Span::call_site())).collect())
@@ -702,7 +1100,7 @@ mod tests {
         assert_eq!(classes("items.get(0).unwrap().set(5)"), vec![("items".into(), write.clone())]);
         assert_eq!(classes("my_macro!(a.get())"), vec![("a".into(), write)]);
         assert_eq!(classes("vec![a.get()]"), vec![("a".into(), read.clone())]);
-        assert_eq!(classes("effect!(|a| b.get())"), vec![("a".into(), read.clone()), ("b".into(), read)]);
+        assert_eq!(classes("node!(|a| b.get())"), vec![("a".into(), read.clone()), ("b".into(), read)]);
     }
 
     #[test]
@@ -727,8 +1125,100 @@ mod tests {
     }
 
     #[test]
+    fn underscored_constants_and_used_names() {
+        assert_eq!(captured("_LIMIT + _count + __CAP"), vec!["_count"]);
+        assert_eq!(captured("ä + Ö"), vec!["ä"]);
+        assert_eq!(
+            captured("{ use std::f64::consts::PI as pi; use a::{b, c as d, e::{self}}; pi * r + b + d + e }"),
+            vec!["r"]
+        );
+    }
+
+    #[test]
+    fn statement_macros_bind_for_later_statements() {
+        assert_eq!(captured("{ tokio::pin! { let fut = source(a); } fut.poll() }"), vec!["a"]);
+        assert_eq!(captured("{ let x = m!({ let y = 1; y }); y }"), vec!["y"]);
+    }
+
+    #[test]
+    fn scans_only_the_format_string() {
+        assert_eq!(captured("assert_eq!(x, \"{name}\")"), vec!["x"]);
+        assert_eq!(captured("assert_eq!(a, b, \"{c} {}\", d)"), vec!["a", "b", "d", "c"]);
+        assert_eq!(captured("write!(out, \"{v}\")"), vec!["out", "v"]);
+        assert_eq!(captured("anyhow!(\"{err}\")"), vec!["err"]);
+        assert_eq!(captured("my_log!(level, \"{v}\")"), vec!["level", "v"]);
+    }
+
+    #[test]
+    fn sees_into_matches_select_and_tracing() {
+        assert_eq!(
+            classes("matches!(x, Some(v) if { t.set(v); true })"),
+            vec![("x".into(), Class::Write), ("t".into(), Class::Write)]
+        );
+        assert_eq!(captured("tokio::select! { biased; v = rx.recv() => out.set(v), else => {} }"), vec!["rx", "out"]);
+        assert_eq!(
+            captured("tokio::select! { Some(v) = rx.recv(), if open.get() => { v } _ = sleep(d) => 0 }"),
+            vec!["rx", "open", "d"]
+        );
+        assert_eq!(
+            classes("tracing::info!(target: \"t\", c = %target.get(), ?other, \"{count:?} {}\", n.get())"),
+            vec![
+                ("target".into(), Class::ReadOnly),
+                ("other".into(), Class::ReadOnly),
+                ("count".into(), Class::ReadOnly),
+                ("n".into(), Class::ReadOnly)
+            ]
+        );
+    }
+
+    #[test]
+    fn unparsable_macros_capture_every_name_as_written() {
+        assert_eq!(
+            classes("weird!(@ a.b => c::D, 'l: { e } f: G)"),
+            vec![("a".into(), Class::Write), ("e".into(), Class::Write)]
+        );
+    }
+
+    #[test]
     fn inline_arg_parsing() {
         assert_eq!(inline_args("{a} {b:>4} {} {0} {{c}} {Upper}"), vec!["a", "b"]);
         assert_eq!(inline_args("{:>width$} {v:.prec$} {0:1$}"), vec!["width", "v", "prec"]);
+    }
+
+    fn rewritten(src: &str) -> String {
+        let mut expr: Expr = syn::parse_str(src).expect("parses");
+        RewriteSelf.visit_expr_mut(&mut expr);
+        expr.to_token_stream().to_string()
+    }
+
+    #[test]
+    fn self_inline_in_a_format_string_is_a_use_of_self() {
+        let expr: Expr = syn::parse_str(r#"format!("{self:?} {{self}}")"#).expect("parses");
+        let mut captures: Captures = Captures::new();
+        captures.expr(&expr);
+        assert!(captures.uses_self);
+        let nested: Expr =
+            syn::parse_str("{ struct T(u8); impl T { fn f(&self) -> u8 { self.0 } } 1 }").expect("parses");
+        let mut captures: Captures = Captures::new();
+        captures.expr(&nested);
+        assert!(!captures.uses_self, "a nested item's `self` is its own");
+    }
+
+    #[test]
+    fn rewriting_self_leaves_nested_items_and_self_paths_alone() {
+        let out: String = rewritten(
+            r#"{ use std::fmt::{self}; impl T { fn f(&self) {} } let a = self.a; self::g(); format!("{self:?} {{self}}") }"#,
+        );
+        assert!(out.contains("use std :: fmt :: { self }"), "{out}");
+        assert!(out.contains("fn f (& self)"), "{out}");
+        assert!(out.contains("let a = __self . a"), "{out}");
+        assert!(out.contains("self :: g ()"), "{out}");
+        assert!(out.contains(r#""{__self:?} {{self}}""#), "{out}");
+    }
+
+    #[test]
+    fn rewriting_self_renames_only_the_format_string() {
+        let out: String = rewritten(r#"assert_eq!(self.a, "{self}", "{self}")"#);
+        assert!(out.contains(r#"__self . a , "{self}" , "{__self}""#), "{out}");
     }
 }

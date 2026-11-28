@@ -1,6 +1,6 @@
 # LITHIA design spec v0.5.0
 
-2026-11-21 · Lily
+2026-11-28 · Lily
 
 What changed in each version is in [`CHANGELOG.md`](https://github.com/lilybw/lithia/blob/nightly/CHANGELOG.md). This spec states the design as it
 stands; the validation cases it names live in `crates/validation`, the details of how lithia is verified in
@@ -9,7 +9,7 @@ and what is known to be wrong or missing in [`docs/known_bugs.md`](https://githu
 
 ## 1. Overview and scope
 
-LITHIA is a thread-safe, fine-grained reactive engine for Rust on tokio. It brings the core of Solid 2.0's signal model to Rust through one primitive, the `effect!` proc macro.
+lithia is a thread-safe, fine-grained reactive engine for Rust on tokio. It brings the core of Solid 2.0's signal model to Rust through one primitive, the `node!` proc macro.
 
 ### Goals
 
@@ -41,7 +41,7 @@ What Loud Failures cannot see, since no check can tell these mistakes from inten
 - an automatic capture whose clone behaves differently from the original, such as an `mpsc::Sender` keeping its channel open (4.2);
 - a capture whose `PartialEq` ignores something a keyed body uses, which then keeps a stale result (4.7).
 
-### Out of scope for v0
+### Out of scope
 
 - Devtools and hot reload.
 - Merging functionally equivalent nodes.
@@ -49,15 +49,15 @@ What Loud Failures cannot see, since no check can tell these mistakes from inten
 - Nodes whose values are not `Send + Sync`.
 - Writable derived nodes, such as Solid's writable memos (16).
 
-### Where LITHIA departs from Solid 2.0
+### Where lithia departs from Solid 2.0
 
-| Solid 2.0 | LITHIA |
+| Solid 2.0 | lithia |
 | --- | --- |
 | Dependencies tracked automatically | Dependencies listed explicitly |
 | Writes inside reactive scope are errors | Writes inside bodies are allowed |
 | Effects split into compute and effect phases | One body; the dependency list acts as the compute phase |
 | Owner tree disposes children | Reference counting and support, no hierarchy; a body's children are rebuilt on every run unless keyed, and `.scoped()` or `dispose` stops a node early |
-| `mapArray` keeps rows by identity | `key` on any `effect!` in a body reclaims that node by key, site and parents; a keyed collection is on the roadmap (16) |
+| `mapArray` keeps rows by identity | `key` on any `node!` in a body reclaims that node by key, site and parents; a keyed collection is on the roadmap (16) |
 | Reading a pending value suspends the computation | Children run optimistically on the prior value |
 | Promises cannot be cancelled | Superseded async runs are aborted |
 
@@ -67,8 +67,8 @@ Solid 2.0 behaviour as described in RFC 01: reactivity, batching and effects.
 
 | Term | Meaning |
 | --- | --- |
-| Node | A unit of reactive state created by `effect!`. Always holds exactly one value. |
-| Source node | A `SourceNode<K>`: no dependencies, created by `effect!(value)`. Each write to it starts a new run whose only item is the written value. |
+| Node | A unit of reactive state created by `node!`. Always holds exactly one value. |
+| Source node | A `SourceNode<K>`: no dependencies, created by `node!(value)`. Each write to it starts a new run whose only item is the written value. |
 | Derived node | A `DerivedNode<K>`: one or more dependencies, value produced by its body. Covers memos, and effects when `K = ()`. |
 | Parent | A node listed as a dependency of another node. |
 | Child (subscriber) | A node that lists another node as a dependency. |
@@ -103,13 +103,13 @@ Solid 2.0 behaviour as described in RFC 01: reactivity, batching and effects.
 | Let go | A holder dropping its reference; the node is freed only if nothing else holds it (10.1). |
 | Operation context | The thread-local context in which an operation drops references first and sweeps after (10.1). |
 | Closed | A disposed node, whose body creates under no creator from then on (10.4). |
-| Key | The value of `effect!`'s `key` option, which names a node among the nodes its creator makes at one site (3.2). |
+| Key | The value of `node!`'s `key` option, which names a node among the nodes its creator makes at one site (3.2). |
 | Keyed node | A node created with a key inside a body; its creator's next run can reclaim it (10.1, Keyed nodes). |
 | Reclaim | A creation taking over a keyed node its creator's previous run made, instead of creating a new one (10.1, Keyed nodes). |
 | Holdover | The keyed nodes of a creator's released generations, held until a run of the creator has had the chance to reclaim them (10.1, Keyed nodes). |
 | Inputs | What a keyed node keeps of its captures, to compare a later creation's against (4.7). |
 | Probe | A capture borrowed by a keyed creation and compared against a node's inputs before anything is cloned (4.7). |
-| Shape | A node's `fragility`, `ghost` and `flags`, which a reclaim must match (10.1, Keyed nodes). |
+| Shape | A node's `batches`, `resilience` and `disposed` options, which a reclaim must match (10.1, Keyed nodes). |
 | Lease | The hold an expansion keeps on the handles a `move` body took over, until its block ends (4.2). |
 
 ### Scheduling terms
@@ -137,35 +137,35 @@ Solid 2.0 behaviour as described in RFC 01: reactivity, batching and effects.
 
 ## 3. Public API
 
-The whole surface is `effect!`, two node types, two views, the `Status`, `Failure`, `Site` and `Ghosted` types, the `Changes` stream, typed option constants (3.2), nine free functions, the `#[lithia::main]` and `#[lithia::test]` attributes, and the `lithia::test` module (3.5). Four sealed traits state what each handle may do, and `NodeValue` bounds every value (11.1). The validation cases of section 13 live in the `lithia-validation` crate, not in a public module.
+The whole surface is `node!`, two node types, two views, the `Ref`, `Status`, `Failure`, `Site`, `Ghosted` and `Rejected` types, the `Changes` stream, typed option constants (3.2), nine free functions and the `JoinHandle` and `JoinError` types of the two that spawn, the `#[lithia::main]` and `#[lithia::test]` attributes, and the `lithia::test` module (3.5). Four sealed traits state what each handle may do, and `NodeValue` bounds every value (11.1). The validation cases of section 13 live in the `lithia-validation` crate, not in a public module.
 
-### 3.1 effect!
+### 3.1 node!
 
-A closure with parameters creates a derived node that depends on them; any other expression creates a source node holding that value. Annotations are optional: `let count = effect!(0);` infers `SourceNode<i32>`.
+A closure with parameters creates a derived node that depends on them; any other expression creates a source node holding that value. Annotations are optional: `let count = node!(0);` infers `SourceNode<i32>`.
 
 ```rust
-let count: SourceNode<u32> = effect!(0);                                          // source node
-let guest: SourceNode<User> = effect!(async { fetch_user(7).await }, init = User::guest()); // async source node
-let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);                // derived node
-let id: SourceNode<u32> = effect!(7);
-let user: DerivedNode<User> = effect!(async |id| fetch_user(*id.get()).await, init = User::guest()); // async derived node
-let log: DerivedNode<()> = effect!(|count| println!("count = {}", count.get())); // effect
-let tick: DerivedNode<u32> = effect!(|count| { for i in 1..=*count.get() { yield i; } }); // generator
-let view: DerivedNode<Vec<DerivedNode<String>>> = effect!(|rows| rows.get().iter()
-    .map(|row: &Row| effect!(|suffix| format!("{}{}", row.title, suffix.get()), key = row.id))
+let count: SourceNode<u32> = node!(0);                                          // source node
+let guest: SourceNode<User> = node!(async { fetch_user(7).await }, init = User::guest()); // async source node
+let doubled: DerivedNode<u32> = node!(|count| *count.get() * 2);                // derived node
+let id: SourceNode<u32> = node!(7);
+let user: DerivedNode<User> = node!(async |id| fetch_user(*id.get()).await, init = User::guest()); // async derived node
+let log: DerivedNode<()> = node!(|count| println!("count = {}", count.get())); // effect
+let tick: DerivedNode<u32> = node!(|count| { for i in 1..=*count.get() { yield i; } }); // generator
+let view: DerivedNode<Vec<DerivedNode<String>>> = node!(|rows| rows.get().iter()
+    .map(|row: &Row| node!(|suffix| format!("{}{}", row.title, suffix.get()), key = row.id))
     .collect::<Vec<DerivedNode<String>>>()); // keyed children
 ```
 
 - Parameters are plain identifiers naming readable handles in scope: a node or an `Accessor`. Inside the body they refer to the same handles; nothing is shadowed.
 - A parameter may carry a type annotation, which the macro turns into a type check: `|count: SourceNode<i32>|` fails to compile when \`count\` is not a \`SourceNode\<i32>\`. Without one, the macro still checks the dependency through `Readable`.
 - A parameter may not repeat, and may not be a pattern, `ref`, `mut` or `_` binding (4.6).
-- A source node's value is an ordinary expression evaluated at the call site: a literal, a call, a block or a bound name. Normal Rust moves apply, so `effect!(my_vec)` moves `my_vec` into the node.
-- A closure stored as a value is bound to a name or wrapped in parentheses: `effect!(func)` or `effect!((|| 0))`. A bare `effect!(|| x)`, `effect!(async || x)` or `effect!(move || x)` is a compile error (4.6).
-- A tuple value is written in parentheses, `effect!((1, 2))`; `effect!(1, 2)` reads `2` as an option and fails to compile.
+- A source node's value is an ordinary expression evaluated at the call site: a literal, a call, a block or a bound name. Normal Rust moves apply, so `node!(my_vec)` moves `my_vec` into the node.
+- A closure stored as a value is bound to a name or wrapped in parentheses: `node!(func)` or `node!((|| 0))`. A bare `node!(|| x)`, `node!(async || x)` or `node!(move || x)` is a compile error (4.6).
+- A tuple value is written in parentheses, `node!((1, 2))`; `node!(1, 2)` reads `2` as an option and fails to compile.
 - An `async { … }` block creates a source node that stays `Pending` with its initial value until the block produces its first item (section 8).
 - A body that contains `yield` is a generator, written like Rust's `gen` blocks: each `yield` publishes an item, and the body returns `()` (3.6). A body without `yield` returns its single item.
 - An `async { … }` block that yields feeds a source node item by item.
-- `get()` returns `Arc<K>`, so values need no `Clone`; numeric use dereferences, e.g. `*count.get() * 2`.
+- `get()` returns a `Ref<K>`, which shares the value without copying it, so values need no `Clone`; numeric use dereferences, e.g. `*count.get() * 2` (3.3).
 - Inside a body, `key = …` keeps a child across its creator's runs: a rerun reclaims the node with the same key instead of creating a new one, and runs it again only if one of its captures changed (3.2, 10.1).
 
 ### 3.2 Options
@@ -173,22 +173,23 @@ let view: DerivedNode<Vec<DerivedNode<String>>> = effect!(|rows| rows.get().iter
 Named options follow the closure:
 
 ```rust
-let total: DerivedNode<i32> = effect!(|a, b| *a.get() + *b.get(),
-    init = 0, equals = lithia::eq, fragility = FRAGILE, ghost = ON_GHOST_EMIT_LATEST);
+let total: DerivedNode<i32> = node!(|a, b| *a.get() + *b.get(),
+    init = 0, equals = lithia::eq, resilience = NONE, disposed = MASK);
 ```
 
-| Option | Values | Default | Applies to | v0 |
-| --- | --- | --- | --- | --- |
-| `init` | an expression of type `K` | `K::default()` | derived nodes and async source nodes | yes |
-| `equals` | a comparator taking `(&K, &K)` and returning `bool`, or `lithia::eq` | none: every write propagates | all nodes | yes |
-| `ghost` | `ON_GHOST_CAUSE_FAILURE`, `ON_GHOST_EMIT_LATEST`, `ON_GHOST_SET_AS_PENDING` | `ON_GHOST_CAUSE_FAILURE` | all nodes | yes |
-| `fragility` | `FRAGILE`, `SEMI_FRAGILE` | not fragile | derived nodes | yes |
-| `flags` | `ALWAYS_PROPAGATE`, `WHOLE_EPOCHS`; combinable as bit flags, with more to come (16) | none | all nodes; `WHOLE_EPOCHS` matters for nodes with parents | yes |
-| `key` | an expression whose type is `Hash + Eq + Send + Sync + 'static`, or a closure `\|a, b\| expr` whose parameters name variables in scope | none: every run creates new nodes | all nodes created inside a body (10.1, Keyed nodes) | yes |
+| Option | Values | Default | Applies to |
+| --- | --- | --- | --- |
+| `init` | an expression of type `K` | `K::default()` | derived nodes and async source nodes |
+| `equals` | a comparator taking `(&K, &K)` and returning `bool`, or `lithia::eq` | `PartialEq` where `K` implements it, except for `()`; otherwise none (6.4) | all nodes |
+| `no_equals` | none: a flag on its own, which leaves the node without a comparator, so every write propagates | off | all nodes |
+| `key` | an expression whose type is `Hash + Eq + Send + Sync + 'static`, or a closure `\|a, b\| expr` whose parameters name variables in scope | none: every run creates new nodes | all nodes created inside a body (10.1, Keyed nodes) |
+| `batches` | `WHOLE`: run once every batch that reached the node is ready at it; `PARTIAL`: run on each batch as it is ready (8) | `PARTIAL` | derived nodes |
+| `resilience` | `COMPLETE`: never fail because of parents; `PARTIAL`: fail once all parents are failed; `NONE`: fail once any parent is (9.2) | `COMPLETE` | derived nodes |
+| `disposed` | `FAIL`, `MASK`, `PEND`: what readers and children see once the node is disposed (10.5) | `FAIL` | all nodes |
 
-Reserving the slot now means adding options later is never a breaking change. Each option may appear once; an unknown name, a repeated option, `init` on a plain source node and `fragility` on any source node are compile errors (4.6).
+Reserving the slot now means adding options later is never a breaking change. Each option may appear once; an unknown name, a repeated option, `equals` together with `no_equals`, a value given to `no_equals` or none to another option, `init` on a plain source node, and `batches` or `resilience` on any source node are compile errors (4.6).
 
-Option constants are typed: `fragility` takes a `lithia::Fragility` (`FRAGILE`, `SEMI_FRAGILE`), `ghost` a `lithia::GhostPolicy` (`ON_GHOST_CAUSE_FAILURE`, `ON_GHOST_EMIT_LATEST`, `ON_GHOST_SET_AS_PENDING`), and `flags` a `lithia::Flags` bitflags value (`ALWAYS_PROPAGATE`, `WHOLE_EPOCHS`, combined with `|`). Inside an option the constants resolve without an import; any other expression of the right type works too, such as `fragility = my_policy`.
+Each option's constants live in a module of its name: `batches` takes a `lithia::batches::Batches`, `resilience` a `lithia::resilience::Resilience` and `disposed` a `lithia::disposed::Disposal`. The types are opaque, so their constants are their only values, and each prints as its path, such as `resilience::NONE`. Inside an option, that option's constants resolve without an import and no other option's do, so `resilience = WHOLE` does not compile; any other expression of the right type works too, such as `resilience = my_policy` (Case BM).
 
 `key` is evaluated once, at creation, before the value and before any capture is taken. In the closure form, `key = |row| row.id`, the parameters name the variables the key reads: each is bound by reference to the variable of that name in scope, and the body is evaluated at once, never stored or called later, so the closure is written without `async` or `move` (4.6). The key's type must implement the private trait `KeyValue`, which every `Hash + Eq + Send + Sync + 'static` type does. A key is hashed together with its site and its type, so keys of different sites, or of different types at one site, never meet. Outside a body there is nothing to reclaim: the node is created as usual, with a debug event (12).
 
@@ -198,11 +199,11 @@ Each node is created as a `SourceNode<K>` or a `DerivedNode<K>`. Views are thin,
 
 ```rust
 /// Node with no dependencies whose value is set directly; cheap to clone, `Send + Sync`.
-/// `let count: SourceNode<u32> = effect!(0); count.set(3);`
+/// `let count: SourceNode<u32> = node!(0); count.set(3);`
 pub struct SourceNode<K: NodeValue> { … }
 
 /// Node whose body produces its value from its dependencies; `DerivedNode<()>` is an effect.
-/// `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);`
+/// `let doubled: DerivedNode<u32> = node!(|count| *count.get() * 2);`
 pub struct DerivedNode<K: NodeValue> { … }
 
 /// Read-only view of a node.
@@ -228,7 +229,7 @@ impl<K: NodeValue> SourceNode<K> {
     /// Write-only view of this node.
     pub fn setter(&self) -> Setter<K>;
     /// Lets this node live by its handles alone; nodes hanging off it stop with it.
-    /// Marks the node for every holder, for good. `let input: SourceNode<Req> = effect!(req).scoped();`
+    /// Marks the node for every holder, for good. `let input: SourceNode<Req> = node!(req).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self;
 }
@@ -237,47 +238,68 @@ impl<K: NodeValue> DerivedNode<K> {
     /// Read-only view of this node.
     pub fn accessor(&self) -> Accessor<K>;
     /// Lets this node live by its handles alone; nodes hanging off it stop with it.
-    /// Marks the node for every holder, for good. `let price: DerivedNode<f64> = effect!(|input| calc(&input.get())).scoped();`
+    /// Marks the node for every holder, for good. `let price: DerivedNode<f64> = node!(|input| calc(&input.get())).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self;
 }
 
 /// Read access, required of every dependency; implemented by `SourceNode`, `DerivedNode` and `Accessor`.
 /// `fn show(n: &impl Readable<Value = u32>) { println!("{}", n.get()); }`
-pub trait Readable: Sealed {
+pub trait Readable: Sealed + Send + Sync {
     type Value: NodeValue;
-    /// Current value. Panics if the node is a ghost under `ON_GHOST_CAUSE_FAILURE`.
-    fn get(&self) -> Arc<Self::Value>;
-    /// Current value, or `Err(Ghosted)` where the node's ghost policy would make `get` panic.
-    fn try_get(&self) -> Result<Arc<Self::Value>, Ghosted>;
+    /// Current value. Panics if the node is a ghost under `disposed = FAIL`.
+    fn get(&self) -> Ref<Self::Value>;
+    /// Current value, or `Err(Ghosted)` where the node's `disposed` option would make `get` panic.
+    fn try_get(&self) -> Result<Ref<Self::Value>, Ghosted>;
     /// Stream of this node's values from now on; like `tokio::sync::watch`, it may skip values.
     fn changes(&self) -> Changes<Self::Value>;
+    /// Calls `f` with the current value, borrowed; `f` may not write nodes. Panics like `get`.
+    fn with<R>(&self, f: impl FnOnce(&Self::Value) -> R) -> R where Self: Sized;
 }
 
 /// Write access; implemented by `SourceNode` and `Setter`.
 /// `fn reset(n: &impl Writable<Value = u32>) { n.set(0); }`
-pub trait Writable: Sealed {
+pub trait Writable: Sealed + Send + Sync {
     type Value: NodeValue;
     /// Replaces the value; every read sees it immediately. Panics on a ghost.
     fn set(&self, value: Self::Value);
-    /// Like `set`, but returns `Err(Ghosted)` instead of panicking.
-    fn try_set(&self, value: Self::Value) -> Result<(), Ghosted>;
+    /// Like `set`, but hands the value back in `Err(Rejected(value))` instead of panicking.
+    fn try_set(&self, value: Self::Value) -> Result<(), Rejected<Self::Value>>;
 }
 
 /// May be passed to `lithia::reflow`; implemented by `SourceNode`, `DerivedNode` and `Setter`.
-pub trait Reflow: Sealed { … }
+pub trait Reflow: Sealed + Send + Sync { … }
 
 /// May be passed to `lithia::dispose`; implemented by `SourceNode` and `DerivedNode`.
-pub trait Dispose: Sealed { … }
+pub trait Dispose: Sealed + Send + Sync { … }
 
 /// Error returned by the `try_` operations on a node freed by `lithia::dispose`; implements `Error`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ghosted;
 
-/// `Unpin` `Stream<Item = Arc<K>>` of a node's values, current value first; holds the node weakly.
+/// Error returned by `try_set` on a node freed by `lithia::dispose`, holding the value it was not given.
+/// `if let Err(lithia::Rejected(order)) = queue.try_set(order) { retry.push(order); }`
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Rejected<K>(pub K);
+
+/// `Unpin` `Stream<Item = Ref<K>>` of a node's values, current value first; holds the node weakly.
 /// `while let Some(v) = changes.next().await { println!("{v}"); }`
 pub struct Changes<K: NodeValue> { … }
+
+/// A node's value as one read saw it: it derefs to the value, and later writes leave it as it is.
+/// `let shared: Arc<u32> = count.get().into_arc();`
+pub struct Ref<K> { … }
+impl<K> Ref<K> {
+    /// The `Arc` holding the value; `Arc::from(r)` and `r.into()` do the same.
+    pub fn into_arc(self) -> Arc<K>;
+    /// The `Arc` holding the value, borrowed; called as `Ref::as_arc(&r)`.
+    pub fn as_arc(this: &Ref<K>) -> &Arc<K>;
+    /// True if both hold the same value; called as `Ref::ptr_eq(&a, &b)`.
+    pub fn ptr_eq(this: &Ref<K>, other: &Ref<K>) -> bool;
+}
 ```
+
+A `Ref` is an `Arc` under lithia's own name, so the read type can change without changing the API; it costs nothing beside the `Arc`. Cloning it clones the `Arc`, and it implements `Deref`, `AsRef`, `Borrow`, `Debug`, `Display`, `Pointer`, `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Hash` through the value, like `Arc`. No trait lets it stand where an `Arc<K>` parameter is expected; `into()` converts it. As on `Arc`, its own methods are called through the type, so none hides a method of the value.
 
 Handles state how a node is reached, not how long it lives: a node with a body needs no handle to keep running (10.1), and `.scoped()` makes one live by its handles alone (10.2). `get`, `set` and the other trait methods are also inherent on each type, so calling them needs no trait import; `Changes` likewise has an inherent `async fn next`, so a loop over it needs no `StreamExt`. The four traits are sealed: only lithia's handles implement them, which keeps the capability table below closed. `Ghosted` displays as "the node was disposed".
 
@@ -296,7 +318,7 @@ Handles state how a node is reached, not how long it lives: a node with a body n
 - Only nodes can `dispose`. Disposal is destructive, so a view must not be able to free the node it was handed.
 - Views are full references. A view keeps its node alive like any other handle, and is cheap to clone. An `Accessor` to a plain source node anchors nothing, since only a writer can change that node (10.1).
 - No upgrades. A view cannot be turned back into a node or into the other view.
-- Enforced by the compiler. Passing a `Setter` as a dependency, e.g. `effect!(|writer| …)`, fails to compile with a message naming `Readable` (4.6).
+- Enforced by the compiler. Passing a `Setter` as a dependency, e.g. `node!(|writer| …)`, fails to compile with a message naming `Readable` (4.6).
 
 ### 3.4 Status
 
@@ -304,22 +326,26 @@ Handles state how a node is reached, not how long it lives: a node with a body n
 /// Condition of a node as seen by readers and children.
 /// `if let Status::Failed(f) = lithia::status(&parent) { eprintln!("{f}"); }`
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Status { Ready, Pending, Failed(Arc<Failure>), Ghost }
 
-/// Why a node failed: its own panic, or its parents' failures under `fragility`; displays as `message (site)`.
+/// Why a node failed: its own panic, or its parents' failures under `resilience`; displays as `message (site)`.
+/// An `Error` whose source is its first cause.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Failure { pub message: String, pub site: Site, pub causes: Vec<Arc<Failure>> }
 
 /// Where a node was created, recorded at compile time; displays as `file:line:column in function`.
 /// `eprintln!("{}:{} in {}", site.file, site.line, (site.function)());`
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct Site {
     pub file: &'static str, pub line: u32, pub column: u32, pub module: &'static str,
     pub function: fn() -> &'static str, pub tokens: &'static str,
 }
 ```
 
-`Site`'s `Debug` output resolves `function` to its path rather than printing a pointer (4.3).
+`Site`'s `Debug` output resolves `function` to its path rather than printing a pointer (4.3). `Status` is non-exhaustive: a match needs a wildcard arm, so a later version can add a state, such as one for children waiting on pending parents (16), without breaking it.
 
 ### 3.5 Free functions
 
@@ -349,16 +375,36 @@ pub fn defer(f: impl FnOnce() + Send + 'static);
 pub fn status<N: Readable>(node: &N) -> Status;
 
 /// Comparator for the `equals` option, using `PartialEq`.
-/// `let n: SourceNode<i32> = effect!(0, equals = lithia::eq);`
+/// `let n: SourceNode<i32> = node!(0, equals = lithia::eq);`
 pub fn eq<K: PartialEq>(old: &K, new: &K) -> bool;
 
 /// Spawns a task that roots its own scope and whose polls form batches; it starts with an empty writer set.
 /// `lithia::spawn(async move { count.set(1); });`
 pub fn spawn<F: Future<Output = ()> + Send + 'static>(fut: F) -> JoinHandle<()>;
 
-/// Runs blocking work on tokio's blocking pool in the caller's scope; from a body, its writes count as the run's.
+/// Runs blocking work on the runtime's blocking pool in the caller's scope; from a body, its writes count as the run's.
 /// `lithia::spawn_blocking(move || count.set(heavy())).await?;`
 pub fn spawn_blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> JoinHandle<R>;
+
+/// A task `spawn` or `spawn_blocking` started; awaiting it gives the task's output. Dropping it lets the task run on.
+/// `let total: u64 = lithia::spawn_blocking(move || sum(&rows)).await?;`
+pub struct JoinHandle<T> { … }
+impl<T> JoinHandle<T> {
+    /// Cancels the task at its next await; blocking work that has started runs to its end.
+    pub fn abort(&self);
+    /// True once the task has ended: finished, panicked or cancelled.
+    pub fn is_finished(&self) -> bool;
+}
+impl<T> Future for JoinHandle<T> { type Output = Result<T, JoinError>; }
+
+/// Why a task gave no output: it panicked, or it was cancelled by `abort` or by its runtime shutting down.
+pub struct JoinError { … }
+impl JoinError {
+    pub fn is_cancelled(&self) -> bool;
+    pub fn is_panic(&self) -> bool;
+    /// The task's panic payload, for `std::panic::resume_unwind`, or the error back if it was cancelled.
+    pub fn try_into_panic(self) -> Result<Box<dyn Any + Send + 'static>, JoinError>;
+}
 
 /// Test utilities; unstable, and exempt from stability guarantees.
 pub mod test {
@@ -373,22 +419,24 @@ pub mod test {
 
 `#[lithia::main]` and `#[lithia::test]` are optional drop-in replacements for `#[tokio::main]` and `#[tokio::test]`. They make the entry task form batches and scope `flush()` to it; both default to the multi-threaded flavour. Without them everything works, but the entry task's writes are batched one by one (6.2).
 
-Both attributes require an `async fn` and accept tokio's runtime arguments: `flavor = "multi_thread"` or `"current_thread"`, `worker_threads = N` (multi-threaded flavour only) and `start_paused = bool`. Any other argument is a compile error naming the three. `#[lithia::test]` fails a test that runs longer than `LITHIA_TEST_TIMEOUT_MS` milliseconds, panicking with the test's name; unset or 0 means no limit, and the workspace sets 20 000 in .cargo/config.toml.
+Both attributes require an `async fn` and accept tokio's runtime arguments: `flavor = "multi_thread"` or `"current_thread"`, `worker_threads = N` (multi-threaded flavour only, at least 1) and `start_paused = bool`, which needs lithia's `test-util` feature (it turns on tokio's) and the current-thread flavour. Any other argument is a compile error naming the three; every bad argument is reported, and the function is emitted beside the errors, so it still exists for the rest of the crate. A test may return what a `#[test]` may, such as `Result<(), E>`. `#[lithia::test]` fails a test that runs longer than `LITHIA_TEST_TIMEOUT_MS` milliseconds of real time, whatever its runtime's clock does, panicking with the test's name; unset or 0 means no limit, and the workspace sets 20 000 in .cargo/config.toml.
 
 `flush()` never waits for async results, but a loop that never settles, like Case S, keeps it waiting; a test that needs an async result uses `lithia::test::settled`, ideally inside `tokio::time::timeout`.
+
+`JoinHandle` and `JoinError` are lithia's own, so no tokio type is part of the API and the runtime under lithia can change without breaking it. `JoinError` displays as "the task was cancelled" or "the task panicked" and implements `Error`.
 
 ### 3.6 Items: yield and changes()
 
 Every node is a stream of items, and its value is its latest item. A body publishes items with `yield`, exactly as in Rust's `gen` blocks; ordinary async code observes a node with `changes()`.
 
 ```rust
-let page: DerivedNode<Fetch> = effect!(async |url| {
+let page: DerivedNode<Fetch> = node!(async |url| {
     yield Fetch::Loading;                      // published; the run goes on
     let body: Page = fetch(&url.get()).await;
     yield Fetch::Done(body);
 }, init = Fetch::Loading);
 
-let tick: DerivedNode<u32> = effect!(|count| {
+let tick: DerivedNode<u32> = node!(|count| {
     for i in 1..=*count.get() { yield i; }    // each item may propagate on its own
 });
 
@@ -400,13 +448,13 @@ while let Some(f) = updates.next().await { render(&f); } // may skip values; nev
 - A generator body returns `()`, like a `gen` block. A body without `yield` behaves exactly as before: its return value is its only item.
 - A run that ends without yielding leaves the latest item in place, so a node that has a value always keeps one (Case O).
 - `yield` works only directly in the body. Inside a nested closure, async block or item it is a compile error (4.6), which is also how Rust's own generators treat it.
-- An existing `Stream` becomes a node with a short loop in an async source block, written with `move` so the stream is moved in rather than cloned (4.2): `effect!(async move { while let Some(x) = s.next().await { yield x; } })`.
+- An existing `Stream` becomes a node with a short loop in an async source block, written with `move` so the stream is moved in rather than cloned (4.2): `node!(async move { while let Some(x) = s.next().await { yield x; } })`.
 - Items from a superseded run are discarded by the run counter.
 - `changes()` behaves like `tokio::sync::watch`: a slow consumer sees the latest value, not every value. A source node's reflow sends nothing to `changes()`, since the value did not change (8).
 
 ## 4. Macro expansion
 
-`effect!` resolves everything it can at compile time: the dependency list, the captures, the site and the initial value. The runtime only receives a ready-made registration.
+`node!` resolves everything it can at compile time: the dependency list, the captures, the site and the initial value. The runtime only receives a ready-made registration.
 
 ### 4.1 Dependencies
 
@@ -420,9 +468,10 @@ while let Some(f) = updates.next().await { render(&f); } // may skip values; nev
 
 Rule: a body, or an async source block, captures a clone of everything it references. The clones are internal handles (10.1), recorded with whether the body may write them.
 
-- The macro walks the body with a scope-aware `syn` visitor and collects free identifiers: lowercase, in expression position, not bound inside the body by a `let`, a pattern, a closure parameter or an item. Each is cloned once, inside the expansion, before a `move` closure, so the outer handles stay usable; a capture of a capture, as in a nested `effect!` inside an async body, clones the value, not the reference.
-- Left alone: uppercase names (constants, statics, types, variants), path segments, method and field names, macro names, and identifiers in call position, such as `max` in `max(a, b)`: functions never need capturing, and a local closure called that way is moved instead, which fails loudly if it is used afterwards. `self` is captured as `__self`, its tokens rewritten; `self::` paths are left alone.
-- Formatting macros (`print!`, `format!`, `write!`, `panic!`, the `assert!` family and their kin) also get their string literals scanned for `{name}`, `{name:…}` and width and precision arguments; a named argument, `format!("{x}", x = 1)`, is not captured, its right-hand side is. Nested `effect!` calls are parsed: their parameters and free identifiers are captured by the outer body, and a `yield` inside one belongs to the nested node only. Identifiers inside other macro calls are captured best-effort.
+- The macro walks the body with a scope-aware `syn` visitor and collects free identifiers: lowercase, in expression position, not bound inside the body by a `let`, a pattern, a closure parameter or an item, a `use` included. A name is lowercase when its first character after any leading underscores is a lowercase letter or a digit, so `_LIMIT` is a constant and `_count` a variable. A macro call that stands as a statement binds for the statements after it, as `tokio::pin!` does. Each is cloned once, inside the expansion, before a `move` closure, so the outer handles stay usable; a capture of a capture, as in a nested `node!` inside an async body, clones the value, not the reference.
+- Left alone: uppercase names (constants, statics, types, variants), path segments, method and field names, macro names, and identifiers in call position, such as `max` in `max(a, b)`: functions never need capturing, and a local closure called that way is moved instead, which fails loudly if it is used afterwards. `self` is captured as `__self`, and each use of it in the body is renamed, `{self}` in a format string included; `self::` paths, and nested items and `use` declarations, which have their own `self`, are left alone. The expansion's own names start with `__lithia` and resolve at the macro's definition (mixed-site hygiene), so a body cannot see them, and an input that names one is an error; a body passed in through a `macro_rules!` macro resolves as it does written out.
+- Formatting macros (`print!`, `format!`, `write!`, `panic!`, the `assert!` family, `anyhow!`, `bail!` and their kin) get their format string, and only that, scanned for `{name}`, `{name:…}` and width and precision arguments, and their arguments count as reads; a named argument, `format!("{x}", x = 1)`, is not captured, its right-hand side is. Any other macro whose arguments are expressions gets its first string literal scanned the same way. Nested `node!` calls are parsed: their parameters and free identifiers are captured by the outer body, and a `yield` inside one belongs to the nested node only. `matches!` and `select!` are parsed with their patterns, which bind for their guards and handlers, and `tracing`'s event and span macros with their fields, whose `%` and `?` values count as reads.
+- Inside any other macro, every identifier is a use that may write, and when its arguments parse as neither expressions nor statements, every lowercase name in its tokens that is not a field, method, path segment, label or keyword is taken for one. A wrong guess is then a capture too many, which fails to compile if no such variable exists, rather than a missed write.
 - Captured values must be `Clone + Send + Sync`, by the bounds rule below; one that is not `Clone` is a compile error (4.6). The fix is to wrap the part that is not `Clone` in an `Arc` and capture node handles beside it, or to write `move`. Handles inside an `Arc` are not cloned, so they stay outside handles and anchor their nodes for as long as the body lives (10.1, Self-support). lithia never wraps a value in `Arc` on its own.
 - A wrong guess is usually caught: a missed identifier is moved, so later outer use fails to compile, and a wrongly captured one is cloned or fails to compile. A clone can still change behaviour unnoticed; a cloned `mpsc::Sender` keeps its channel open. Such values belong outside the body, or inside one written with `move`.
 - Every body form sees each capture by reference, a `&T`, rebound at the top of every run; an async or generator body keeps its captures in one `Arc` that each run clones, so the run's future owns what it uses. The same code therefore reads the same in every form: an integer capture needs `*`, as in `Duration::from_millis(*ms)`, and moving a handle out of a body, into `tokio::spawn`, a channel or a struct, takes a `.clone()`, which is an outside handle. A handle seen by reference is itself `Readable`, so it can be a dependency of a node the body creates.
@@ -434,27 +483,27 @@ Rule: a body, or an async source block, captures a clone of everything it refere
 **Read-only captures.** A capture is read-only when it is a handle and the body only reads it.
 
 - It is a handle when it is a dependency, checked through `Readable` so that generic code works too, or when it is a name or field path whose type at the capture site is a concrete handle type.
-- The body only reads it when every use is a call of `get`, `try_get`, `changes` or `accessor` on it, `lithia::status` on it, the bare name or such a call as an argument of a formatting macro, or a dependency of a nested `effect!` whose body only reads it.
+- The body only reads it when every use is a call of `get`, `try_get`, `changes` or `accessor` on it, `lithia::status` on it, the bare name or such a call as an argument of a formatting macro, or a dependency of a nested `node!` whose body only reads it.
 - Every other use counts as a possible write: passing it to a function, any other expression inside a formatting macro, and every use inside a macro other than the formatting macros, `vec!` and `dbg!`. Every node reached through a container, such as `items.get(0)` on a captured `Vec`, a value captured whole or generic code that is not a dependency, counts as possibly written too. This errs on the safe side: a missed write would free watchers that a living writer still feeds.
 
-**Field paths classify; they do not split.** A captured value is still captured whole. A field path is a captured name, or `self`, followed by named fields only, as in `self.theme` or `app.user`. When every use of a name is such a path and every path's value is a handle, each handle is classified by its own uses, and a handle no path reaches gets no edge. Any other use of the name, such as `self.notify(…)`, `&pair`, a field that is not a handle or passing it whole, makes every handle inside it a possible write. To stay precise, bind the fields the body needs before the `effect!`: `let (total, theme, tx) = (&self.total, &self.theme, &self.tx);` and then `notify(&tx, …)` in the body (Case AY).
+**Field paths classify; they do not split.** A captured value is still captured whole. A field path is a captured name, or `self`, followed by named fields only, as in `self.theme` or `app.user`. When every use of a name is such a path and every path's value is a handle, each handle is classified by its own uses, and a handle no path reaches gets no edge. Any other use of the name, such as `self.notify(…)`, `&pair`, a field that is not a handle or passing it whole, makes every handle inside it a possible write. To stay precise, bind the fields the body needs before the `node!`: `let (total, theme, tx) = (&self.total, &self.theme, &self.tx);` and then `notify(&tx, …)` in the body (Case AY).
 
-**`move`** means one thing in every form, `effect!(move |a| …)`, `effect!(async move |a| …)`, `effect!(|a| move …)` for generators and `effect!(async move { … })`: the outer values a body names are moved into it instead of cloned. It opts out of cloning, not out of the analysis:
+**`move`** means one thing in every form, `node!(move |a| …)`, `node!(async move |a| …)`, `node!(move |a| { … yield … })` for generators and `node!(async move { … })`: the outer values a body names are moved into it instead of cloned. It opts out of cloning, not out of the analysis:
 
 - A body that runs more than once still sees what it moved by reference. An async source block runs once, so a `move` block owns what it moved in and can consume it: send a `oneshot::Sender`, own a stream that is neither `Clone` nor `Sync`.
 - Each moved handle of a concrete handle type, or dependency, is flagged internal and classified as above; the value is then moved as written, so a binding keeps the `mut` it may need. The handle keeps its count until the creation has registered the node's edges, so no sweep can run between the two.
 - Each handle flagged this way is leased to the expansion. When an async source block ends, by completing, by being dropped, or by its node being disposed, freed or refreshed, it ends its lease: every leased handle still alive counts as an outside handle from then on, before the support that changes with it (10.1). A handle a block moves out, into a channel, a task or its result, therefore anchors its node once the block has ended (Case BP).
 - Classification works by name and by concrete type, so a handle inside a moved container, a handle reached only through a reference, or a non-dependency of generic type stays an outside handle: the node can hold itself through it (10.1, Self-support).
 
-**Async outputs.** An async body's output type is inferred from its tail. One that ends in a `loop` it can never leave has its output typed `()`, so `effect!(async |cfg| loop { … })` creates a `DerivedNode<()>`. An explicit `-> T` on an async closure types its output.
+**Async outputs.** An async body's output type is inferred from its tail. One that ends in a `loop` it can never leave has its output typed `()`, so `node!(async |cfg| loop { … })` creates a `DerivedNode<()>`. An explicit `-> T` on an async closure types its output.
 
 ### 4.3 Site
 
 `Site` is defined in 3.4.
 
-- `file!()`, `line!()` and `column!()` emitted by the proc macro report the user's `effect!` call, since they resolve to the outermost macro invocation.
+- `file!()`, `line!()` and `column!()` emitted by the proc macro report the user's `node!` call, since they resolve to the outermost macro invocation.
 - `function` comes from the type name of a marker function declared inside the expansion, resolved when `function` is called; inside closures the path contains `{{closure}}`.
-- `tokens` is the macro input, stringified at compile time.
+- `tokens` is the start of the macro input, stringified at compile time and cut at 80 characters; it is empty in builds without debug assertions, so a release binary holds no body source. `Site` is `#[non_exhaustive]`: only `node!` builds one.
 - `Site` implements `Debug` by hand, so the function path is printed rather than a function pointer, and `Display` as `file:line:column in function`.
 
 ### 4.4 Initial value
@@ -465,54 +514,66 @@ Rule: a body, or an async source block, captures a clone of everything it refere
 
 ### 4.5 Expansion
 
-`effect!` expands into a block that declares the call site's `Site` static, gathers the dependencies through `Readable`, takes each capture inside a capture session (4.2), and calls a private constructor with the site, the dependencies, the recorded captures, the initial value, the body and the options. The body is a `move` closure that rebinds each capture by reference at the top of every run; an async or generator body bundles its captures into one `Arc` that each run clones, and a generator's direct `yield x` becomes an await on a yielder that publishes the item (3.6, 16). The options that shape how a node behaves, `fragility`, `ghost` and `flags`, build a `Shape`, inside which option constants resolve without an import; `equals` is added to the options after it. `cargo expand` shows the full expansion of any call.
+`node!` expands into a block that declares the call site's `Site` static, gathers the dependencies through `Readable`, takes each capture inside a capture session (4.2), and calls a private constructor with the site, the dependencies, the recorded captures, the initial value, the body and the options. The body is a `move` closure that rebinds each capture by reference at the top of every run; an async or generator body bundles its captures into one `Arc` that each run clones, and a generator's direct `yield x` becomes an await on a yielder that publishes the item (3.6, 16). The options that shape how a node behaves, `batches`, `resilience` and `disposed`, build a `Shape`; each value is wrapped in a block that glob-imports its own option's module (3.2), and `equals` is added to the options after it. The constructor's last argument is a closure that picks the default comparator, or `no_implicit` when `equals` or `no_equals` is given; closures are type-checked after a call's other arguments, so the closure sees the value type the body or value fixed (6.4). `cargo expand` shows the full expansion of any call.
 
 ### 4.6 Compile errors
 
-Each of these inputs gets a dedicated message instead of a generic parse or trait error. Every row is covered by a compile-fail test in `lithia-validation` (`tests/ui`), which also fixed which message rustc shows where the spec left it open; a pass test (`tests/pass`) checks that a bare `effect!(…);` statement compiles under `#![deny(warnings)]`.
+Each of these inputs gets a dedicated message instead of a generic parse or trait error, pointing at the token at fault, and every such error in one input is reported, not only the first. Every row is covered by a compile-fail test in `lithia-validation` (`tests/ui`), which also fixed which message rustc shows where the spec left it open; a pass test (`tests/pass`) checks that a bare `node!(…);` statement compiles under `#![deny(warnings)]`.
 
 | Input | Message |
 | --- | --- |
-| `effect!(\|\| x)`, `effect!(async \|\| x)`, `effect!(move \|\| x)` | "a source node is written `effect!(x)`; to store this closure as the value, bind it to a name or wrap it in parentheses" |
-| `effect!(1, 2)` | "expected `name = value`; wrap tuple values in parentheses" |
-| `effect!(a = 3)` | "an assignment is not a value; write `effect!(3)`, or put options after a comma" |
-| `yield` inside a nested closure, async block or item | "`yield` publishes the enclosing effect! body's items and only works directly in that body" |
+| `node!(\|\| x)`, `node!(async \|\| x)`, `node!(move \|\| x)` | "a source node is written `node!(x)`; to store this closure as the value, bind it to a name or wrap it in parentheses" |
+| `node!(1, 2)` | "expected `name = value` or `no_equals`; wrap tuple values in parentheses" |
+| `node!(a = 3)` | "an assignment is not a value; write `node!(3)`, or put options after a comma" |
+| `yield` inside a nested closure, async block or item | "`yield` publishes the enclosing node! body's items and only works directly in that body" |
 | A value type that is not `Send + Sync + 'static` | "`T` cannot be a node value: values must be `Send + Sync + 'static`", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell` (11.1). rustc shows this `NodeValue` message, once even when both `Send` and `Sync` are missing. |
-| An unknown option | "unknown option `x`; expected one of init, equals, fragility, ghost, flags, key" |
+| An unknown option | "unknown option `x`; expected one of init, equals, no_equals, key, batches, resilience, disposed" |
 | A repeated option | "option `x` is given twice" |
+| `equals` together with `no_equals` | "`no_equals` and `equals` exclude each other" |
+| `no_equals = …` | "`no_equals` takes no value" |
+| Any other option without a value, such as `node!(0, equals)` | "`x` needs a value: `x = …`" |
+| A value type fixed only after the creation, as in `node!(None)`, that lacks `PartialEq` | rustc's "can't compare `T` with `T`", noting that `EqualsByDefault` is required, with its suggestion to derive `PartialEq` (6.4) |
 | `init` on a synchronous source node | "`init` applies to derived nodes and async source nodes; a source node starts with its value" |
-| `fragility` on any source node | "`fragility` applies to derived nodes only; a source node has no parents" |
+| `batches` or `resilience` on any source node | "`x` applies to derived nodes only; a source node has no parents" |
+| Another option's constant, or a value of another option's type | rustc's "cannot find value" or mismatched-types error at the value |
 | A parameter that is not a plain identifier, or one named twice | "dependencies are named by plain identifiers, each once" |
-| `init` missing where `K` has no `Default` | "`T` has no `Default`, so this node needs an initial value", labelled "add `init = …` to the effect! options". rustc shows this `InitDefault` message. |
+| `init` missing where `K` has no `Default` | "`T` has no `Default`, so this node needs an initial value", labelled "add `init = …` to the node! options". rustc shows this `InitDefault` message. |
 | A `Setter` as a dependency | "`Setter<K>` cannot be read, so it cannot be a dependency", noting that dependencies are nodes or `Accessor`s |
-| A captured value that is not `Clone` | "`T` is captured by an effect! body but is not `Clone`", labelled "captured here", with the fix as a note: wrap the part that is not `Clone` in `Arc` and capture node handles beside it, or write `move` (4.2) |
+| A captured value that is not `Clone` | "`T` is captured by a node! body but is not `Clone`", labelled "captured here", with the fix as a note: wrap the part that is not `Clone` in `Arc` and capture node handles beside it, or write `move` (4.2) |
 | An annotated parameter of the wrong type | rustc's mismatched-types error at the annotation |
-| A bare `effect!(…).scoped();` | the `#[must_use]` lint: "a scoped node lives only while its handles do; bind this one" |
+| A bare `node!(…).scoped();` | the `#[must_use]` lint: "a scoped node lives only while its handles do; bind this one" |
 | Moving a captured handle out of an async source block | rustc's mismatched-types error, `&SourceNode<K>` found, with its suggestion to clone (4.2) |
 | A key whose type is not `Hash + Eq + Send + Sync + 'static` | "`T` cannot be a node key", labelled "used as `key` here" on the key expression or the closure's body, noting that a key must be `Hash + Eq + Send + Sync + 'static`, like a `HashMap` key shared across threads. rustc shows this `KeyValue` message once per key. |
 | An `async` or `move` key closure | "a `key` closure names variables in scope and runs at once; write it without `async` or `move`" |
 | A key-closure parameter that is not a plain identifier, or one named twice | "`key` parameters name variables in scope by plain identifiers, each once" |
 | `#[lithia::main]` or `#[lithia::test]` on a non-`async` fn | "#\[lithia::main\] needs an `async fn`; the async keyword is missing" |
 | An unknown attribute argument | "unknown argument `x`; expected flavor, worker\_threads or start\_paused" |
+| `worker_threads = 0` | "worker\_threads is at least 1" |
+| `start_paused` without lithia's `test-util` feature | "`start_paused` needs lithia's `test-util` feature" |
+| A closure whose body is an async block, `node!(\|c\| async move { … })` | "a closure that returns an async block makes a node whose value is a future; write `async \|…\| { … }` or `async move \|…\| { … }` for an async body" |
+| An attribute on the body's closure or async block | "node! does not carry attributes on its closure or block over; put them on the enclosing statement" |
+| `yield` inside a macro call in a body, such as `select!` | "node! cannot see a `yield` inside a macro call such as `select!`; yield what the macro returns, after it" |
+| A name starting with `__lithia` | "names starting with `__lithia` are node!'s own" |
+| A capture that is not `Send + Sync + 'static` | "`T` is captured by a node! body but is not `Send + Sync + 'static`", labelled "captured here", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell`. rustc shows only this message. |
 
 ### 4.7 Keyed creation
 
-A keyed `effect!` looks its key up before it creates anything, and compares the captures of what it would create against what the node it finds has kept, so reclaiming a node whose captures are equal costs a lookup and a comparison: no clone, no body and no run.
+A keyed `node!` looks its key up before it creates anything, and compares the captures of what it would create against what the node it finds has kept, so reclaiming a node whose captures are equal costs a lookup and a comparison: no clone, no body and no run.
 
 - Probes. Each capture, `self` included, and each dependency is borrowed into a probe before anything is cloned or moved. Autoref specialization picks the first comparison that applies to the capture's type: a handle compares by its node; a `PartialEq + Clone` value compares by value and keeps a clone; an `Arc` whose target has no `PartialEq` compares by pointer and keeps the `Arc`; anything else is opaque, keeps nothing and always counts as changed, so a keyed node that captures one reruns whenever its creator does, as an unkeyed child is rebuilt (Case BK). A plain source node has one probe, its new value, which is compared against the node's current value instead of kept inputs.
-- Lookup. The creation asks the creator's holdover for a node that meets the conditions of 10.1, Keyed nodes, its shape included, and the answer is `Same` when every probe matches that node's inputs, `Changed` when one does not, and `Fresh` when no node was found.
+- Lookup. The creation asks the creator's holdover for a node that meets the conditions of 10.1, Keyed nodes, its shape included. Candidates are chosen by key hash, site, kind, value type and shape under the creator's scheduling lock; their keys, which run the key type's `PartialEq`, are compared after it is released, and a candidate taken meanwhile is looked for again. The answer is `Same` when every probe matches that node's inputs, `Changed` when one does not, and `Fresh` when no node was found.
 - `Same` returns a new handle to the node as it is, which takes the creation's comparator. `Changed` and `Fresh` go on to create as in 4.5, with the lookup's result, the key and the probes' kept values; creation then refreshes a `Changed` node in place, or makes a new node that keeps the key (10.1). A plain source node's key is evaluated before its value.
 - Only the key's constructor requires `KeyValue`, so a key of the wrong type gets one error, on the key (4.6). A closure key `|row| row.id` is applied to the row's reference.
 
 ## 5. Node model
 
-Every node always holds exactly one value, plus a unique id, a phase word its status derives from, and its graph edges. The record (`Node<K>`, `crates/lithia/src/node.rs`) splits into a type-erased header, which the scheduler works on, and the typed value, body and comparator. The value sits in a lock-free cell; the body is empty for source nodes and taken at disposal. The header holds:
+Every node always holds exactly one value, plus a unique id, a phase word its status derives from, and its graph edges. The record (`Node<K>`, `crates/lithia/src/graph/node.rs`) splits into a type-erased header, which the scheduler works on, and the typed value, body and comparator. The value sits in a cell behind a reader-writer lock, held only to clone or swap the `Arc`, so a write costs the same however many threads have read; the body is empty for source nodes and taken at disposal. The header holds:
 
 - identity: the `NodeId`, the writer identity it writes under (its id, or its lineage if a run created it, 7.4), its site, its creator for diagnostics, its kind and value type, and its key;
 - state: the stamp of its last change or reflow, the phase bits (`PENDING`, `FAILED`, `GHOST`), its failure, the id of its current run, and for an async source block the run id its block runs under;
 - edges: its parents, held strongly, with a sorted id list that numbers them; the writers that may write it and the targets its body may write, both weak; and the generation that holds it, by its creator, weakly;
 - lifetime: its anchor and capture counts, support's self-reference, the scoped flag, a block's lease, and whether support let go of it while it lives (10.1);
-- its shape (fragility, ghost policy, flags), its runtime and scope, its `changes()` channel and its rerun-rate window;
+- its shape (`batches`, `resilience`, `disposed`), its runtime and scope, its `changes()` channel and its rerun-rate window;
 - a write lock that serialises writers, and the scheduling lock (11.4).
 
 The scheduling lock guards the node's scheduler record:
@@ -521,7 +582,7 @@ The scheduling lock guards the node's scheduler record:
 - the run slot: the run in flight and each epoch it serves, with that epoch's writer set, its open tokens, whether the children were released, and the stamp to hand on; whether the run must restart once it has stopped, and whether it is a replacement still protected (7.3);
 - the epochs a superseded run served, handed to the next run; whether a run task is queued; whether the node is still unseeded (7.1); the stamp when its last run started;
 - its subscribers, weakly and by id; what its runs created, held strongly as the generation, with its keyed nodes and the holdover apart (10.1), and weakly for `settled`; the nodes it wrote without an edge, for `settled` (11.3);
-- the creations it gates (7.2), the epochs whose writes its next run leaves alone (7.4), and the flags `closed` (10.4), releasing a stopped run's generation, and failed through fragility (9.2).
+- the creations it gates (7.2), the epochs whose writes its next run leaves alone (7.4), and the flags `closed` (10.4), releasing a stopped run's generation, and failed through its parents (9.2).
 
 Each handle is a strong reference to its node plus a count saying whether it is internal (4.2), and, for a handle a `move` body took over, the expansion's lease: outside handles count in `anchors`, internal ones in `captured`, a leased one in `captured` until its lease ends and in `anchors` after, and only a drop of the last anchoring handle starts a sweep (10.1). Each epoch also records the writes runs delivered into it, as writer and written node, for cut reruns (7.4).
 
@@ -539,14 +600,14 @@ A value is never missing. Source nodes start with their value, derived and async
 
 ### 5.3 Status
 
-Status derives from the phase bits in priority order: `GHOST`, then `FAILED`, then `PENDING`, else `Ready`.
+Status derives from the phase bits in priority order: `GHOST`, then `FAILED`, then `PENDING`, else `Ready`. A ghost reports `Ghost` under `disposed = FAIL`, and masks as `Ready` under `MASK` and as `Pending` under `PEND` (10.5).
 
 | Status | `get()` returns | Entered when | Left when |
 | --- | --- | --- | --- |
-| `Ready` | the latest item | a synchronous source node is created, or a run produces an item or ends without one | a new run starts, a run panics, or the node is disposed |
-| `Pending` | the latest item | a derived or async source node is created, or a run starts, including on a failed node | the run produces an item, ends or panics, or the node is disposed |
-| `Failed` | the latest item before the failure | a run panics, fragility triggers, or the node's runtime has shut down (11.3) | a new run starts, or the node is disposed |
-| `Ghost` | depends on the `ghost` option | the node is disposed | never |
+| `Ready` | the latest item | a synchronous source node is created, a run produces an item or ends without one, or the node is disposed under `disposed = MASK`, for good | a new run starts, a run panics, or the node is disposed |
+| `Pending` | the latest item | a derived or async source node is created, a run starts, including on a failed node, or the node is disposed under `disposed = PEND`, for good | the run produces an item, ends or panics, or the node is disposed |
+| `Failed` | the latest item before the failure | a run panics, its parents fail it (9.2), or the node's runtime has shut down (11.3) | a new run starts, or the node is disposed |
+| `Ghost` | panics; `try_get` returns `Err(Ghosted)` | the node is disposed under `disposed = FAIL` | never |
 
 ## 6. Writes and batching
 
@@ -557,11 +618,11 @@ A write is visible to every read immediately; only the reruns it causes wait for
 - `set`, `update` and `modify` take the node's write lock, store the new value and record the node as changed in the current batch. A write to a source node is a run whose only item is the new value, so it supersedes, and is superseded, like any other run (7.3). It also clears a failure the node carried, such as one left by a panicked async block.
 - `yield` does the same for a derived node's own value (3.6), but never makes the node a writer (7.4).
 - `update(|old: &K| -> K)` runs its closure synchronously on the caller's thread, so the closure needs neither `'static` nor `move`.
-- `modify(|v: &mut K|)` does the same through a mutable reference: it clones the current value, runs the closure on the copy and publishes the copy. Reads are lock-free and may begin at any moment, so the copy cannot be skipped; for large values a persistent collection (such as the `im` crate) makes it cheap.
+- `modify(|v: &mut K|)` does the same through a mutable reference: it clones the current value, runs the closure on the copy and publishes the copy. Reads may begin at any moment, so the copy cannot be skipped; for large values a persistent collection (such as the `im` crate) makes it cheap.
 - Any lithia write inside an `update` or `modify` closure, or inside an `equals` comparator, panics, through a thread-local flag, and so do `lithia::reflow` and `lithia::dispose`. Otherwise two threads updating A and B in opposite nesting order would deadlock on each other's locks. Reading nodes and creating nodes are allowed there.
 - Only `modify` requires `K: Clone`, and only where it is called. `update` builds the new value from a reference to the old one, which readers may still hold.
 - Values are replaced, never mutated where readers can see them. Interior mutability inside a value (a `Mutex` or atomic field) compiles, but bypasses lithia: such changes trigger no reflow.
-- By default every write propagates; the `equals` option lets a node skip equal values (6.4).
+- By default a value equal to the current one, by `PartialEq`, changes nothing; `equals` and `no_equals` change what counts as equal (6.4).
 - Creating a node and calling `lithia::reflow` are recorded in the batch the same way. A node links to its parents the moment it is created (11.4); only its scheduling waits for the batch.
 
 ### 6.2 Batch boundaries
@@ -577,31 +638,35 @@ Tasks that lithia did not start, such as a plain `tokio::spawn` or a `#[tokio::m
 
 `lithia::defer(f)` runs `f` once the current batch's epoch has settled. Called from a body serving several epochs, it waits for all of them. Child epochs started by later polls are not waited for, so it never waits on async work. It needs no engine support of its own: it is a thin helper over the epoch tree (7.1).
 
-- `f` runs as a lithia task on the caller's runtime, or on a fresh single-threaded runtime of its own when there is none, and starts a fresh epoch with an empty writer set (7.4). It is therefore also the way to feed a value back into a cycle on purpose; a loop through it is unattributed and triggers the rerun-rate warning (12).
-- A pending `defer` holds a token on the caller's scope until its task has delivered, so `flush()` in that scope also waits for deferred work (Case X).
+- `f` runs as a lithia task on the caller's runtime, or, when there is none, on lithia's defer thread, a single-threaded runtime started on first use, and starts a fresh epoch with an empty writer set (7.4). It is therefore also the way to feed a value back into a cycle on purpose; a loop through it is unattributed and triggers the rerun-rate warning (12).
+- A pending `defer` holds a token on the caller's scope until its task has delivered, so `flush()` in that scope also waits for deferred work (Case X). The token is returned however `f` ends: a panic is caught and logged at warn (12), and the writes made before it still land, as in a body (9.1); a function whose runtime shut down before it ran returns its token unrun.
 - In a task lithia did not start, each write is its own batch, so `defer` attaches to the scope's most recent epoch and fires after it settles, or at once when the scope has no open epoch.
 
 Use it when a write must deliberately happen after the current propagation, instead of being visible to it.
 
 ### 6.4 Equality (`equals`)
 
-By default every write propagates. The `equals` option lets each node decide which new values count as changes:
+By default a node compares each new value with its current one by `PartialEq`, when its value type has it, so an equal value changes nothing. The `equals` option replaces the comparator, and `no_equals` removes it:
 
 ```rust
-let name: SourceNode<String> = effect!(String::new(), equals = lithia::eq);
-let user: SourceNode<User> = effect!(User::guest(),
+let name: SourceNode<String> = node!(String::new()); // compared by PartialEq
+let user: SourceNode<User> = node!(User::guest(),
     equals = |a: &User, b: &User| a.id == b.id && a.version == b.version);
+let tick: SourceNode<u64> = node!(0, no_equals); // every write propagates
 ```
 
+- The default is chosen where the node is created, from what the compiler knows of `K` there: `PartialEq` if `K` implements it, otherwise none. `()` is never compared, so an effect's runs keep reaching its children. In generic code, a `K` compares only if the function's bounds include `PartialEq`; `equals = lithia::eq` asks for it where the bounds don't show it.
+- Where `K` is not yet known at the creation, as in `node!(None)` whose type a later `set` fixes, the default assumes `PartialEq`, and a type that turns out to lack it fails to compile, naming `EqualsByDefault`. Naming the type, as in `let conn: SourceNode<Option<Conn>> = node!(None)`, or `no_equals`, avoids it.
+- A comparison costs what `PartialEq` costs: a long `Vec` or `String` is compared in full on every write, which `no_equals` or a cheaper `equals` avoids. Floating-point values follow `PartialEq`: `-0.0` equals `0.0`, and a `NaN` never equals anything, so it always propagates.
+- `lithia::reflow` reruns a node's children even when its value is equal (7.2), which is how a node with a comparator signals a change that `PartialEq` cannot see.
 - `equals` takes `|old: &K, new: &K| -> bool`, where `true` means equal.
 - `lithia::eq` is a ready-made comparator for `K: PartialEq` that requires the trait only where it is used.
 - When a new value equals the current one, three things happen: the node keeps its old value, `changes()` skips the new one, and nothing propagates. This holds for `set`, `update` and `modify` on source nodes, and for yielded items and return values on derived nodes.
 - Because an equal value is discarded, a comparator that tolerates small differences (an epsilon) also swallows a series of small changes for good; compare identities or versions instead.
 - An equal write is no run, so it does not supersede an async block or generator feeding the node.
 - If the comparator panics, a write panics in its caller and leaves the value unchanged, and an item from a run fails that run (9.1).
-- `flags = ALWAYS_PROPAGATE` keeps the first two and propagates anyway, for nodes that want deduplicated storage but every trigger. Under it an equal write counts as a run, so it does supersede an async block feeding the node (Case AD). Without `equals` nothing is ever equal, so every write propagates already and the flag changes nothing: it is accepted and has no effect, whether written literally or computed (Case BM).
 
-There is no implicit default. A node never compares unless asked, so an effect's `()` values keep propagating, and deriving `PartialEq` on a type changes nothing by itself. With `equals`, most write cycles converge on their own; the writer-only cut (7.4) remains the backstop.
+With a comparator, most write cycles converge on their own; the writer-only cut (7.4) remains the backstop.
 
 ## 7. Propagation
 
@@ -630,21 +695,21 @@ A run is in flight from the moment it starts until it ends or is superseded. Whi
 
 Dependencies must exist before the node that uses them, so the dependency graph is acyclic and `NodeId` order is a topological order. Every cycle is a write cycle, handled in 7.4.
 
-Each node has a phase word, which says among other things whether a run is in flight, and a version: the stamp, from one process-wide clock (11.4), of its last changed item (any item under `ALWAYS_PROPAGATE`) or of its last `lithia::reflow`, taken when reflow is called. `equals` therefore decides what counts as a change (6.4). A node also holds one entry per epoch it is framed in, open from the moment framing reaches it until it settles that epoch or a run takes it over.
+Each node has a phase word, which says among other things whether a run is in flight, and a version: the stamp, from one process-wide clock (11.4), of its last changed item or of its last `lithia::reflow`, taken when reflow is called. `equals` therefore decides what counts as a change (6.4). A node also holds one entry per epoch it is framed in, open from the moment framing reaches it until it settles that epoch or a run takes it over.
 
 One obligation per epoch. A node owes its children at most one release per epoch for its runs: an open entry, or a run holding that epoch unreleased; an entry opened while the run still owes the epoch hands its release to the run. This is what keeps a join glitch-free when a writer is framed again in an epoch its run already serves (Case T). A source node owes one release per delivery that writes it. A release is under way from the moment it is gathered until each child has it, and the node may be framed again in the epoch meanwhile, so a child counts in its entry the releases each parent owes it and is ready once it has them all, keeping the newest change any carried. Each release reaches exactly the children its framing counted (11.4).
 
 - Framing. When a node changes, each subscriber opens an entry for that epoch that waits on it, and so on downstream, so a diamond's join waits for both paths. When framing reaches a node that already has an entry for the epoch, it sets that parent's bit and stops: the node's subtree is framed already. A node whose run still owes the epoch opens an entry but frames no further, since its children already wait on it. The whole downstream region of a batch is framed before anything in it is released.
 - Releasing. Every release names the epoch it serves and carries a change stamp: the parent's version if it changed, the stamp of a reflow, or 0. A release reaching a child with no entry in that epoch, or owed nothing by that parent there, is ignored.
-- Running. When an entry's waiting set empties, the node becomes runnable for that epoch if a release in it carried a change stamped later than the start of the node's last run; anything stamped earlier was already visible to that run (11.4, step 5). A new node's first run, a reflow and a forced rerun (a disposed parent, a cut writer's rerun, a fragile node recovering after a change) are runnable whatever the stamps say. All entries runnable at once coalesce into one run, which takes over their entries (7.3). Every release, and every seeding of a first run or a refresh, first applies the writer check (7.4): a node whose writer identity already wrote on the chain in that epoch is not released to run (Case P).
-- Settling unchanged is the only other way an entry closes: the node closes it and releases its subscribers for that epoch, passing on any stamp it carries, with its own version unchanged. If the node's run still owes that epoch, the entry instead hands its writer set and stamp to the run, which releases once (7.3). It happens in three situations:
+- Running. When an entry's waiting set empties, the node becomes runnable for that epoch if a release in it carried a change stamped later than the start of the node's last run; anything stamped earlier was already visible to that run (11.4, step 5). A new node's first run, a reflow and a forced rerun (a disposed parent, a cut writer's rerun, a node recovering from failed parents after a change) are runnable whatever the stamps say. All entries runnable at once coalesce into one run, which takes over their entries (7.3). Every release, and every seeding of a first run or a refresh, first applies the writer check (7.4): a node whose writer identity already wrote on the chain in that epoch is not released to run (Case P).
+- Settling unchanged is the only other way an entry closes: the node closes it and releases its subscribers for that epoch, passing on any stamp it carries, with its own version unchanged. If the node's run still owes that epoch, the entry instead hands its writer set and stamp to the run, which releases once (7.3). An entry whose change is older than the start of the node's last run, which therefore read it, is not settled while that run has not released: it joins the run, which releases its epoch with its first item or when it ends, so `flush` and `defer` wait for the value that includes the change. If that run was superseded and has handed its epochs over, the entry joins the handover, and the successor releases it. Once the run has released, the entry settles with the node's current version as its stamp, so its subscribers test the change in turn. It happens in three situations:
   - no release in the entry carried a newer change, so equal values and runs that produced nothing stop there (Case R);
   - the writer check refuses the node (Case T). This records nothing, so a later real change still runs it, while a batch that merely frames it never does;
   - the node can no longer run, because it was freed or disposed, its weak reference cannot be upgraded at release, or its runtime has shut down, including when its run is aborted for one of these reasons.
 - During a run. Framing never disturbs a run in flight: a later epoch simply opens its own entry. Only when an entry becomes runnable with a change, a first run or a forced rerun while a run is in flight is that run superseded (7.3, item 4), and the new run serves the runnable entries together with the old run's, so a restart never reads a half-propagated join. This holds whichever epoch the entry belongs to. An entry runnable only for a reflow does not supersede: it waits for the run in flight to end. Nor does any entry while the run in flight is a replacement that has produced no item yet (7.3, item 4).
-- Fragility. A parent entering `Failed` fails each fragile child whose condition now holds, without running it. A parent leaving `Failed` is a status change that only fragile children see: each fragile child whose condition no longer holds reruns if it never ran or a parent's version is newer than the start of its last run, and is otherwise restored, unchanged, to its last value; its own fragile children recover the same way (9.2, Case BT).
+- Resilience. A parent entering `Failed` fails each child whose resilience now gives way, without running it. A parent leaving `Failed` is a status change that only children under `resilience = PARTIAL` or `NONE` see: each such child whose parents no longer fail it reruns if it never ran or a parent's version is newer than the start of its last run, and is otherwise restored, unchanged, to its last value; its own such children recover the same way (9.2, Case BT).
 - Creator order. A node its creator holds (10.1) does not start a run while the creator may still replace or keep it: while the creator has an entry it has not decided, a run it is about to start or restart, or a run under way that has not yet reclaimed the node. The node waits, registered with its creator, and starts again once the creator has settled, started, ended or let go of it. A node let go of with nothing left that can reach it, no anchor, capture or child, does not start the run its own task kept it alive for. So an old child never runs once more on the input that replaces it, a superseded run's creations wait for the restart that lets go of them, and a keyed child runs only with the captures its creator gives it (Case BR). The order holds for every creator the epoch has reached when the child's run would start; a creator reached only later, through a write made during the epoch, cannot stop a run already under way. A run under way does not hold back what it created or reclaimed, so a body can await its own creations.
-- `WHOLE_EPOCHS`. A node with this flag starts no run while one of its entries waits: the last epoch that reached it to become ready, or to settle, starts one run that serves them all (8, Case BV). Once 64 epochs have become ready while it waits, it runs on them as a node without the flag would, and warns once per site (12); the count restarts with each run, and when the node has no entries.
+- `batches = WHOLE`. Such a node starts no run while one of its entries waits: the last epoch that reached it to become ready, to settle or to join a handover starts one run that serves them all (8, Case BV). Once 64 epochs have become ready while it waits, it runs on them as under `batches = PARTIAL`, and warns once per site (12); the count restarts with each run, and when the node has no entries.
 - `lithia::reflow` raises the node's version when it is called and starts one more run after any run in flight, without superseding it. A derived node reruns; a source node has no body, so it re-emits its value: its children are released with the reflow's stamp. In both cases the node's children rerun even when `equals` judges the new item equal; a source node's reflow sends nothing to `changes()`.
 - Generations. Deciding a node's next run with no run in flight releases its generation (10.1); the release's drops, then its sweep, happen after the step's releases and before its spawns, so an idle old child decided in the same step is freed before its task exists.
 - Ties are broken in `NodeId` order.
@@ -655,7 +720,7 @@ One obligation per epoch. A node owes its children at most one release per epoch
 2. Items produced before a run's first `yield` or suspension belong to the epochs it serves. At that moment the worker running it delivers the poll's batch into those epochs, framing the downstream region of its writes (7.4, 11.4), and releases every node waiting on it, except in an epoch where the node has meanwhile opened an entry: that entry then owes the release and inherits the run's stamp and writers (7.2). A changed item raised the node's version; a run that produced nothing, or only values `equals` judged equal, leaves the version unchanged, so its children see no change. The run closes its entries once it has ended or is suspended (7.1), and keeps their writer sets until it ends (7.4).
 3. Items produced later arrive in a later delivery, which opens child epochs (7.1). The node's own new item is framed and released there like a write, with the writer set of the epoch each child descends from, which does not include the node itself.
 4. Supersession. When a new run of a node is due while one is in flight, because an entry became runnable (7.2) or a source node was written (item 5), the old run is superseded: lithia sets its cancel flag and wakes it. An async run is aborted when its current poll returns; a synchronous one is left to return and its result is discarded. Every item checks the cancel flag and the run counter under the write lock, so a superseded run can never publish an item. An item published before the run was superseded keeps its stamp: the run that takes over the epochs releases with it, so the children see the change even if the new item is equal, and a later item is delivered as usual. The batch of the old run's last poll is still delivered, so writes it made stay applied, as after a panic (9.1). The epochs the old run served pass to the new run, which starts once the old one has stopped; what the old run created stays in its generation until then, and is released before the new run is spawned. A new run that took over a superseded run's epochs is protected until its first item: an entry that becomes runnable meanwhile does not supersede it, but waits, coalescing with any later ones, and supersedes it at that item, which for a generator is its first `yield`, or runs after it ends. A node under input faster than its body therefore still publishes, at most one input behind, and a generator that never ends is supersedable again once it has yielded (Case BS). While a protected run finishes, its creations run on newer input like any node, and the run after it decides them: holding them back could deadlock a body that awaits its own creation. Other sections refer to this rule rather than restating it.
-5. A write to a source node is a run that produces the written value as its only item and finishes at once; an equal write is no run at all unless the node has `ALWAYS_PROPAGATE` (6.4). An async block or generator feeding a source node is a run like any other, so a later write supersedes it by item 4 (section 8), and its generation is released once it has stopped (Case AQ).
+5. A write to a source node is a run that produces the written value as its only item and finishes at once; an equal write is no run at all (6.4). An async block or generator feeding a source node is a run like any other, so a later write supersedes it by item 4 (section 8), and its generation is released once it has stopped (Case AQ).
 
 ### 7.4 Writes during propagation
 
@@ -668,7 +733,7 @@ A subscriber already in C settles unchanged; any other subscriber runs, joins th
 Only nodes that already wrote on the chain are skipped. A pure node inside a loop reruns and ends up consistent (Case M), and so does a sibling outside it (Case H). The same check applies at every later step, not just to T's direct subscribers, so an unconditional write-back through a memo stops too (Case P).
 
 - A subscriber of T sees T's new version (7.2) and carries C into its run, including when it runs again after finishing.
-- Creating a node is not a write, but it continues the chain: a new node's first run carries its creator's writer set, without the creator, so that a child can feed its creator, as a loader filling a cache its creator renders does (Case U). A node a run creates writes under its lineage rather than its id: a hash of its creator's writer identity, its site, and its key, or else its place among that site's creations in the run. The same creation in the creator's next run has the same lineage, and the writer check also applies when a first run or a refresh is seeded, so a loop that returns through node creation is cut like any other (Case S). Siblings made at one site, the same site under another creator, and other keys all stay apart. A lineage is a 63-bit hash, not an interned identity: two creations whose lineages collide count as one writer, so a write by one can be cut as though it fed back into the other. Among a million nodes created in runs and alive at once, a collision has a probability of about 5 × 10⁻⁸ (`docs/known_bugs.md`).
+- Creating a node is not a write, but it continues the chain: a new node's first run carries its creator's writer set, without the creator, so that a child can feed its creator, as a loader filling a cache its creator renders does (Case U). A node a run creates writes under its lineage rather than its id: an identity named by its creator's writer identity, its site, and its key, or else its place among that site's creations in the run. The same creation in the creator's next run has the same lineage, and the writer check also applies when a first run or a refresh is seeded, so a loop that returns through node creation is cut like any other (Case S). Siblings made at one site, the same site under another creator, and other keys all stay apart. Lineages are exact, never hashed: each lineage records which lineage every place or key at every site was given by the last run that ended without a successor, under any node writing under it, and by the runs since; a creation found there takes that lineage, and any other gets a new one from a counter that never repeats. Keys are compared by equality, with no lock held, so keys that hash alike stay apart. A recorded lineage lives while a node writes under it or its creator's lineage records it, so the next run finds it even after the node itself was freed, as a released generation is before that run starts.
 - Disposal is not a write either: the survivors of a disposal rerun with an empty writer set, so nothing can cut them (10.4).
 - Writer sets accumulate per node within one epoch, in the node's entry for it (7.2), and close with the entry. Within an epoch a node's set only grows, as the union of every set that reaches it in that epoch. Meshes such as n-way bindings therefore cost about n² runs instead of one per path, and a writer from an earlier item is never cut on a later one (Case Q).
 - A run serving several epochs keeps each entry's writer set apart: its writes are routed once per epoch, and a subscriber is cut only in the epochs where it already wrote.
@@ -692,14 +757,14 @@ Every run is asynchronous in principle; a synchronous body is simply one that re
 - A write cycle stops at the first writer that would run twice on one chain. An async node that does not write is not a writer, so it reruns once and its value catches up.
 - Supersession: works as in 7.3, item 4, so a node whose input outpaces its body still makes progress: the run that replaced another finishes, or yields its first item, before new input replaces it (Case BS).
 
-**Async source nodes (`effect!(async { … })`)**
+**Async source nodes (`node!(async { … })`)**
 
 - An async block or generator is the source node's first run (3.6). The run is registered when the node is created, so the node is `Pending` from that moment, with `init` or `K::default()`, until the run produces an item; a panic marks it `Failed`.
-- Every write starts a new run (7.3, item 5), so a write supersedes the block by the ordinary rule, even before the block has started: the block is aborted, or never starts, and any late items are discarded (Case G). A single write therefore stops a source fed by a stream for good. An equal write under `ALWAYS_PROPAGATE` counts as a write here (6.4).
+- Every write starts a new run (7.3, item 5), so a write supersedes the block by the ordinary rule, even before the block has started: the block is aborted, or never starts, and any late items are discarded (Case G). A single write therefore stops a source fed by a stream for good. An equal write is no run, so it leaves the block running (6.4).
 - The block gets the same automatic capture as closure bodies, and sees its captures by reference (4.2). Its task holds the node only weakly, like every run, so the block lives by its handles, children and captures, exactly like a plain source node (10.1); a discarded one is freed before it runs (Case AN). What the block creates is held by its run's generation, and released once a write has superseded the block and it has stopped (Case AQ).
 - A keyed async source block reclaimed with a changed capture restarts in place: its running block is aborted, late items are discarded, and the new block runs as the node's next run, under the run id `block_run` records (10.1, Keyed nodes; Case BH).
 - `reflow` on a source node re-emits its current value and raises its version, so its children rerun; it sends nothing to `changes()`, since the value did not change. Unlike a write, it does not supersede an async block or generator that is still running.
-- Because a write is just a run, writable derived nodes (Solid's writable memos) would need no new machinery; they remain out of scope for v0 and are on the roadmap (16).
+- Because a write is just a run, writable derived nodes (Solid's writable memos) would need no new machinery; they remain out of scope and are on the roadmap (16).
 
 **Generators**
 
@@ -711,9 +776,9 @@ Every run is asynchronous in principle; a synchronous body is simply one that re
 
 **Eventual consistency**
 
-- Once outside changes stop and every run has ended or suspended for good, every value matches what its body computes from its inputs, a cut writer's included, since it reruns once its epoch settles (7.4), except a failed node, which keeps its last successful value, with its fragile children (9).
+- Once outside changes stop and every run has ended or suspended for good, every value matches what its body computes from its inputs, a cut writer's included, since it reruns once its epoch settles (7.4), except a failed node, which keeps its last successful value, with the children its failure fails (9).
 - Reads see the newest value from the moment it is written, before the write's batch is delivered as an epoch, in every context. Within one epoch, synchronous diamonds stay glitch-free (Case B): a join waits for each of its parents that the epoch reached. Writes guarantee only final values: a sibling may briefly see a value before a clamp lands (Case H).
-- Across epochs, a join can combine one epoch's change with another epoch's half-propagated state, and nodes downstream of later items run again. With `flags = WHOLE_EPOCHS`, a node starts no run while an epoch that has reached it is still on its way to it, so it reads every such epoch whole; a write made but not yet delivered is still readable early, as everywhere, and its epoch then reruns the node (7.2, Case BV). Under input that never pauses, such a node waits for at most 64 epochs, then runs as a node without the flag would, and warns (7.2).
+- Across epochs, a join can combine one epoch's change with another epoch's half-propagated state, and nodes downstream of later items run again. With `batches = WHOLE`, a node starts no run while an epoch that has reached it is still on its way to it, so it reads every such epoch whole; a write made but not yet delivered is still readable early, as everywhere, and its epoch then reruns the node (7.2, Case BV). Under input that never pauses, such a node waits for at most 64 epochs, then runs as under `batches = PARTIAL`, and warns (7.2).
 - Intermediate items may be skipped: children and `changes()` see the latest item, not necessarily every item.
 - Repetition such as polling cannot be expressed as a cycle in the graph; write it as an async source block that loops, awaiting a timer and yielding each result (3.6), or drive it from outside.
 
@@ -725,27 +790,27 @@ A panicking body puts its node into `Failed`, which behaves like `Pending`: the 
 
 - Every run is polled through a wrapper that catches panics (`catch_unwind`). The wrapper catches the panic and marks the node `Failed`, with the panic message and the node's site.
 - A warning is emitted through `tracing`, with the site and the panic message (12).
+- Only the current run fails its node, as only it publishes (6.4): a run that panics after it was superseded, or after a write stopped its block (7.3), leaves the node as its successor or the write left it.
 - A failed node reruns when a dependency changes or on `lithia::reflow`. A new run clears the failure: the node is `Pending` until the run produces an item, and its children rerun only if that item changed (7.2).
 - No rollback. Writes the body made before panicking stay applied and still propagate, because the batch is delivered after the panic is caught (6.2, Case AE). Nodes it created follow the normal lifetime rules.
 - Panics inside `update` or `modify` happen on the caller's thread and propagate to the caller. The value is unchanged: `update` only reads the old value, and `modify` works on a copy that is discarded. Inside a body, the panic fails that body's node as usual. The write lock does not poison itself (`parking_lot`).
 - Builds with `panic = "abort"` cannot catch panics; the process aborts.
 
-### 9.2 Fragility
+### 9.2 Resilience
 
-By default, a child does not fail when a parent fails: it keeps running on the parent's last successful value. The `fragility` option makes it fail instead:
+By default, a child does not fail when a parent fails: it keeps running on the parent's last successful value. The `resilience` option says how many failed parents it withstands:
 
-| Value | The child fails when |
+| `resilience = …` | The child fails when |
 | --- | --- |
-| not set (default) | never because of a parent |
-| `FRAGILE` | any parent is failed |
-| `SEMI_FRAGILE` | all parents are failed |
+| `COMPLETE` (default) | never because of a parent |
+| `PARTIAL` | all parents are failed |
+| `NONE` | any parent is failed |
 
-- A child failing due to fragility does not run its body. Its `Failure` names each failed parent's failure in its `causes`.
-- The condition is checked when the child's entry in an epoch becomes ready, and again when a run of it is about to start, so a run decided before a parent failed does not start, and a run in flight is superseded. A parent entering `Failed` therefore fails its fragile children whose condition now holds, without running them (Cases E, AB).
-- A parent leaving `Failed` is a status change, which only fragile children see. A fragile child whose condition no longer holds reruns if it never ran or one of its parents changed after its last run started; otherwise its last value still matches its inputs, so it is restored to it, `Ready`, without running (Case BT). Its own fragile children recover the same way, and its other children rerun only if an item changed (7.2).
-- A pending parent does not count as failed. A ghost parent under `ON_GHOST_CAUSE_FAILURE` does. A child failed by fragility gets the message "parent failed", with its failed parents' failures as causes; a ghost parent contributes a failure with the message "parent disposed" and its own site. A node whose runtime has shut down gets "runtime shut down".
-- A failure through fragility is logged at debug, naming the first cause (12).
-- The values are mutually exclusive, so `fragility` is a named option like `ghost`. The names are provisional.
+- A child failing through its parents does not run its body. Its `Failure` names each failed parent's failure in its `causes`.
+- The condition is checked when the child's entry in an epoch becomes ready, and again when a run of it is about to start, so a run decided before a parent failed does not start, and a run in flight is superseded. A parent entering `Failed` therefore fails the children whose resilience now gives way, without running them (Cases E, AB). A run that fails after it released its epochs, in a later poll of an async body or after a generator's item, or because its runtime shut down while its task was suspended, tells its children through child epochs, as an item that changed nothing would.
+- A parent leaving `Failed` is a status change, which only children under `PARTIAL` or `NONE` see. Such a child whose parents no longer fail it reruns if it never ran or one of its parents changed after its last run started; otherwise its last value still matches its inputs, so it is restored to it, `Ready`, without running (Case BT). Its own such children recover the same way, and its other children rerun only if an item changed (7.2).
+- A pending parent does not count as failed. A ghost parent under `disposed = FAIL` does; one under `MASK` or `PEND` does not (Case AD). A child failed through its parents gets the message "parent failed", with its failed parents' failures as causes; a ghost parent contributes a failure with the message "parent disposed" and its own site. A node whose runtime has shut down gets "runtime shut down".
+- A failure through a node's parents is logged at debug, naming the first cause (12).
 
 ## 10. Lifetime and disposal
 
@@ -756,8 +821,8 @@ A node lives while anything holds it. Handles, children and captures hold nodes 
 There is no owner hierarchy, no declaration and no process-wide owner. Outside any run, the graph is the implicit root: support starts where something outside lithia holds the graph and flows the way changes flow. One opt-in, `.scoped()`, returns a node to the plain reference-counting rule (10.2).
 
 ```rust
-let parent: SourceNode<i32> = effect!(5);
-effect!(|parent| println!("Value is: {}", parent.get())); // runs for as long as `parent` can change
+let parent: SourceNode<i32> = node!(5);
+node!(|parent| println!("Value is: {}", parent.get())); // runs for as long as `parent` can change
 ```
 
 ### 10.1 Reference counting
@@ -781,12 +846,12 @@ effect!(|parent| println!("Value is: {}", parent.get())); // runs for as long as
 
 - Created while a run is being polled, or by blocking work that a run started: that run's generation, whatever kind of node it is, plain source nodes included.
 - Created anywhere else, such as the top of `main`, a lithia task, a plain tokio task, a thread, a `Drop` or a `defer` closure. This spec calls these nodes top-level.
-  - With parents, that is a closure form of `effect!`: support.
+  - With parents, that is a closure form of `node!`: support.
   - Without parents, a plain source node or an async source block: neither. It lives by its handles, children and captures alone, so the two kinds of source node behave alike everywhere.
 - Created by a run whose node has been disposed, or by blocking work whose run's node is gone: neither (Generations, below).
 - Scoped with `.scoped()`: neither, from then on (10.2).
 
-The line is drawn by syntax, so neither a trailing semicolon nor a generic `K` changes how long a node lives. A closure form of `effect!` always has parents: `effect!(|| …)` is a compile error (4.6).
+The line is drawn by syntax, so neither a trailing semicolon nor a generic `K` changes how long a node lives. A closure form of `node!` always has parents: `node!(|| …)` is a compile error (4.6).
 
 | Holder | Lets go of a node when |
 | --- | --- |
@@ -811,7 +876,7 @@ A release drops the generation's references and then sweeps once (Sweeps, below)
 
 Blocking work started with `lithia::spawn_blocking` keeps a weak reference to its run's node and creates into that node's current generation. A creation whose creator is closed or already freed has no creator: neither a generation nor support holds it, and it lives by its handles. If a handle holds it, it is seeded normally, so its epoch tokens close and `flush` returns; if nothing does, it is freed at once and never runs, with the first-run warning (12) when its creator was freed. A disposed node's body, still running, therefore creates nothing that runs afterwards unless it hands the node to a holder (Case AR).
 
-A body's children are rebuilt on every run unless they are keyed: each run of `effect!(|a| effect!(|b| …))` creates new nodes, and the previous run's are released (Case AL). Creator order (7.2) keeps the previous run's children from running on the input that replaces them, and a superseded run's creations wait for the restart, which lets go of them (Case BR).
+A body's children are rebuilt on every run unless they are keyed: each run of `node!(|a| node!(|b| …))` creates new nodes, and the previous run's are released (Case AL). Creator order (7.2) keeps the previous run's children from running on the input that replaces them, and a superseded run's creations wait for the restart, which lets go of them (Case BR).
 
 #### Keyed nodes
 
@@ -821,7 +886,7 @@ A node created inside a body with `key` (3.2) is a keyed node. Its creator holds
 - Disposal and the creator's freeing release the generation, its keyed nodes and the holdover together (10.4). Scoping a keyed node takes it out of wherever its creator holds it, so a scoped node is never reclaimed.
 - Support treats the holdover like the generation: a creation edge runs from the creator to each node in it.
 
-A keyed creation reclaims a node from its creator's holdover when it runs in a body whose node is not closed, during a run's poll or in blocking work the run started, and the node was created at the same site with an equal key of the same type (3.2), is of the same kind and value type, has the same shape (`fragility`, `ghost` and `flags`, Case BN) and the same parents as a set, and is not a ghost (Case BF). Outside any body a key has nothing to reclaim, and the node is created as usual, with a debug event (12, Case BJ). Nodes that share a key at one site are matched in creation order, and a key created twice at one site in one run warns (12, Case BG); two rows that swap places each refresh the other's node. A reclaimed node joins the current run's generation at once, so one run never reclaims a node twice.
+A keyed creation reclaims a node from its creator's holdover when it runs in a body whose node is not closed, during a run's poll or in blocking work the run started, and the node was created at the same site with an equal key of the same type (3.2), is of the same kind and value type, has the same shape (`batches`, `resilience` and `disposed`, Case BN) and the same parents as a set, and is not a ghost (Case BF). Outside any body a key has nothing to reclaim, and the node is created as usual, with a debug event (12, Case BJ). Nodes that share a key at one site are matched in creation order, and a key created twice at one site in one run warns (12, Case BG); two rows that swap places each refresh the other's node. A reclaimed node joins the current run's generation at once, so one run never reclaims a node twice.
 
 The lookup then compares the creation's probes against the node's inputs (4.7):
 
@@ -849,9 +914,9 @@ A node is supported when an anchor reaches it along these edges, with two except
 In practice:
 
 - In the example above, `parent`'s handle is the anchor, so the effect keeps printing for as long as that handle lives, under `#[lithia::main]`, `#[tokio::main]` or any thread that has entered a tokio runtime (Case AI).
-- Support flows only downstream, so nothing a body writes extends its own life. `effect!(|local| hits.update(…))` is freed with `local`, however long `hits` lives (Case J), and an effect that only reads `temp` beside a long-lived `clock` gives `temp`'s other watchers nothing (Case AK). A handle a body hands out, into its value, an `Arc`, a task or a channel, is an outside handle and anchors its node like any other (Case AV).
+- Support flows only downstream, so nothing a body writes extends its own life. `node!(|local| hits.update(…))` is freed with `local`, however long `hits` lives (Case J), and an effect that only reads `temp` beside a long-lived `clock` gives `temp`'s other watchers nothing (Case AK). A handle a body hands out, into its value, an `Arc`, a task or a channel, is an outside handle and anchors its node like any other (Case AV).
 - A writer keeps its targets' watchers alive while it lives: while an effect on a held `a` writes `x`, a handle-less watcher of `x` lives, whether or not anything still holds `x` (Case AJ), unless `x` is scoped.
-- An async source block lives by its handles, exactly like a plain source node. A discarded one is freed before it runs, with the first-run warning (Case AN). A loop or loader meant to last without a binding takes the state it serves as a parent, as in `effect!(async |cfg| loop { … })`, which lives while `cfg` can change and restarts when it does; otherwise it is bound, yields into its own node, or goes to `tokio::spawn`, whose handles are outside handles.
+- An async source block lives by its handles, exactly like a plain source node. A discarded one is freed before it runs, with the first-run warning (Case AN). A loop or loader meant to last without a binding takes the state it serves as a parent, as in `node!(async |cfg| loop { … })`, which lives while `cfg` can change and restarts when it does; otherwise it is bound, yields into its own node, or goes to `tokio::spawn`, whose handles are outside handles.
 - A node that support does not reach, such as an effect whose parents' handles are all gone, is freed when its own handles go, with the first-run warning if its first run had not got under way (Case AU). Outside lithia tasks, how far it got depends on timing, and the warning reports when it had not.
 - A top-level node on long-lived state lives as long as that state: a per-request memo or a per-connection effect runs until it is scoped, disposed or its state goes (Case AT). The unread-memo and growth warnings (12) flag such nodes.
 
@@ -859,7 +924,7 @@ In practice:
 
 - Support can be lost when an anchor or an edge goes: a node's last anchoring handle drops, a generation releases nodes, a node is disposed, or a node that may write others is freed. The last trigger matters because a writer held only in memory, by another body's capture or by a child, can go without any of the others.
 - Every operation that drops references, whether a release, a let-go, a disposal or a plain drop, runs in a thread-local operation context. It first drops them, with a node's `Drop` adding its starting points to the context instead of sweeping; then it runs one sweep from every starting point raised, and repeats with whatever that sweep's own let-go raises, until none remain. A release therefore sweeps once, after the released nodes that nothing else holds are gone, and freeing never recurses.
-- A node that support does not hold and that has no outgoing edges needs no sweep, since nothing can lose support through it. This keeps the common case cheap: a nested `effect!` that only reads, whose temporary handle drops at the end of its statement.
+- A node that support does not hold and that has no outgoing edges needs no sweep, since nothing can lose support through it. This keeps the common case cheap: a nested `node!` that only reads, whose temporary handle drops at the end of its statement.
 - A sweep first checks each starting point by an exact search backward to an anchor, which trusts nothing and gives up after 64 nodes. A starting point that is still supported loses nothing downstream, since support flows only forward, so a temporary anchor on a supported node, such as a helper's `&x.accessor()`, ends its sweep at once.
 - From the starting points that lost support, or whose check gave up, the sweep walks downstream, stopping at anchors, and computes support over the region it walked as a least fixpoint. At the region's border, a node held by support counts as supported, since only nodes downstream of a starting point can have lost support; any other node feeding in is checked by a search backward to an anchor (Case AV). Answers are remembered for the rest of the sweep. Neither search passes a scoped node that has no outside handles.
 - The sweep lets go of every node held by support that it walked and found unsupported. Letting go drops the self-reference, and the node is then freed if nothing else holds it.
@@ -871,7 +936,7 @@ In practice:
 #### Cycles and self-support
 
 - Write cycles, such as clamps and two-way bindings, live while an anchor reaches them and are freed once none does (Case AS). So are a creator and a child that may write the creator's input (Case AX), since a generation is an edge, not an anchor.
-- Self-support: a top-level node whose own value, or an `Arc` its body captured, holds an outside handle to a node upstream of it supports itself until it is scoped or disposed. Two patterns hit it: a selector memo that returns one of its parents' handles, such as `effect!(|a, b| if *a.get() > 0 { a.clone() } else { b.clone() })`, and a captured `Arc` of a struct that holds the effect's parent, such as a connection. `.scoped()` on the node avoids it; `lithia::test::live_nodes` and the growth warning catch it (Case AW). A task or channel a body hands a handle to holds only while it lives.
+- Self-support: a top-level node whose own value, or an `Arc` its body captured, holds an outside handle to a node upstream of it supports itself until it is scoped or disposed. Two patterns hit it: a selector memo that returns one of its parents' handles, such as `node!(|a, b| if *a.get() > 0 { a.clone() } else { b.clone() })`, and a captured `Arc` of a struct that holds the effect's parent, such as a connection. `.scoped()` on the node avoids it; `lithia::test::live_nodes` and the growth warning catch it (Case AW). A task or channel a body hands a handle to holds only while it lives.
 - Value cycles stay as they were: a source node whose value holds a handle to one of its own subscribers is a leak that only `lithia::test::live_nodes` catches (Case AF).
 
 **Consequences**
@@ -887,24 +952,24 @@ In practice:
 An effect needs no handle. It runs for as long as something outside lithia can still make it run: while its parents can change, or while a living writer feeds them.
 
 ```rust
-let count: SourceNode<u32> = effect!(0);
-effect!(|count| println!("{}", count.get())); // for as long as `count` can change
+let count: SourceNode<u32> = node!(0);
+node!(|count| println!("{}", count.get())); // for as long as `count` can change
 
-let rows: SourceNode<Vec<SourceNode<String>>> = effect!(Vec::new());
-effect!(|rows| {
+let rows: SourceNode<Vec<SourceNode<String>>> = node!(Vec::new());
+node!(|rows| {
     for row in rows.get().iter() {
         let row: SourceNode<String> = row.clone();
-        effect!(|row| println!("{}", row.get())); // rebuilt on every run of the outer effect
+        node!(|row| println!("{}", row.get())); // rebuilt on every run of the outer effect
     }
 });
 ```
 
 - For as long as its state can change: write the effect and let it go. Nested effects are rebuilt on every run of their creator, and the previous ones are freed (10.1). With a `key`, a rerun reclaims them instead and runs only those whose captures changed (10.1, Keyed nodes).
 - For the life of a value: return the effects as part of a derived node's value, or store them in a node, a struct field or a collection. They live at least as long as that value. When the next run replaces the value and nothing else holds the old one, the old effects are dropped (10.3); created by a run, they are also released with its generation.
-- Loops and loaders: an async block that should run without a binding takes the state it serves as a parent, `effect!(async |cfg| loop { … })`, and restarts when that state changes (Case AN). A discarded async source block is freed before it runs.
+- Loops and loaders: an async block that should run without a binding takes the state it serves as a parent, `node!(async |cfg| loop { … })`, and restarts when that state changes (Case AN). A discarded async source block is freed before it runs.
 - Precise captures: a body that uses a value through field paths only, such as `self.total` and `self.theme`, gets an edge only to the handles it may write. Calling a method on the value whole, such as `self.notify(…)`, makes every handle in it a possible write; binding the fields first, `let (total, theme, tx) = (&self.total, &self.theme, &self.tx);`, keeps it precise (Case AY). A helper that only reads takes `&x.accessor()`.
 
-**`.scoped()`.** `SourceNode::scoped` and `DerivedNode::scoped` take the handle and return it, `fn scoped(self) -> Self`, marked `#[must_use]` with "a scoped node lives only while its handles do; bind this one", since `effect!(…).scoped();` frees the node at once. From then on:
+**`.scoped()`.** `SourceNode::scoped` and `DerivedNode::scoped` take the handle and return it, `fn scoped(self) -> Self`, marked `#[must_use]` with "a scoped node lives only while its handles do; bind this one", since `node!(…).scoped();` frees the node at once. From then on:
 
 - the node lives by its handles, children and captures alone: support, any run's generation and any holdover let go of it at once;
 - support from upstream stops at it: it is supported only while it has outside handles itself;
@@ -916,9 +981,9 @@ effect!(|rows| {
 ```rust
 async fn quote(State(app): State<App>, Query(req): Query<Req>) -> String {
     let rates: &SourceNode<f64> = &app.rates;
-    let input: SourceNode<Req> = effect!(req);
-    let price: DerivedNode<f64> = effect!(|input, rates| calc(&input.get(), *rates.get())).scoped();
-    effect!(|price, rates| metrics::record(*price.get(), *rates.get())); // hangs off `price`
+    let input: SourceNode<Req> = node!(req);
+    let price: DerivedNode<f64> = node!(|input, rates| calc(&input.get(), *rates.get())).scoped();
+    node!(|price, rates| metrics::record(*price.get(), *rates.get())); // hangs off `price`
     lithia::flush().await;
     format!("{:.2}", price.get())
 } // returning, or a cancelled future, frees `price`, `input` and the metrics effect
@@ -932,13 +997,13 @@ Overlapping generations. Effects held in a replaced value live exactly as long a
 
 ### 10.3 RAII cleanup
 
-- When a new item replaces a node's value, the previous value is dropped. When a node is freed, its value and body are dropped.
-- Drops never run inside the scheduling protocol (11.4). Replaced values, values discarded by `equals` or by a superseded run, and the values and bodies of freed or disposed nodes, are dropped on the node's runtime, through `spawn_blocking` under `catch_unwind`, so a `Drop` may spawn tasks, block or write nodes. Its writes are detached work: an outside batch with an empty writer set (7.4). A panicking `Drop` is logged at warn (12).
+- When a new item replaces a node's value, the previous value is dropped. When a node is freed, its value, body, comparator, key and kept inputs are dropped.
+- Drops never run inside the scheduling protocol (11.4). Replaced values, values discarded by `equals` or by a superseded run, the values, bodies, comparators that own data, keys and kept inputs of freed or disposed nodes, and the inputs a reclaimed keyed node replaces, are dropped on the node's runtime, through `spawn_blocking` under `catch_unwind`, so a `Drop` may spawn tasks, block or write nodes. Its writes are detached work: an outside batch with an empty writer set (7.4). A panicking `Drop` is logged at warn (12).
 - A value whose type has no drop glue (`!needs_drop::<K>()`) is dropped inline, since dropping it can run no user code; so are strings and byte buffers (`String`, `Box<str>`, `Arc<str>`, `Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>`). This keeps plain numbers and strings off the blocking pool, whether they are replaced or discarded.
 - The drops one protocol step or one run poll causes are gathered and queued when it ends, as one blocking task per runtime, at most 64 to a task; each still runs under its own `catch_unwind`. The drops those drops cause in turn, such as nodes whose last handle a dropped value held, are gathered the same way. A `Drop` that blocks therefore delays the others in its task, and one `Drop` must not wait for another to run. Drops outside a step, such as a value replaced by a write from a task, are queued one by one.
 - If the node's runtime has shut down, or the node has none, tokio would drop the payload on the spawning thread, which may be a worker in the middle of scheduling. Such drops go to a lithia-owned drop thread instead, also under `catch_unwind`.
 - An old value is dropped only after the node's write lock is released, so a `Drop` that writes nodes cannot deadlock.
-- If a reader still holds the previous `Arc<K>`, the drop happens on that reader's thread when it lets go. `Drop` cannot be async, so graceful async cleanup spawns a task.
+- If a reader still holds the previous value in a `Ref<K>`, the drop happens on that reader's thread when it lets go. `Drop` cannot be async, so graceful async cleanup spawns a task.
 - A freed node wakes its run if one is parked. The run then finds its node gone and drops its future, and with it the captures inside, such as a handle a `move` block took over (Case AN).
 
 ### 10.4 Manual disposal
@@ -946,35 +1011,37 @@ Overlapping generations. Effects held in a replaced value live exactly as long a
 `lithia::dispose(&node)` frees the node and every descendant that has no live parent outside the freed branch, regardless of outstanding handles. Disposing twice does nothing. The API docs carry a use-after-free warning.
 
 - Descendants are examined in `NodeId` order, which is topological, so a node's parents are decided before it is. A parent that is already a ghost does not count as live.
-- Every freed node first becomes a ghost under its write lock, so no write can land afterwards; then each is torn down: its entries and run settle (7.2), it leaves its parents' subscriber lists, its `changes()` streams end, and its payload is released (10.5).
+- Every freed node first becomes a ghost under its write lock, so no write can land afterwards; then each is torn down: its entries and run settle (7.2), it leaves its parents' subscriber lists, its `changes()` streams end, and its payload is released (10.5). A framing walk opens no entry below a ghost, whose release may have gone by already; its survivors rerun instead.
 - Disposal also closes each freed node, so its body creates under no creator from then on (10.1, Generations), releases its generation, keyed nodes and holdover, and drops its support. All of this runs as one operation, whose sweeps follow: a ghost is never an anchor, so support may be lost downstream of it, through its targets, its generation and its surviving children.
-- The surviving children of freed nodes rerun in an outside batch with an empty writer set (7.4), so fragility and the ghost policy take effect at once (Case AC).
+- The surviving children of freed nodes rerun in an outside batch with an empty writer set (7.4), so resilience and the `disposed` option take effect at once (Case AC).
 - `dispose` panics inside an `update`, `modify` or `equals` closure (6.1).
 
 ### 10.5 Ghosts
 
 A ghost arises only through `lithia::dispose` (10.4); otherwise every handle keeps its node alive. A ghost is never an anchor (10.1).
 
-The `ghost` option of the freed node decides what readers and children see:
+The `disposed` option of the freed node decides what readers and children see:
 
-| `ghost = …` | `get()` | Children see | Value memory |
+| `disposed = …` | `get()` | Children see | Value memory |
 | --- | --- | --- | --- |
-| `ON_GHOST_CAUSE_FAILURE` (default) | panics; `try_get` returns `Err(Ghosted)` | a failed parent | dropped at disposal |
-| `ON_GHOST_EMIT_LATEST` | the last value | a ready parent, frozen | kept until the last handle drops |
-| `ON_GHOST_SET_AS_PENDING` | the last value | a parent pending forever | kept until the last handle drops |
+| `FAIL` (default) | panics; `try_get` returns `Err(Ghosted)` | a failed parent | dropped at disposal |
+| `MASK` | the last value | a ready parent, frozen | kept until the last handle drops |
+| `PEND` | the last value | a parent pending forever | kept until the last handle drops |
 
-Writes always fail on a ghost, whatever the policy. `set`, `update`, `modify` and `reflow` panic, and their `try_` forms return `Err(Ghosted)`. Inside a body, any of these panics puts that body's node into `Failed`. A ghost's body is dropped at disposal under every policy.
+`lithia::status` reports what the option names: `Ghost` under `FAIL`, `Ready` under `MASK` and `Pending` under `PEND`; a write still fails under all three. Neither `MASK` nor `PEND` fails a child, whatever its resilience (Case AD). Children keep using a pending parent's latest item (8), so the scheduler treats `MASK` and `PEND` alike until a child can wait for pending parents (16).
 
-When a node becomes a ghost, its surviving children rerun, so fragility and the ghost policy take effect at once (Case F). A node created later with a ghost among its parents behaves as such a surviving child: it is linked to every parent and sees each ghost through that ghost's policy, at its first run and after. A node created with only ghosts for parents is disposed at once, as disposal would have done to it, and is a ghost under its own policy (Case BO). Creation and disposal may race: disposal hands back the children linked by the time each disposed node closes, and handles them as it handles the rest, while a child linked later finds the node closed and handles itself. Its `changes()` streams end when it is freed or disposed, whatever the policy, and `changes()` on an existing ghost returns a stream that ends at once. A read of a ghost is logged at debug (12).
+Writes always fail on a ghost, whatever its `disposed` option. `set`, `update`, `modify` and `reflow` panic, and their `try_` forms return an error: `try_set` returns `Err(Rejected(value))` with the value it was given, which moves into the write and could not otherwise come back, and the others `Err(Ghosted)`. `Rejected` implements `Error` whatever `K`, prints no value in `Debug`, and converts into `Ghosted`, so `?` works where `Ghosted` is the error. Inside a body, any of these panics puts that body's node into `Failed`. A ghost's body is dropped at disposal under all three.
+
+When a node becomes a ghost, its surviving children rerun, so resilience and the `disposed` option take effect at once (Case F). A node created later with a ghost among its parents behaves as such a surviving child: it is linked to every parent and sees each ghost through that ghost's `disposed` option, at its first run and after. A node created with only ghosts for parents is disposed at once, as disposal would have done to it, and is a ghost under its own `disposed` option (Case BO). Creation and disposal may race: disposal hands back the children linked by the time each disposed node closes, and handles them as it handles the rest, while a child linked later finds the node closed and handles itself. A node disposed of while it is still being created is never held by support. Its `changes()` streams end when it is freed or disposed, whatever its `disposed` option, and `changes()` on an existing ghost returns a stream that ends at once. A read of a ghost is logged at debug (12).
 
 ## 11. Concurrency and runtime
 
-LITHIA runs on tokio's multi-threaded runtime: values live in per-node lock-free cells, and scheduling is a protocol on per-node state, with no central thread (11.4).
+lithia runs on tokio's multi-threaded runtime: values live in per-node cells, and scheduling is a protocol on per-node state, with no central thread (11.4).
 
-- Reads: `get()` loads the node's value cell (an `arc-swap` `ArcSwapOption<K>`) without locking, from any thread.
+- Reads: `get()` clones the value's `Arc` under its cell's read lock, from any thread; no write holds the cell for longer than a pointer swap, and reads take it recursively, so a read never waits behind a queued write. `with(|v| …)` reads the value in place, without the clone, under a closure guard, so `f` cannot write. A lock-free cell (`arc-swap`) was measured instead up to v0.5.0: its writes walked a list kept by every thread that had ever read, so a run in a chain cost 1.4 µs with no reader threads and 2.1 µs with 64.
 - Writes: applied on the caller's thread under the node's write lock, then recorded in the caller's batch.
 - No coordinator: whichever worker finishes a run or delivers a batch carries out the scheduling, under per-node locks (11.4). There is no central thread to bottleneck on, and none that user code must be kept away from.
-- Bodies: every run is spawned on the tokio runtime where its node was created. Long synchronous work inside a body blocks a worker thread and belongs in `lithia::spawn_blocking`, whose writes stay part of the run (7.1).
+- Bodies: every run is spawned on the tokio runtime where its node was created. Long synchronous work inside a body blocks a worker thread and belongs in `lithia::spawn_blocking`, whose writes stay part of the run (7.1). A body that must block where it runs does so through `tokio::task::block_in_place`: a blocked worker also holds up the tasks tokio has queued on it, which another worker takes only while one is searching, so a run queued behind a blocking body can wait until that body returns.
 - One run per node: at most one run of a node is in flight; supersession follows 7.3, item 4.
 
 ### 11.1 Type bounds
@@ -993,7 +1060,7 @@ LITHIA runs on tokio's multi-threaded runtime: values live in per-node lock-free
 
 ```rust
 /// Bound on every node value; blanket-implemented so that the compile error names the fix.
-/// `fn store<K: NodeValue>(v: K) -> SourceNode<K> { effect!(v) }`
+/// `fn store<K: NodeValue>(v: K) -> SourceNode<K> { node!(v) }`
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be a node value: values must be `Send + Sync + 'static`",
     note = "replace `Rc` with `Arc`, and `RefCell` or `Cell` with `Mutex`, `RwLock` or an atomic")]
@@ -1024,25 +1091,25 @@ Spawning every run costs more than running a body like `a + b`: about 4 µs agai
 
 lithia's scheduler is derived from MV-RP, the thread-safe propagation algorithm of REScala (Drechsler, Mogk, Salvaneschi and Mezini, OOPSLA 2018). It keeps MV-RP's framing phase, exclusive runs per node and pipelining. It leaves out what MV-RP uses to make concurrent updates strictly serializable: per-node version histories, a serialization graph and retroactive repair. lithia promises only eventual consistency between concurrent epochs (8), so it needs none of these, and its bodies write to arbitrary nodes mid-propagation, which MV-RP's up-front framing could not predict anyway.
 
-1. Locks. One short scheduling lock per node guards its entries, its run slot and the epochs it serves, the stamp of its last run, and its subscriber list. Its version and phase are atomics, so others read them without a second lock. A thread holds at most one scheduling lock at a time, except while creating a node (step 7) or starting a run, and never runs user code while holding one: releases, spawns, wakes, diagnostics and token closes are gathered under the lock and carried out after it is released. A write lock may already be held when a scheduling lock is taken, but no thread takes a write lock while holding a scheduling lock, and the protocol itself never takes write locks, so this single order rules out deadlock. Values stay lock-free to read.
-   - One sweep lock serializes sweeps, rises of anchor counts from zero and writers' registration (10.1). In the lock order it sits after write locks and a lease's lock, which a lease that ends holds while it counts its handles, and before scheduling locks, of which it takes one at a time. A sweep copies a node's parent list under that list's own lock and releases it before taking any scheduling lock, since deciding a fragile child takes the child's scheduling lock and then its parent list. It drops the strong references it took, and the self-references it let go of, only after releasing the lock, and emits its warnings then, so no node's teardown runs under it; inside an operation, those drops wait for the operation's end. A sweep may start inside an `update`, `modify` or `equals` closure, with that node's write lock held.
-   - At a run start a node takes its creator's scheduling lock inside its own, to see whether the creator still decides it (7.2, Creator order), as a new node takes its parents' inside its own (step 7): creators and parents are older than the node, so every nested pair runs from newer to older and the order stays acyclic. An epoch's record of writes is a leaf: nothing is locked inside it.
+1. Locks. One short scheduling lock per node guards its entries, its run slot and the epochs it serves, the stamp of its last run, and its subscriber list. Its version and phase are atomics, so others read them without a second lock. A thread holds at most one scheduling lock at a time, except while creating a node (step 7) or starting a run, and never runs user code while holding one: releases, spawns, wakes, diagnostics and token closes are gathered under the lock and carried out after it is released. A write lock may already be held when a scheduling lock is taken, but no thread takes a write lock while holding a scheduling lock, and the protocol itself never takes write locks, so this single order rules out deadlock. A value cell's lock is taken last and held only for a clone or a swap, so it adds no order. Under a scheduling lock, a node creation also takes its creator's scheduling lock and then the new node's `held_by` cell, and deciding whether its parents fail a node takes its parent list and then each parent's failure cell; under a write lock, a change takes the node's stream sender, which wakes the streams' tasks. Debug builds check a scheduling lock's invariants each time it is released: entries in epoch order, no runnable entry still waiting on a parent, every unreleased obligation holding a token, and no handover beside a run in flight.
+   - One sweep lock serializes sweeps, rises of anchor counts from zero and writers' registration (10.1). In the lock order it sits after write locks and a lease's lock, which a lease that ends holds while it counts its handles, and before scheduling locks, of which it takes one at a time. A sweep copies a node's parent list under that list's own lock and releases it before taking any scheduling lock, since deciding whether its parents fail a child takes the child's scheduling lock and then its parent list. It drops the strong references it took, and the self-references it let go of, only after releasing the lock, and emits its warnings then, so no node's teardown runs under it; inside an operation, those drops wait for the operation's end. A sweep may start inside an `update`, `modify` or `equals` closure, with that node's write lock held.
+   - At a run start a node takes its creator's scheduling lock inside its own, to see whether the creator still decides it (7.2, Creator order), as a new node takes its parents' inside its own (step 7): creators and parents are older than the node, so every nested pair runs from newer to older and the order stays acyclic. An epoch's record of writes is a leaf: nothing is locked inside it. So is a lineage's record of its creations (7.4), which a run's end takes inside its node's scheduling lock and a creation takes under no other lock, comparing keys only once it has let go of it.
 2. Framing. The thread that delivers a batch frames its whole downstream region, opening an entry on every reachable node (7.2), before it releases any run, so a join never runs before its second path reaches it. A body's writes are framed when its poll delivers them, before its own subscribers are released. Framing is a graph walk with no user code in it.
 3. Pipelining. Entries are per epoch (7.2), so a later epoch can run a node as soon as an earlier run of it finishes, even while the earlier epoch is still busy further downstream. A release for one epoch never touches another's entry, one scope's `flush` never waits on another scope's traffic through a shared node, and parents in different epochs cannot starve a join. The protected replacement of 7.3, item 4, does the same for async nodes: a node whose input outpaces its body still publishes.
 4. Release. The worker that finishes a run updates each child under that child's lock (7.2) and hands every ready child to the child's runtime. A release is gathered under its node's lock with the node's subscribers at that moment, and reaches exactly those; a write's release, which no entry holds, reaches the subscribers its framing walked. A framing walk goes on through the subscribers a node had when its entry opened, so a child is counted once, by a walk or a link, for each release that will reach it. Strong references taken from weak subscriber lists are dropped only after every lock is released. A ready async run or generator gets a task of its own; for a ready synchronous run, the fast path decides (11.2):
-   - A run or runner task keeps the ready synchronous runs of its own runtime that its steps hand on, up to 16 at a time, and runs them after its own run, each as its task would have, with its own `catch_unwind` and no lock held while its body runs, in a loop rather than by recursion. A step that readies several synchronous runs of one runtime packs them into runner tasks, about one per worker thread and at most 16 runs each, keeping the first share itself when its fast path is open for that runtime.
-   - A task runs at most 32 runs this way, and stops after 50 µs. The runs left then go on in one runner task if they were cheap, and in tasks of their own if one was heavy, so a heavy body keeps tokio's own fairness and parallelism, and a task in tokio's LIFO slot, which other workers cannot steal from, waits at most that long.
+   - A run or runner task keeps the ready synchronous runs of its own runtime that its steps hand on, up to 16 at a time, and runs them after its own run; the fast path is closed while a body polls, so a body that blocks until runs finish never waits for a run only its own poll's end would start. It runs them each as its task would have, with its own `catch_unwind` and no lock held while its body runs, in a loop rather than by recursion. A step that readies several synchronous runs of one runtime packs them into runner tasks, about one per worker thread and at most 16 runs each, keeping the first share itself when its fast path is open for that runtime.
+   - A task runs at most 32 runs this way, and stops after 50 µs, reading the clock every fourth run, so it may overshoot by three cheap runs. The runs left then go on in one runner task if they were cheap, and in tasks of their own if one was heavy, so a heavy body keeps tokio's own fairness and parallelism, and a task in tokio's LIFO slot, which other workers cannot steal from, waits at most that long.
    - A run on the fast path closes its tokens when the task's poll ends, after its node's references are gone (10.1), and holds the runs it keeps by weak reference until it polls them. A runner task dropped before it runs, as a runtime that shuts down drops it, hands each run to a task of its own, which ends that run as a shutdown does (11.3).
 5. Clock. Versions and run stamps come from one `AtomicU64`. A node publishes its new value first and then takes its stamp with a `fetch_add`; a run reads the clock for its `ran_at` before its body's first read. Both use `SeqCst` in v0, so a stamp at or below `ran_at` belongs to a value published before the run read anything, and a node is runnable only for a stamp strictly greater than `ran_at` (7.2).
 6. Epoch accounting. Each epoch counts its open entries atomically, whether a node or the run serving it holds them, and links to its parent epoch, which counts its open sub-epochs; the root's count is the scope's. A run opens its children's entries before it closes its own, so the count never reaches zero while work remains, and always reaches it once work stops (7.2). A run task drops every strong reference to its node before closing its tokens (10.1). Tokens of one epoch that close together close in one step; opens stay one at a time, since a disposal may close an entry's token while a framing walk is under way. This is a single-process form of the progress tracking in timely dataflow.
 7. Creation mid-propagation. A new node holds its own lock while it takes each parent's lock in turn. For every epoch a parent has an open entry in, or still owes a release in through its in-flight run or a handover (5), the new node opens an entry that waits on that parent; these entries wait for the node's seed (7.1). It reads every other parent's settled value (Case N). This is deadlock-free: a thread that reaches the new node through a parent it has already linked to holds no scheduling lock at that moment, and the protocol never holds a parent's lock while taking a child's.
-8. Verification. The protocol and lifetimes are specified in TLA+ (`docs/tla`): TLC checks the scheduling half, framing, releases, runs, supersession and handover, cuts and the epoch tree, for token conservation, waits only on releases still owed, consistency whenever `flush` returns, glitch freedom and termination; and the lifetimes half, anchors, leases, generations, support, sweeps and their walks, for exact anchor counts, a let-go only of what no anchor reaches, no leak and no early let-go once lithia has nothing left to do, and termination. TLC gates a release. The engine itself is model-checked with loom: built with `RUSTFLAGS="--cfg lithia_loom"`, it swaps every mutex, atomic, thread-local, value cell and the version clock for loom's through one shim module, and runs bodies on a small model executor; the cfg is `lithia_loom` rather than `loom`, which tokio itself reacts to. Sweeps keep their maps ordered by `NodeId`, loom builds take the full path for scoped nodes and for support's walks instead of process-wide shortcuts, and tokens that close together close in epoch-id order, so models running side by side explore the same interleavings. `Arc` and `Weak` counts and tokio's internals stay outside loom; every refcount-sensitive path is bracketed by locks or atomics loom does see, and stress runs check the rest. The validation cases (13), edge-case tests, a random differential test, kept mutations, stress runs and Miri complete the checks; `docs/VERIFICATION.md` says what each covers, where it lives and how it runs.
+8. Verification. The protocol and lifetimes are specified in TLA+ (`docs/tla`): TLC checks the scheduling half, framing, releases, runs, supersession and handover, generators, cuts, the epoch tree, `batches = WHOLE`, creator order, panics and resilience, reflows and disposal, creation and first runs, keyed reruns, async source blocks, `defer` and runtime shutdown, for token conservation, waits only on releases still owed, consistency whenever `flush` returns, glitch freedom, resilience, first runs only after the seed, reruns after reflows, keyed refreshes and disposal, blocks a write stopped publishing nothing, deferred functions only after their epoch, and termination; and the lifetimes half, anchors, leases, generations, keyed nodes and holdovers, support, sweeps and their walks, disposal and ghosts, children linked during a disposal, for exact anchor counts, a let-go only of what no anchor reaches, no leak and no early let-go once lithia has nothing left to do, ghosts that hold nothing, and termination. Only the rerun rate, a diagnostic that changes no step, is not modelled. TLC gates a release. The engine itself is model-checked with loom: built with `RUSTFLAGS="--cfg lithia_loom"`, it swaps every mutex, atomic, thread-local, value cell and the version clock for loom's through one shim module, and runs bodies on a small model executor whose wakers move a parked task back to its queue, so a lost wakeup leaves the task parked and fails the model; the cfg is `lithia_loom` rather than `loom`, which tokio itself reacts to. A clippy rule keeps any other lock, atomic or lazy cell out of the engine, except where a use says why loom need not see it. Sweeps keep their maps ordered by `NodeId`, loom builds take the full path for scoped nodes and for support's walks instead of process-wide shortcuts, and tokens that close together close in epoch-id order, so models running side by side explore the same interleavings. `Arc` and `Weak` counts and tokio's internals stay outside loom; every refcount-sensitive path is bracketed by locks or atomics loom does see, and stress runs check the rest. The validation cases (13), edge-case tests, a random differential test, kept mutations, stress runs and Miri complete the checks; `docs/VERIFICATION.md` says what each covers, where it lives and how it runs.
 
-Unlike in MV-RP, concurrent outside batches are not ordered as if they ran one after another: a join may combine changes from two epochs, unless it has `WHOLE_EPOCHS` (8). Within one epoch, everything in section 7 holds unchanged. MV-RP measured 20–25% single-threaded overhead for its full machinery (section 5.2 of the paper); lithia's subset is measured in section 15.
+Unlike in MV-RP, concurrent outside batches are not ordered as if they ran one after another: a join may combine changes from two epochs, unless it has `batches = WHOLE` (8). Within one epoch, everything in section 7 holds unchanged. MV-RP measured 20–25% single-threaded overhead for its full machinery (section 5.2 of the paper); lithia's subset is measured in section 15.
 
 ## 12. Diagnostics
 
-Every node carries its `Site` (4.3): file, line, column, module, function and the macro's tokens as written. Every event below includes the site of the node concerned, except a panicking drop, whose node may be gone; ghost panics include it in their message. Events are emitted outside every scheduling lock and outside the sweep lock (11.4, step 1).
+Every node carries its `Site` (4.3): file, line, column, module, function and the macro's tokens as written. Every event below includes the site of the node concerned, except a panicking drop, whose node may be gone, a panicking deferred function and a sweep, which belong to no one node; ghost panics include it in their message. Events are emitted outside every scheduling lock and outside the sweep lock (11.4, step 1). A subscriber that panics is caught where the event is emitted, so it cannot interrupt the protocol; that event is lost.
 
 | Event | `tracing` level | Also includes |
 | --- | --- | --- |
@@ -1053,10 +1120,12 @@ Every node carries its `Site` (4.3): file, line, column, module, function and th
 | Unread memo: a memo support keeps running though nothing reads it | warn | `.scoped()` or `dispose` as the fix |
 | A cycle cut a writer that holds a value | warn | the writer's site and the written node's, at the head of the chain |
 | A dropped value or body panicked | warn | panic message |
+| A deferred function panicked | warn | panic message |
 | A run created a key twice at one site | warn | the site; the nodes are matched in creation order (10.1) |
-| Child failed through fragility | debug | the first parent failure |
+| A `batches = WHOLE` node ran before every epoch reached it whole, after 64 became ready while it waited | warn | the bound; once per site (7.2) |
+| Node failed through its parents | debug | the first parent failure |
 | A key outside any body, which has nothing to reclaim | debug | the site; the node is created as usual (3.2) |
-| Ghost read under `ON_GHOST_EMIT_LATEST` or `ON_GHOST_SET_AS_PENDING` | debug | the policy |
+| Ghost read under `disposed = MASK` or `PEND` | debug | the `disposed` value |
 | A cycle cut an effect | debug | the writer's site and the written node's; the effect reruns once the epoch settles (7.4) |
 | Run superseded or aborted | trace | run counter |
 | A sweep | trace | starting points, nodes walked and nodes let go (10.1) |
@@ -1067,9 +1136,9 @@ Growth. Each site counts the nodes support holds, and warns when the count reach
 
 Unread memo. Once per site, when a top-level node whose value is not `()`, which support holds, has no outside handle, captured handle, child or `changes()` stream left, lithia warns. It checks when a sweep starts at or walks the node, and when the node loses its last child, its last captured handle or its last `changes()` stream, so a reader that goes without a sweep is noticed too. Nodes that may write are exempt, since their writes may be what they are for (Case AT). The value's type decides only this warning, never a lifetime.
 
-Rerun rate. Each node counts its run starts in one-second windows and warns once per window when the count passes the threshold: 50 000 runs per second by default, overridden by the `LITHIA_RERUN_RATE` environment variable, read once per process. A healthy node reruns 40 000–140 000 times a second on the benchmark's machine (15), so the warning flags loops that spin faster than lithia's own steps.
+Rerun rate. Each node counts its run starts, under the scheduling lock its run start holds, in one-second windows and warns once per window when the count passes the threshold; the clock is read as a window opens, every 1 024 runs and once past the threshold, so a window may close up to 1 023 runs late. The threshold is 50 000 runs per second by default, overridden by the `LITHIA_RERUN_RATE` environment variable, read once per process. A healthy node reruns 40 000–140 000 times a second on the benchmark's machine (15), so the warning flags loops that spin faster than lithia's own steps.
 
-Devtools are out of scope for v0 and on the roadmap (16).
+Devtools are out of scope and on the roadmap (16).
 
 ## 13. Validation cases
 
@@ -1081,7 +1150,7 @@ Case A is the agreed acceptance case. Cases B to BW pin down the rules above, an
 | B | Diamond | `tests/cases.rs` |
 | C | Clamping cycle | `tests/cases.rs` |
 | D | Optimistic async | `tests/cases.rs` |
-| E | Panic, recovery and fragility | `tests/cases.rs` |
+| E | Panic, recovery and resilience | `tests/cases.rs` |
 | F | Ghosts | `tests/cases.rs` |
 | G | Async source node | `tests/cases.rs` |
 | H | Sibling of a write cycle | `tests/cases.rs` |
@@ -1104,9 +1173,9 @@ Case A is the agreed acceptance case. Cases B to BW pin down the rules above, an
 | Y | Changes() yields the current value first and ends at disposal | `tests/cases.rs` |
 | Z | Modify publishes a changed copy | `tests/cases.rs` |
 | AA | Spawn\_blocking from a body | `tests/cases.rs` |
-| AB | SEMI\_FRAGILE fails only when every parent has failed | `tests/cases.rs` |
+| AB | `resilience = PARTIAL` fails only when every parent has failed | `tests/cases.rs` |
 | AC | A ghost with a surviving child | `tests/cases.rs` |
-| AD | ALWAYS\_PROPAGATE | `tests/cases.rs` |
+| AD | A ghost under `disposed = MASK` or `PEND` fails no child, whatever its resilience | `tests/cases.rs` |
 | AE | A panicking body still propagates its writes | `tests/cases.rs` |
 | AF | Live\_nodes catches a value cycle | `tests/cases.rs` |
 | AG | A graph spanning two runtimes | `tests/cases.rs` |
@@ -1141,16 +1210,16 @@ Case A is the agreed acceptance case. Cases B to BW pin down the rules above, an
 | BJ | A key outside any body has nothing to reclaim; the node is created as usual | `tests/keyed.rs` |
 | BK | An `Arc` capture compares by pointer; a capture without `PartialEq` always counts as changed | `tests/keyed.rs` |
 | BL | Every body form sees its captures by reference; a `move` block owns what it moved in | `tests/consistency.rs` |
-| BM | `ALWAYS_PROPAGATE` without `equals` changes nothing | `tests/consistency.rs` |
+| BM | An option's value may be any expression of its type | `tests/consistency.rs` |
 | BN | A reclaim needs the same shape, and takes the creation's comparator | `tests/consistency.rs` |
 | BO | A new child of a ghost behaves as a surviving child; with only ghosts for parents, it is one | `tests/consistency.rs` |
 | BP | A handle a `move` block moves out counts once the block has ended | `tests/consistency.rs` |
 | BQ | An anchor's return holds again what support let go of | `tests/consistency.rs` |
 | BR | A creator decides its children before they run | `tests/consistency.rs` |
 | BS | An async node whose input outpaces its body still publishes | `tests/consistency.rs` |
-| BT | A fragile child whose parent recovers unchanged is restored without running | `tests/consistency.rs` |
+| BT | A child failed through a parent that recovers unchanged is restored without running | `tests/consistency.rs` |
 | BU | A cut writer reruns once its epoch has settled | `tests/consistency.rs` |
-| BV | A `WHOLE_EPOCHS` join waits for every epoch that has reached it | `tests/consistency.rs` |
+| BV | A `batches = WHOLE` join waits for every epoch that has reached it | `tests/consistency.rs` |
 | BW | `lithia::test::settled` follows the subtree's writes | `tests/consistency.rs` |
 
 ## 14. Temporarily tolerated behavioural inconsistencies
@@ -1167,36 +1236,35 @@ The benchmarks live in the `lithia-bench` crate: `cargo bench -p lithia-bench` p
 - reruns one node 40 000–140 000 times a second when driven as fast as `flush` allows;
 - makes 10 allocations per run.
 
-They show orders of magnitude and relative costs only. Contention on 8–64 cores, the padding of hot statics and the one sweep lock are not measured yet (16).
+They show orders of magnitude and relative costs only. `cargo bench -p lithia-bench --bench scaling`, run only on request, measures the sweep lock, the version clock, value cells and the scheduling locks at 1 to N threads. On a 16-core desktop the version clock scales, but the one sweep lock does not: a last-handle drop takes about 0.3 µs on one thread and about 90 µs on each of 32 at once (16).
 
 ## 16. Roadmap
 
-Expected changes, and what they replace:
+Expected changes, and what they replace. None changes the API or a behaviour this spec states; each lands in a minor or patch release:
 
+- A sweep lock that scales: the one process-wide lock contends on many cores (15). Further measurements on 8–64 cores: the fast path and the padding of hot statics. Both are internal.
 - Scratch buffers per thread for a step's work lists and a run's shared record, which would save most of the ten allocations a run still makes (15).
-- The TLA+ models extended to creator order, keyed nodes, fragility, reflow, generators and disposal (11.4).
-- Measurements on 8–64 cores: the fast path, the padding of hot statics and the one sweep lock (15).
-- Keyed collections. A keyed map over a collection node, which would let a list's rerun visit only the rows that changed instead of probing every row's captures; `key` covers the rows' own nodes today (10.1, Keyed nodes).
-- Rewiring a reclaimed node to new parents, which needs a dynamic topological order, such as Pearce and Kelly's, in place of creation order (10.1).
-- Type-directed classification of captures inside containers, so a handle in a captured `Vec` can be read-only, once specialization or a stable equivalent allows it (4.2).
-- Variants. lithia is the general-purpose core; LiSP, a signal-processing variant with GPU-backed, eagerly caching graphs, and a GUI variant can impose what the core cannot, such as borrowing scopes (1).
-- Finer-grained sweep locking, if the benchmarks show contention on the one sweep lock (15).
-- Native generators. `yield` in `effect!` uses the syntax of Rust's unstable `async gen` blocks; the macro lowers it as the `async-stream` crate does on stable, and will lower generator bodies to native `async gen` blocks once they stabilize. Both allow a borrow across a `yield`, so user code does not change (3.6).
+- Native generators. `yield` in `node!` uses the syntax of Rust's unstable `async gen` blocks; the macro lowers it as the `async-stream` crate does on stable, and will lower generator bodies to native `async gen` blocks once they stabilize. Both allow a borrow across a `yield`, so user code does not change (3.6); the minimum Rust version rises to the release that stabilizes them.
 - `Share` and precise captures. Handles will implement Rust's planned `Share` trait once it stabilizes, and captures of `Share` types will use it; the capture rule stays the same (4.2).
-- Writable derived nodes. Because a write is just a run, Solid-style writable memos need no new machinery; they are out of scope for v0 (1, 8).
-- A flag for waiting on pending parents, beside `WHOLE_EPOCHS` (3.2, 8).
-- Devtools, out of scope for v0 (12).
-- Further performance work, guided by the benchmarks in section 15 (11.2).
+- Keyed collections. A keyed map over a collection node, which would let a list's rerun visit only the rows that changed instead of probing every row's captures; `key` covers the rows' own nodes today (10.1, Keyed nodes).
+- An option for waiting on pending parents, such as `parents = READY | ANY`, beside `batches`, whose default keeps today's behaviour; a ghost under `disposed = PEND` would keep a waiting child waiting (3.2, 8, 10.5).
+- Writable derived nodes. Because a write is just a run, Solid-style writable memos need no new machinery (1, 8).
+- Devtools (12), and further performance work guided by the benchmarks in section 15 (11.2).
+- Variants. lithia is the general-purpose core; LiSP, a signal-processing variant with GPU-backed, eagerly caching graphs, and a GUI variant can impose what the core cannot, such as borrowing scopes (1).
+
+Two changes would alter stated behaviour, so they come as options or in a major version:
+
+- Rewiring a reclaimed node to new parents, which needs a dynamic topological order, such as Pearce and Kelly's, in place of creation order; today new parents give a new node (10.1).
+- Type-directed classification of captures inside containers, so a handle in a captured `Vec` can be read-only, once specialization or a stable equivalent allows it (4.2).
 
 ## 17. Open questions
 
-- An implicit `equals` default for `K: PartialEq`? Left out for now: it would stop `()` effects propagating, and behave differently in generic code (6.4).
-- Final names for `FRAGILE` / `SEMI_FRAGILE` and for the three ghost policies.
+None is left to settle before 1.0. These are additive, so they can wait for a minor release:
+
+- Write cycles in rounds, as an option a node opts into, so that run counts are fixed? Run counts in an eight-way binding mesh vary with scheduling, from 15 to 58 (7.4, 15).
 - Keep the token stream in release builds, or only behind a diagnostics feature?
-- Tasks lithia did not start get one batch per write. Offer a runtime hook to batch them too? Batching halves the cost of 100 writes (15).
+- Tasks lithia did not start get one batch per write. Offer a runtime hook to batch them too? Batching cuts the cost of 100 writes to under a third (15).
 - The rerun-rate threshold is an environment variable (`LITHIA_RERUN_RATE`); should it also get an API (12)?
-- Should `try_set` hand the rejected value back, e.g. `Result<(), Ghosted<K>>`?
-- A truly in-place `modify` would need reads to take a brief lock, which slows every read and lets cross-node reads inside closures deadlock. Worth it for large values?
-- Why does the eight-way binding mesh take 13–15 runs under v0.3.0 against 8 under v0.2.5, when nothing in v0.3.0 changes how writes propagate (15)?
+- A truly in-place `modify` would need reads to take a brief lock, which slows every read and lets cross-node reads inside closures deadlock. Worth it, as a method of its own, for large values?
 
 Questions resolved in earlier versions are recorded in `CHANGELOG.md`.

@@ -1,5 +1,5 @@
 error: `key` parameters name variables in scope by plain identifiers, each once
- --> tests/ui/key_closure_pattern.rs:9:49
+ --> tests/ui/key_closure_pattern.rs:9:47
   |
-9 |     let _n: SourceNode<u32> = effect!(1, key = |(a, _b)| *a);
-  |                                                 ^^^^^^^
+9 |     let _n: SourceNode<u32> = node!(1, key = |(a, _b)| *a);
+  |                                               ^^^^^^^

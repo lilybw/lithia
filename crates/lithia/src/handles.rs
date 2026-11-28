@@ -5,16 +5,17 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
-use crate::capture::Lease;
 use crate::changes::Changes;
 use crate::context::{self, ClosureCreations, ClosureGuard};
-use crate::node::{Header, Kind, Node, NodeRef};
+use crate::expand::capture::SharedLease;
+use crate::graph::ids::Stamp;
+use crate::graph::node::{Commit, Displaced, Header, Kind, Node, NodeRef, TypedNodeRef};
 use crate::sync::MutexGuard;
-use crate::{GhostPolicy, Ghosted, NodeValue, Status, diag, ids, protocol};
+use crate::{Ghosted, NodeValue, Ref, Rejected, Status, diag, protocol};
 
-/// Type-erased reference to a node, used by `effect!` and the free functions.
+/// Type-erased reference to a node, used by `node!` and the free functions.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct NodeHandle(pub(crate) NodeRef);
@@ -36,15 +37,25 @@ mod sealed {
     label = "not `Readable`",
     note = "dependencies are nodes or `Accessor`s; a `Setter` is write-only, and being notified of changes would read it"
 )]
-pub trait Readable: sealed::Sealed {
+pub trait Readable: sealed::Sealed + Send + Sync {
     /// The node's value type.
     type Value: NodeValue;
-    /// Current value. Panics if the node is a ghost under `ON_GHOST_CAUSE_FAILURE`.
-    fn get(&self) -> Arc<Self::Value>;
-    /// Current value, or `Err(Ghosted)` where the node's ghost policy would make `get` panic.
-    fn try_get(&self) -> Result<Arc<Self::Value>, Ghosted>;
+    /// Current value. Panics if the node is a ghost under `disposed = FAIL`.
+    fn get(&self) -> Ref<Self::Value>;
+    /// Current value, or `Err(Ghosted)` where the node's `disposed` option would make `get` panic.
+    fn try_get(&self) -> Result<Ref<Self::Value>, Ghosted>;
     /// Stream of this node's values from now on; like `tokio::sync::watch`, it may skip values.
     fn changes(&self) -> Changes<Self::Value>;
+    /// Calls `f` with the current value, borrowed, without taking a reference to it; `f` may not
+    /// write nodes. Panics like `get`.
+    /// `let label: String = name.with(|name: &String| name.to_uppercase());`
+    #[track_caller]
+    fn with<R>(&self, f: impl FnOnce(&Self::Value) -> R) -> R
+    where
+        Self: Sized,
+    {
+        f(&self.get())
+    }
     #[doc(hidden)]
     fn __lithia_node(&self) -> NodeHandle;
     #[doc(hidden)]
@@ -58,10 +69,11 @@ impl<T: Readable + ?Sized> sealed::Sealed for &T {}
 #[diagnostic::do_not_recommend]
 impl<T: Readable + ?Sized> Readable for &T {
     type Value = T::Value;
-    fn get(&self) -> Arc<T::Value> {
+    #[track_caller]
+    fn get(&self) -> Ref<T::Value> {
         (**self).get()
     }
-    fn try_get(&self) -> Result<Arc<T::Value>, Ghosted> {
+    fn try_get(&self) -> Result<Ref<T::Value>, Ghosted> {
         (**self).try_get()
     }
     fn changes(&self) -> Changes<T::Value> {
@@ -70,57 +82,75 @@ impl<T: Readable + ?Sized> Readable for &T {
     fn __lithia_node(&self) -> NodeHandle {
         (**self).__lithia_node()
     }
-    fn __lithia_move_dep(&self, read_only: bool) {
-        (**self).__lithia_move_dep(read_only)
-    }
+    /// A body that moves a reference moves no handle: the one it points to stays outside, an anchor.
+    fn __lithia_move_dep(&self, _read_only: bool) {}
 }
 
 /// Write access; implemented by `SourceNode` and `Setter`.
 /// `fn reset(n: &impl Writable<Value = u32>) { n.set(0); }`
-pub trait Writable: sealed::Sealed {
+pub trait Writable: sealed::Sealed + Send + Sync {
     /// The node's value type.
     type Value: NodeValue;
     /// Replaces the value; every read sees it immediately. Panics on a ghost.
     fn set(&self, value: Self::Value);
-    /// Like `set`, but returns `Err(Ghosted)` instead of panicking.
-    fn try_set(&self, value: Self::Value) -> Result<(), Ghosted>;
+    /// Like `set`, but hands the value back in `Err(Rejected(value))` instead of panicking.
+    fn try_set(&self, value: Self::Value) -> Result<(), Rejected<Self::Value>>;
 }
 
 /// May be passed to `lithia::reflow`; implemented by `SourceNode`, `DerivedNode` and `Setter`.
-pub trait Reflow: sealed::Sealed {
+pub trait Reflow: sealed::Sealed + Send + Sync {
     #[doc(hidden)]
     fn __lithia_reflow_node(&self) -> NodeHandle;
 }
 
 /// May be passed to `lithia::dispose`; implemented by `SourceNode` and `DerivedNode`.
-pub trait Dispose: sealed::Sealed {
+pub trait Dispose: sealed::Sealed + Send + Sync {
     #[doc(hidden)]
     fn __lithia_dispose_node(&self) -> NodeHandle;
 }
 
 impl<K: NodeValue> Node<K> {
-    /// Current value, honouring the ghost policy (spec §10.5).
+    /// Current value, honouring the `disposed` option (spec §10.5).
     pub(crate) fn read(&self) -> Result<Arc<K>, Ghosted> {
         let header: &Header = &self.header;
         if header.is_ghost() {
-            if header.ghost == GhostPolicy::CauseFailure {
+            if header.shape.ghost_fails() {
                 return Err(Ghosted);
             }
-            diag::ghost_read(header.site, header.ghost);
+            diag::ghost_read(header.site, header.shape.disposed);
         }
         self.value.load_full().ok_or(Ghosted)
     }
 
+    /// Calls `f` with the current value, borrowed, under a closure guard, so it cannot write.
+    #[track_caller]
+    pub(crate) fn read_with<R>(&self, f: impl FnOnce(&K) -> R) -> R {
+        let header: &Header = &self.header;
+        if header.is_ghost() {
+            if header.shape.ghost_fails() {
+                panic!("lithia: read of a disposed node under `disposed = FAIL` ({})", header.site);
+            }
+            diag::ghost_read(header.site, header.shape.disposed);
+        }
+        let _guard: ClosureGuard = ClosureGuard::enter();
+        self.value.with(|value: Option<&K>| match value {
+            Some(value) => f(value),
+            None => panic!("lithia: read of a disposed node under `disposed = FAIL` ({})", header.site),
+        })
+    }
+
+    #[track_caller]
     pub(crate) fn read_or_panic(&self) -> Arc<K> {
         match self.read() {
             Ok(value) => value,
             Err(Ghosted) => {
-                panic!("lithia: read of a disposed node under ON_GHOST_CAUSE_FAILURE ({})", self.header.site)
+                panic!("lithia: read of a disposed node under `disposed = FAIL` ({})", self.header.site)
             }
         }
     }
 
     /// Applies a write to a source node: a run whose only item is the new value (spec §6.1).
+    #[track_caller]
     pub(crate) fn write(self: &Arc<Self>, guarded: bool, compute: impl FnOnce(&K) -> K) -> Result<(), Ghosted> {
         context::assert_not_in_closure("a lithia write");
         let header: &Header = &self.header;
@@ -129,9 +159,8 @@ impl<K: NodeValue> Node<K> {
             return if header.is_ghost() { Err(Ghosted) } else { Ok(()) };
         }
         let _creations: ClosureCreations = ClosureCreations::new();
-        let mut replaced: Option<Arc<K>> = None;
-        let mut discarded: Option<K> = None;
-        let stamp: Option<u64> = {
+        let mut displaced: Displaced<K> = Displaced::default();
+        let stamp: Option<Stamp> = {
             let _write: MutexGuard<'_, ()> = header.write.lock();
             if header.is_ghost() {
                 return Err(Ghosted);
@@ -145,36 +174,9 @@ impl<K: NodeValue> Node<K> {
             } else {
                 compute(&current)
             };
-            let equal: bool = match self.comparator() {
-                Some(equals) => {
-                    let _guard: ClosureGuard = ClosureGuard::enter();
-                    equals(&current, &next)
-                }
-                None => false,
-            };
-            if equal && !header.flags.contains(crate::Flags::ALWAYS_PROPAGATE) {
-                discarded = Some(next);
-                None
-            } else {
-                header.runs.fetch_add(1, Ordering::SeqCst);
-                header.clear_pending_failed();
-                if equal {
-                    discarded = Some(next);
-                } else {
-                    replaced = self.value.swap(Some(Arc::new(next)));
-                    header.notify_changes();
-                }
-                let stamp: u64 = ids::stamp();
-                header.version.store(stamp, Ordering::SeqCst);
-                Some(stamp)
-            }
+            self.commit(&current, next, Commit::Write, &mut displaced)
         };
-        if let Some(value) = discarded {
-            crate::drops::drop_owned(value, header.runtime.as_ref());
-        }
-        if let Some(old) = replaced {
-            crate::drops::drop_value(old, header.runtime.as_ref());
-        }
+        displaced.release(header.runtime.as_ref());
         if let Some(stamp) = stamp {
             let erased: NodeRef = self.clone();
             // A plain source node is never framed or seeded, so it never has a run to stop.
@@ -186,6 +188,7 @@ impl<K: NodeValue> Node<K> {
         Ok(())
     }
 
+    #[track_caller]
     fn ghost_write_panic(&self) -> ! {
         panic!("lithia: write to a disposed node ({})", self.header.site)
     }
@@ -197,14 +200,19 @@ macro_rules! readable {
 
         impl<K: NodeValue> Readable for $ty<K> {
             type Value = K;
-            fn get(&self) -> Arc<K> {
-                self.node.read_or_panic()
+            #[track_caller]
+            fn get(&self) -> Ref<K> {
+                Ref::new(self.node.read_or_panic())
             }
-            fn try_get(&self) -> Result<Arc<K>, Ghosted> {
-                self.node.read()
+            fn try_get(&self) -> Result<Ref<K>, Ghosted> {
+                self.node.read().map(Ref::new)
             }
             fn changes(&self) -> Changes<K> {
                 Changes::new(&self.node)
+            }
+            #[track_caller]
+            fn with<R>(&self, f: impl FnOnce(&K) -> R) -> R {
+                self.node.read_with(f)
             }
             fn __lithia_node(&self) -> NodeHandle {
                 NodeHandle(self.node.clone())
@@ -215,17 +223,26 @@ macro_rules! readable {
         }
 
         impl<K: NodeValue> $ty<K> {
-            /// Current value. Panics if the node is a ghost under `ON_GHOST_CAUSE_FAILURE`.
-            pub fn get(&self) -> Arc<K> {
-                self.node.read_or_panic()
+            /// Current value. Panics if the node is a ghost under `disposed = FAIL`.
+            #[track_caller]
+            pub fn get(&self) -> Ref<K> {
+                Ref::new(self.node.read_or_panic())
             }
 
-            /// Current value, or `Err(Ghosted)` where the ghost policy would make `get` panic.
-            pub fn try_get(&self) -> Result<Arc<K>, Ghosted> {
-                self.node.read()
+            /// Calls `f` with the current value, borrowed; `f` may not write nodes. Panics like `get`.
+            #[track_caller]
+            pub fn with<R>(&self, f: impl FnOnce(&K) -> R) -> R {
+                self.node.read_with(f)
+            }
+
+            /// Current value, or `Err(Ghosted)` where the `disposed` option would make `get` panic.
+            #[must_use = "a read has no effect; use the value or drop the call"]
+            pub fn try_get(&self) -> Result<Ref<K>, Ghosted> {
+                self.node.read().map(Ref::new)
             }
 
             /// Stream of this node's values from now on: the current value first, then each change.
+            #[must_use = "a stream does nothing unless polled"]
             pub fn changes(&self) -> Changes<K> {
                 Changes::new(&self.node)
             }
@@ -233,7 +250,7 @@ macro_rules! readable {
 
         impl<K: NodeValue> Clone for $ty<K> {
             fn clone(&self) -> Self {
-                $ty { internal: Count::new(new_ref(&self.node, $ty::<K>::writes())), node: self.node.clone() }
+                $ty { internal: HandleCount::new(new_ref(&self.node, $ty::<K>::writes())), node: self.node.clone() }
             }
         }
 
@@ -246,17 +263,17 @@ macro_rules! readable {
         impl<K: NodeValue> $ty<K> {
             /// A new outside handle; anchors the node unless it is an `Accessor` to a plain source node.
             #[allow(dead_code)]
-            pub(crate) fn outside(node: &Arc<Node<K>>) -> Self {
+            pub(crate) fn outside(node: &TypedNodeRef<K>) -> Self {
                 if $ty::<K>::anchoring(node) {
-                    crate::support::add_anchors(&node.header, 1, || node.clone());
+                    crate::lifetime::support::add_anchors(&node.header, 1, || node.clone());
                 }
-                $ty { node: node.clone(), internal: Count::new(false) }
+                $ty { node: node.clone(), internal: HandleCount::new(false) }
             }
 
             /// Clones the handle for a body, recorded as a capture its body only reads.
             #[doc(hidden)]
             pub fn __lithia_capture_ro(&self) -> Self {
-                crate::capture::read_only(|| self.clone())
+                crate::expand::capture::read_only(|| self.clone())
             }
 
             /// Flags the handle a `move` body is about to take as internal.
@@ -268,7 +285,7 @@ macro_rules! readable {
             /// Like `__lithia_move`, recorded as a capture its body only reads.
             #[doc(hidden)]
             pub fn __lithia_move_ro(&self) {
-                crate::capture::read_only(|| self.__lithia_move())
+                crate::expand::capture::read_only(|| self.__lithia_move())
             }
 
             /// A field path whose value is this handle.
@@ -298,108 +315,118 @@ macro_rules! readable {
 }
 
 /// Node with no dependencies whose value is set directly; cheap to clone, `Send + Sync`.
-/// `let count: SourceNode<u32> = effect!(0); count.set(3);`
+/// `let count: SourceNode<u32> = node!(0); count.set(3);`
 pub struct SourceNode<K: NodeValue> {
-    pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: Count,
+    pub(crate) node: TypedNodeRef<K>,
+    pub(crate) internal: HandleCount,
 }
 
 /// Node whose body produces its value from its dependencies; `DerivedNode<()>` is an effect.
-/// `let doubled: DerivedNode<u32> = effect!(|count| *count.get() * 2);`
+/// `let doubled: DerivedNode<u32> = node!(|count| *count.get() * 2);`
 pub struct DerivedNode<K: NodeValue> {
-    pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: Count,
+    pub(crate) node: TypedNodeRef<K>,
+    pub(crate) internal: HandleCount,
 }
 
 /// Read-only view of a node.
 /// `let reader: Accessor<u32> = count.accessor();`
 pub struct Accessor<K: NodeValue> {
-    pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: Count,
+    pub(crate) node: TypedNodeRef<K>,
+    pub(crate) internal: HandleCount,
 }
 
 /// Write-only view of a source node.
 /// `let writer: Setter<u32> = count.setter();`
 pub struct Setter<K: NodeValue> {
-    pub(crate) node: Arc<Node<K>>,
-    pub(crate) internal: Count,
+    pub(crate) node: TypedNodeRef<K>,
+    pub(crate) internal: HandleCount,
 }
 
 /// How a handle counts: as an outside handle, or as a capture; a capture a `move` block took over
 /// holds the block's lease, and counts as an outside handle once the block has ended (spec §4.2).
-pub(crate) struct Count {
-    internal: AtomicBool,
-    lease: std::sync::OnceLock<Arc<Lease>>,
+// A handle's own state, read and written only by whoever owns the handle.
+#[allow(clippy::disallowed_types)]
+pub(crate) struct HandleCount {
+    internal: std::sync::atomic::AtomicBool,
+    lease: std::sync::OnceLock<SharedLease>,
 }
 
-impl Count {
-    pub(crate) fn new(internal: bool) -> Count {
-        Count { internal: AtomicBool::new(internal), lease: std::sync::OnceLock::new() }
+impl HandleCount {
+    #[allow(clippy::disallowed_types)]
+    pub(crate) fn new(internal: bool) -> HandleCount {
+        HandleCount { internal: std::sync::atomic::AtomicBool::new(internal), lease: std::sync::OnceLock::new() }
     }
 }
 
 /// Records a new handle: internal in capture mode, otherwise an outside handle.
-fn new_ref<K: NodeValue>(node: &Arc<Node<K>>, writes: bool) -> bool {
-    if crate::capture::active() {
-        node.header.captured.fetch_add(1, Ordering::SeqCst);
+fn new_ref<K: NodeValue>(node: &TypedNodeRef<K>, writes: bool) -> bool {
+    if crate::expand::capture::active() {
+        node.header.lifetime.captured.fetch_add(1, Ordering::SeqCst);
         let erased: NodeRef = node.clone();
-        crate::capture::record(erased, writes);
+        crate::expand::capture::record(erased, writes);
         return true;
     }
-    true_if_counted(node, writes)
+    anchor_outside(node, writes)
 }
 
-fn true_if_counted<K: NodeValue>(node: &Arc<Node<K>>, writes: bool) -> bool {
+fn anchor_outside<K: NodeValue>(node: &TypedNodeRef<K>, writes: bool) -> bool {
     // `writes` is false only for `Accessor`, which anchors only a node with a body.
     if writes || node.header.kind != Kind::Source {
-        crate::support::add_anchors(&node.header, 1, || node.clone());
+        crate::lifetime::support::add_anchors(&node.header, 1, || node.clone());
     }
     false
 }
 
 /// Records a node a body reaches by a field path, without a handle of its own.
-fn record_field<K: NodeValue>(node: &Arc<Node<K>>, writes: bool) {
-    if crate::capture::active() {
+fn record_field<K: NodeValue>(node: &TypedNodeRef<K>, writes: bool) {
+    if crate::expand::capture::active() {
         let erased: NodeRef = node.clone();
-        crate::capture::record(erased, writes);
+        crate::expand::capture::record(erased, writes);
     }
 }
 
 /// Flags a handle a `move` body takes as internal, under the expansion's lease; its anchoring
 /// count drops after creation.
-fn take_moved<K: NodeValue>(node: &Arc<Node<K>>, count: &Count, writes: bool, anchoring: bool) {
-    if !crate::capture::active() {
+fn take_moved<K: NodeValue>(node: &TypedNodeRef<K>, count: &HandleCount, writes: bool, anchoring: bool) {
+    if !crate::expand::capture::active() {
         return;
     }
     let erased: NodeRef = node.clone();
-    crate::capture::record(erased.clone(), writes);
+    crate::expand::capture::record(erased.clone(), writes);
     if count.internal.swap(true, Ordering::Relaxed) {
         return;
     }
-    node.header.captured.fetch_add(1, Ordering::SeqCst);
-    let lease: Arc<Lease> = crate::capture::lease();
+    node.header.lifetime.captured.fetch_add(1, Ordering::SeqCst);
+    let lease: SharedLease = crate::expand::capture::lease();
     lease.take(erased.clone(), anchoring);
     let _ = count.lease.set(lease);
     if anchoring {
-        crate::capture::moved(erased);
+        crate::expand::capture::moved(erased);
     }
 }
 
 /// Releases a handle; dropping the last anchoring handle starts a sweep, and the last captured
 /// one may leave a memo unread (spec §12).
-fn drop_ref<K: NodeValue>(node: &Arc<Node<K>>, count: &Count, anchoring: bool) {
+fn drop_ref<K: NodeValue>(node: &TypedNodeRef<K>, count: &HandleCount, anchoring: bool) {
     if count.internal.load(Ordering::Relaxed) {
-        let ended: bool = count.lease.get().is_some_and(|lease: &Arc<Lease>| !lease.release(node.header.id));
+        let ended: bool = count.lease.get().is_some_and(|lease: &SharedLease| !lease.release(node.header.id));
         if !ended {
-            if node.header.captured.fetch_sub(1, Ordering::SeqCst) == 1 {
-                crate::support::check_unread(&node.header);
+            let before: usize = node.header.lifetime.captured.fetch_sub(1, Ordering::SeqCst);
+            debug_assert!(before > 0, "lithia: a captured handle dropped a count it did not hold");
+            if before == 1 {
+                crate::lifetime::support::check_unread(&node.header);
             }
             return;
         }
     }
-    if anchoring && node.header.anchors.fetch_sub(1, Ordering::SeqCst) == 1 {
+    let last: bool = anchoring && {
+        let before: usize = node.header.lifetime.anchors.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(before > 0, "lithia: a handle dropped an anchor it did not hold");
+        before == 1
+    };
+    if last {
         let erased: NodeRef = node.clone();
-        crate::support::start(erased);
+        crate::lifetime::support::raise(erased);
     }
 }
 
@@ -410,7 +437,7 @@ macro_rules! kind_of {
                 $writes
             }
 
-            fn anchoring(node: &Arc<Node<K>>) -> bool {
+            fn anchoring(node: &TypedNodeRef<K>) -> bool {
                 $writes || node.header.kind != Kind::Source
             }
         }
@@ -423,8 +450,8 @@ kind_of!(Accessor, false);
 
 macro_rules! handle_id {
     ($ty:ident) => {
-        impl<K: NodeValue> crate::keyed::HandleId for $ty<K> {
-            fn __lithia_node_id(&self) -> crate::ids::NodeId {
+        impl<K: NodeValue> crate::expand::keyed::HandleId for $ty<K> {
+            fn __lithia_node_id(&self) -> crate::graph::ids::NodeId {
                 self.node.header.id
             }
         }
@@ -444,7 +471,7 @@ impl<K: NodeValue> sealed::Sealed for Setter<K> {}
 
 impl<K: NodeValue> Clone for Setter<K> {
     fn clone(&self) -> Self {
-        Setter { internal: Count::new(new_ref(&self.node, true)), node: self.node.clone() }
+        Setter { internal: HandleCount::new(new_ref(&self.node, true)), node: self.node.clone() }
     }
 }
 
@@ -499,24 +526,32 @@ macro_rules! writable {
     ($ty:ident) => {
         impl<K: NodeValue> Writable for $ty<K> {
             type Value = K;
+            #[track_caller]
             fn set(&self, value: K) {
                 if self.node.write(false, move |_: &K| value).is_err() {
                     self.node.ghost_write_panic();
                 }
             }
-            fn try_set(&self, value: K) -> Result<(), Ghosted> {
-                self.node.write(false, move |_: &K| value)
+            #[track_caller]
+            fn try_set(&self, value: K) -> Result<(), Rejected<K>> {
+                // A write fails before it computes the new value, so a rejected value is still here.
+                let mut held: Option<K> = Some(value);
+                let written: Result<(), Ghosted> =
+                    self.node.write(false, |_: &K| -> K { held.take().expect("a write computes its value once") });
+                written.map_err(|_: Ghosted| Rejected(held.take().expect("a rejected write keeps its value")))
             }
         }
 
         impl<K: NodeValue> $ty<K> {
             /// Replaces the value; every read sees it immediately. Panics on a ghost.
+            #[track_caller]
             pub fn set(&self, value: K) {
                 Writable::set(self, value)
             }
 
-            /// Like `set`, but returns `Err(Ghosted)` instead of panicking.
-            pub fn try_set(&self, value: K) -> Result<(), Ghosted> {
+            /// Like `set`, but hands the value back in `Err(Rejected(value))` instead of panicking.
+            #[track_caller]
+            pub fn try_set(&self, value: K) -> Result<(), Rejected<K>> {
                 Writable::try_set(self, value)
             }
         }
@@ -528,6 +563,7 @@ writable!(Setter);
 
 impl<K: NodeValue> SourceNode<K> {
     /// Replaces the value with `f(&old)` under the node's write lock. Panics on a ghost.
+    #[track_caller]
     pub fn update(&self, f: impl FnOnce(&K) -> K) {
         if self.try_update(f).is_err() {
             self.node.ghost_write_panic();
@@ -535,12 +571,14 @@ impl<K: NodeValue> SourceNode<K> {
     }
 
     /// Like `update`, but returns `Err(Ghosted)` instead of panicking.
+    #[track_caller]
     pub fn try_update(&self, f: impl FnOnce(&K) -> K) -> Result<(), Ghosted> {
         self.node.write(true, f)
     }
 
     /// Mutates a copy of the value in place and publishes it; requires `K: Clone` only here.
     /// `history.modify(|v: &mut Vec<u32>| v.push(1));`
+    #[track_caller]
     pub fn modify(&self, f: impl FnOnce(&mut K))
     where
         K: Clone,
@@ -551,6 +589,7 @@ impl<K: NodeValue> SourceNode<K> {
     }
 
     /// Like `modify`, but returns `Err(Ghosted)` instead of panicking.
+    #[track_caller]
     pub fn try_modify(&self, f: impl FnOnce(&mut K)) -> Result<(), Ghosted>
     where
         K: Clone,
@@ -563,38 +602,41 @@ impl<K: NodeValue> SourceNode<K> {
     }
 
     /// Read-only view of this node.
+    #[must_use = "an accessor dropped at once anchors and lets go of the node for nothing"]
     pub fn accessor(&self) -> Accessor<K> {
         Accessor::outside(&self.node)
     }
 
     /// Write-only view of this node.
+    #[must_use = "a setter dropped at once anchors and lets go of the node for nothing"]
     pub fn setter(&self) -> Setter<K> {
-        crate::support::add_anchors(&self.node.header, 1, || self.node.clone());
-        Setter { node: self.node.clone(), internal: Count::new(false) }
+        crate::lifetime::support::add_anchors(&self.node.header, 1, || self.node.clone());
+        Setter { node: self.node.clone(), internal: HandleCount::new(false) }
     }
 
-    /// Lets this node live by its handles alone; nodes hanging off it stop with it.
-    /// Marks the node for every holder, for good. `let input: SourceNode<Req> = effect!(req).scoped();`
+    /// Lets this node live by its handles alone; nodes hanging off it stop with it (spec §10.2).
+    /// Marks the node for every holder, for good. `let input: SourceNode<Req> = node!(req).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self {
         let erased: NodeRef = self.node.clone();
-        crate::support::scope(&erased);
+        crate::lifetime::support::scope(&erased);
         self
     }
 }
 
 impl<K: NodeValue> DerivedNode<K> {
     /// Read-only view of this node.
+    #[must_use = "an accessor dropped at once anchors and lets go of the node for nothing"]
     pub fn accessor(&self) -> Accessor<K> {
         Accessor::outside(&self.node)
     }
 
-    /// Lets this node live by its handles alone; nodes hanging off it stop with it.
-    /// Marks the node for every holder, for good. `let price: DerivedNode<f64> = effect!(|input| calc(&input.get())).scoped();`
+    /// Lets this node live by its handles alone; nodes hanging off it stop with it (spec §10.2).
+    /// Marks the node for every holder, for good. `let price: DerivedNode<f64> = node!(|input| calc(&input.get())).scoped();`
     #[must_use = "a scoped node lives only while its handles do; bind this one"]
     pub fn scoped(self) -> Self {
         let erased: NodeRef = self.node.clone();
-        crate::support::scope(&erased);
+        crate::lifetime::support::scope(&erased);
         self
     }
 }

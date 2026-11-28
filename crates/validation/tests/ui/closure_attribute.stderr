@@ -1,0 +1,5 @@
+error: node! does not carry attributes on its closure or block over; put them on the enclosing statement
+ --> tests/ui/closure_attribute.rs:8:44
+  |
+8 |     let _skipped: DerivedNode<u32> = node!(#[cfg(any())] |n| *n.get());
+  |                                            ^^^^^^^^^^^^^

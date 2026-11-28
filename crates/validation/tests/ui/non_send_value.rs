@@ -3,8 +3,8 @@
 
 use std::rc::Rc;
 
-use lithia::effect;
+use lithia::node;
 
 fn main() {
-    let _ = effect!(Rc::new(1));
+    let _ = node!(Rc::new(1));
 }

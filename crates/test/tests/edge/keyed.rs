@@ -5,8 +5,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
-use lithia::{DerivedNode, SourceNode, effect};
+use lithia::{Accessor, DerivedNode, Ref, SourceNode, node};
 
 fn count(counter: &AtomicU32) -> u32 {
     counter.load(Ordering::SeqCst)
@@ -14,13 +15,13 @@ fn count(counter: &AtomicU32) -> u32 {
 
 #[lithia::test]
 async fn the_holdover_keeps_a_handleless_child_until_its_creator_stops_making_it() {
-    let make: SourceNode<bool> = effect!(true);
-    let tick: SourceNode<u32> = effect!(0);
+    let make: SourceNode<bool> = node!(true);
+    let tick: SourceNode<u32> = node!(0);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let base: usize = lithia::test::live_nodes().await;
-    let _creator: DerivedNode<()> = effect!(|make| {
+    let _creator: DerivedNode<()> = node!(|make| {
         if *make.get() {
-            effect!(
+            node!(
                 |tick| {
                     let _ = tick.get();
                     runs.fetch_add(1, Ordering::SeqCst);
@@ -48,13 +49,10 @@ async fn the_holdover_keeps_a_handleless_child_until_its_creator_stops_making_it
 
 #[lithia::test]
 async fn disposing_the_creator_frees_its_keyed_children() {
-    let rows: SourceNode<Vec<u32>> = effect!(vec![1, 2, 3]);
+    let rows: SourceNode<Vec<u32>> = node!(vec![1, 2, 3]);
     let base: usize = lithia::test::live_nodes().await;
-    let list: DerivedNode<Vec<SourceNode<u32>>> = effect!(|rows| rows
-        .get()
-        .iter()
-        .map(|id: &u32| effect!(*id * 10, key = *id))
-        .collect::<Vec<SourceNode<u32>>>());
+    let list: DerivedNode<Vec<SourceNode<u32>>> =
+        node!(|rows| rows.get().iter().map(|id: &u32| node!(*id * 10, key = *id)).collect::<Vec<SourceNode<u32>>>());
     lithia::flush().await;
     rows.set(vec![3, 1]);
     lithia::flush().await;
@@ -66,13 +64,13 @@ async fn disposing_the_creator_frees_its_keyed_children() {
 
 #[lithia::test]
 async fn disposing_a_creator_mid_run_frees_its_holdover() {
-    let make: SourceNode<bool> = effect!(true);
+    let make: SourceNode<bool> = node!(true);
     let gate: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
     let parked: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let base: usize = lithia::test::live_nodes().await;
-    let creator: DerivedNode<()> = effect!(async |make| {
+    let creator: DerivedNode<()> = node!(async |make| {
         if *make.get() {
-            effect!(1u32, key = 0u8);
+            node!(1u32, key = 0u8);
         } else {
             parked.fetch_add(1, Ordering::SeqCst);
             gate.notified().await;
@@ -94,13 +92,13 @@ async fn disposing_a_creator_mid_run_frees_its_holdover() {
 
 #[lithia::test]
 async fn a_scoped_keyed_child_is_never_reclaimed() {
-    let tick: SourceNode<u32> = effect!(0);
-    let rerun: SourceNode<u32> = effect!(0);
+    let tick: SourceNode<u32> = node!(0);
+    let rerun: SourceNode<u32> = node!(0);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let holder: DerivedNode<Option<DerivedNode<u32>>> = effect!(|rerun| {
+    let holder: DerivedNode<Option<DerivedNode<u32>>> = node!(|rerun| {
         let _ = rerun.get();
         Some(
-            effect!(
+            node!(
                 |tick| {
                     runs.fetch_add(1, Ordering::SeqCst);
                     *tick.get()
@@ -120,14 +118,14 @@ async fn a_scoped_keyed_child_is_never_reclaimed() {
 
 #[lithia::test]
 async fn a_new_write_target_makes_a_new_node() {
-    let x: SourceNode<u32> = effect!(0);
-    let y: SourceNode<u32> = effect!(0);
-    let to_x: SourceNode<bool> = effect!(true);
-    let tick: SourceNode<u32> = effect!(0);
+    let x: SourceNode<u32> = node!(0);
+    let y: SourceNode<u32> = node!(0);
+    let to_x: SourceNode<bool> = node!(true);
+    let tick: SourceNode<u32> = node!(0);
     let firsts: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let writer: DerivedNode<Option<DerivedNode<()>>> = effect!(|to_x| {
+    let writer: DerivedNode<Option<DerivedNode<()>>> = node!(|to_x| {
         let target: SourceNode<u32> = if *to_x.get() { x.clone() } else { y.clone() };
-        Some(effect!(
+        Some(node!(
             |tick| {
                 if *tick.get() == 0 {
                     firsts.fetch_add(1, Ordering::SeqCst);
@@ -152,13 +150,13 @@ async fn a_new_write_target_makes_a_new_node() {
 
 #[lithia::test]
 async fn a_swapped_read_handle_reruns_the_same_node() {
-    let a: SourceNode<u32> = effect!(1);
-    let b: SourceNode<u32> = effect!(2);
-    let use_a: SourceNode<bool> = effect!(true);
-    let tick: SourceNode<u32> = effect!(0);
-    let shown: DerivedNode<Option<DerivedNode<u32>>> = effect!(|use_a| {
+    let a: SourceNode<u32> = node!(1);
+    let b: SourceNode<u32> = node!(2);
+    let use_a: SourceNode<bool> = node!(true);
+    let tick: SourceNode<u32> = node!(0);
+    let shown: DerivedNode<Option<DerivedNode<u32>>> = node!(|use_a| {
         let source: SourceNode<u32> = if *use_a.get() { a.clone() } else { b.clone() };
-        Some(effect!(|tick| *source.get() + *tick.get(), key = 0u8))
+        Some(node!(|tick| *source.get() + *tick.get(), key = 0u8))
     });
     lithia::flush().await;
     let first: DerivedNode<u32> = (*shown.get()).clone().expect("shown");
@@ -178,7 +176,7 @@ impl Label {
     fn node(&self, tick: &SourceNode<u32>, runs: &Arc<AtomicU32>) -> DerivedNode<String> {
         let tick: SourceNode<u32> = tick.clone();
         let runs: Arc<AtomicU32> = runs.clone();
-        effect!(
+        node!(
             |tick| {
                 runs.fetch_add(1, Ordering::SeqCst);
                 format!("{}{}", self.name, tick.get())
@@ -191,10 +189,10 @@ impl Label {
 #[lithia::test]
 async fn self_is_compared_by_value() {
     let label: Label = Label { name: "n".to_string() };
-    let tick: SourceNode<u32> = effect!(0);
-    let rerun: SourceNode<u32> = effect!(0);
+    let tick: SourceNode<u32> = node!(0);
+    let rerun: SourceNode<u32> = node!(0);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let made: DerivedNode<Option<DerivedNode<String>>> = effect!(|rerun| {
+    let made: DerivedNode<Option<DerivedNode<String>>> = node!(|rerun| {
         let _ = rerun.get();
         Some(label.node(tick, runs))
     });
@@ -206,13 +204,13 @@ async fn self_is_compared_by_value() {
 }
 
 fn keyed_source<T: Clone + PartialEq + Send + Sync + 'static>(value: T) -> SourceNode<T> {
-    effect!(value, key = 0u8)
+    node!(value, key = 0u8)
 }
 
 #[lithia::test]
 async fn one_site_with_two_value_types_never_mixes_them() {
-    let rerun: SourceNode<u32> = effect!(0);
-    let pair: DerivedNode<Option<(SourceNode<u32>, SourceNode<String>)>> = effect!(|rerun| {
+    let rerun: SourceNode<u32> = node!(0);
+    let pair: DerivedNode<Option<(SourceNode<u32>, SourceNode<String>)>> = node!(|rerun| {
         // The second run creates them the other way round, so only the value type tells them apart.
         if *rerun.get() == 0 {
             let number: SourceNode<u32> = keyed_source(1u32);
@@ -224,23 +222,23 @@ async fn one_site_with_two_value_types_never_mixes_them() {
     });
     lithia::flush().await;
     let (number, text): (SourceNode<u32>, SourceNode<String>) = (*pair.get()).clone().expect("pair");
-    let (number_value, text_value): (Arc<u32>, Arc<String>) = (number.get(), text.get());
+    let (number_value, text_value): (Ref<u32>, Ref<String>) = (number.get(), text.get());
     rerun.set(1);
     lithia::flush().await;
     assert!(matches!(lithia::status(&pair), lithia::Status::Ready));
     let (again_number, again_text): (SourceNode<u32>, SourceNode<String>) = (*pair.get()).clone().expect("pair");
-    assert!(Arc::ptr_eq(&number_value, &again_number.get()));
-    assert!(Arc::ptr_eq(&text_value, &again_text.get()));
+    assert!(Ref::ptr_eq(&number_value, &again_number.get()));
+    assert!(Ref::ptr_eq(&text_value, &again_text.get()));
 }
 
 #[lithia::test]
 async fn a_keyed_generator_is_reclaimed() {
-    let rerun: SourceNode<u32> = effect!(0);
-    let tick: SourceNode<u32> = effect!(0);
+    let rerun: SourceNode<u32> = node!(0);
+    let tick: SourceNode<u32> = node!(0);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let made: DerivedNode<Option<DerivedNode<u32>>> = effect!(|rerun| {
+    let made: DerivedNode<Option<DerivedNode<u32>>> = node!(|rerun| {
         let _ = rerun.get();
-        Some(effect!(
+        Some(node!(
             |tick| {
                 runs.fetch_add(1, Ordering::SeqCst);
                 yield *tick.get();
@@ -264,10 +262,10 @@ async fn a_keyed_generator_is_reclaimed() {
 
 #[lithia::test]
 async fn keys_of_other_sites_never_meet() {
-    let rerun: SourceNode<u32> = effect!(0);
-    let made: DerivedNode<Option<(SourceNode<u32>, SourceNode<u32>)>> = effect!(|rerun| {
+    let rerun: SourceNode<u32> = node!(0);
+    let made: DerivedNode<Option<(SourceNode<u32>, SourceNode<u32>)>> = node!(|rerun| {
         let _ = rerun.get();
-        Some((effect!(1u32, key = 0u8), effect!(2u32, key = 0u8)))
+        Some((node!(1u32, key = 0u8), node!(2u32, key = 0u8)))
     });
     lithia::flush().await;
     rerun.set(1);
@@ -278,19 +276,19 @@ async fn keys_of_other_sites_never_meet() {
 
 #[lithia::test]
 async fn a_different_shape_makes_a_new_node() {
-    let fragile: SourceNode<bool> = effect!(true);
-    let rerun: SourceNode<u32> = effect!(0);
-    let tick: SourceNode<u32> = effect!(0);
+    let strict: SourceNode<bool> = node!(true);
+    let rerun: SourceNode<u32> = node!(0);
+    let tick: SourceNode<u32> = node!(0);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let _creator: DerivedNode<()> = effect!(|fragile, rerun| {
+    let _creator: DerivedNode<()> = node!(|strict, rerun| {
         let _ = rerun.get();
-        effect!(
+        node!(
             |tick| {
                 let _ = tick.get();
                 runs.fetch_add(1, Ordering::SeqCst);
             },
             key = 0u8,
-            fragility = if *fragile.get() { FRAGILE } else { SEMI_FRAGILE }
+            resilience = if *strict.get() { NONE } else { PARTIAL }
         );
     });
     lithia::flush().await;
@@ -299,26 +297,26 @@ async fn a_different_shape_makes_a_new_node() {
     lithia::flush().await;
     // Same captures, same shape: reclaimed without a run.
     assert_eq!(count(&runs), 1);
-    fragile.set(false);
+    strict.set(false);
     lithia::flush().await;
-    // Same captures, other fragility: a new node, which runs.
+    // Same captures, other resilience: a new node, which runs.
     assert_eq!(count(&runs), 2);
 }
 
 #[lithia::test]
 async fn a_reclaimed_node_takes_the_new_comparator() {
-    let input: SourceNode<u32> = effect!(0);
-    let coarse: SourceNode<bool> = effect!(false);
-    let made: DerivedNode<Option<DerivedNode<u32>>> = effect!(|coarse| {
+    let input: SourceNode<u32> = node!(0);
+    let coarse: SourceNode<bool> = node!(false);
+    let made: DerivedNode<Option<DerivedNode<u32>>> = node!(|coarse| {
         let by_tens: bool = *coarse.get();
-        Some(effect!(|input| *input.get(), key = 0u8, equals = move |a: &u32, b: &u32| by_tens && a / 10 == b / 10))
+        Some(node!(|input| *input.get(), key = 0u8, equals = move |a: &u32, b: &u32| by_tens && a / 10 == b / 10))
     });
     lithia::flush().await;
     let child: DerivedNode<u32> = (*made.get()).clone().expect("made");
     coarse.set(true);
     lithia::flush().await;
     // Reclaimed unchanged, with the comparator that compares by tens: 5 equals 0.
-    assert!(Arc::ptr_eq(&child.get(), &(*made.get()).clone().expect("made").get()));
+    assert!(Ref::ptr_eq(&child.get(), &(*made.get()).clone().expect("made").get()));
     input.set(5);
     lithia::flush().await;
     assert_eq!(*child.get(), 0);
@@ -329,10 +327,10 @@ async fn a_reclaimed_node_takes_the_new_comparator() {
 
 #[lithia::test]
 async fn a_refreshed_source_is_written_with_the_new_comparator() {
-    let config: SourceNode<(bool, u32)> = effect!((false, 5));
-    let made: DerivedNode<Option<SourceNode<u32>>> = effect!(|config| {
+    let config: SourceNode<(bool, u32)> = node!((false, 5));
+    let made: DerivedNode<Option<SourceNode<u32>>> = node!(|config| {
         let (by_tens, value): (bool, u32) = *config.get();
-        Some(effect!(value, key = 0u8, equals = move |a: &u32, b: &u32| by_tens && a / 10 == b / 10))
+        Some(node!(value, key = 0u8, equals = move |a: &u32, b: &u32| by_tens && a / 10 == b / 10))
     });
     lithia::flush().await;
     // The value changes along with the comparator: 0 is written with the new one, which finds it
@@ -340,4 +338,268 @@ async fn a_refreshed_source_is_written_with_the_new_comparator() {
     config.set((true, 0));
     lithia::flush().await;
     assert_eq!(*(*made.get()).clone().expect("made").get(), 5);
+}
+
+/// The source a [`WritingKey`] writes from another thread the first time it is compared.
+static WRITTEN_BY_KEY: std::sync::OnceLock<SourceNode<u32>> = std::sync::OnceLock::new();
+static KEY_WROTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A key whose comparison waits for a write to its creator's parent on another thread.
+struct WritingKey(u32);
+
+impl std::hash::Hash for WritingKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl PartialEq for WritingKey {
+    fn eq(&self, other: &WritingKey) -> bool {
+        if !KEY_WROTE.swap(true, Ordering::SeqCst)
+            && let Some(input) = WRITTEN_BY_KEY.get()
+        {
+            let input: SourceNode<u32> = input.clone();
+            std::thread::spawn(move || input.update(|n: &u32| n + 1)).join().unwrap();
+        }
+        self.0 == other.0
+    }
+}
+
+impl Eq for WritingKey {}
+
+#[lithia::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_comparison_runs_outside_the_creators_lock() {
+    let input: SourceNode<u32> = node!(0);
+    let _ = WRITTEN_BY_KEY.set(input.clone());
+    let tick: SourceNode<u32> = node!(0);
+    let child_runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let creator: DerivedNode<u32> = node!(|input| {
+        let _child: DerivedNode<()> = node!(
+            |tick| {
+                let _ = tick.get();
+                child_runs.fetch_add(1, Ordering::SeqCst);
+            },
+            key = WritingKey(7)
+        );
+        *input.get()
+    });
+    lithia::flush().await;
+    input.set(10); // the rerun reclaims the child, comparing its key, which writes `input` again
+    let flushed: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(std::time::Duration::from_secs(5), lithia::flush()).await;
+    assert!(flushed.is_ok(), "a write waited on by a key comparison deadlocked against the creator's lock");
+    lithia::test::settled(&creator).await;
+    assert_eq!(*creator.get(), 11);
+    assert_eq!(count(&child_runs), 1, "the child was reclaimed each time");
+}
+
+/// A key whose values all hash alike, so only equality tells two of them apart.
+#[derive(PartialEq, Eq)]
+struct Colliding(u32);
+
+impl std::hash::Hash for Colliding {
+    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {}
+}
+
+#[lithia::test]
+async fn keys_that_hash_alike_name_lineages_of_their_own() {
+    let _ = lithia_test::events();
+    let go: SourceNode<u32> = node!(0);
+    let shared: SourceNode<u32> = node!(0);
+    let out: SourceNode<u32> = node!(0);
+    let _creator: DerivedNode<()> = node!(|go| {
+        for first in [true, false] {
+            // The second runs on the first's write; with one lineage for both, it would be cut.
+            let input: Accessor<u32> = if first { go.accessor() } else { shared.accessor() };
+            node!(
+                |input| {
+                    if *first {
+                        shared.set(*input.get() + 1);
+                    } else {
+                        out.set(*input.get() * 10);
+                    }
+                },
+                key = Colliding(u32::from(first))
+            );
+        }
+    });
+    lithia::flush().await;
+    go.set(5);
+    lithia::test::settled(&go).await;
+    assert_eq!((*shared.get(), *out.get()), (6, 60));
+    let here: &str = "keys_that_hash_alike_name_lineages_of_their_own";
+    let cut: Option<lithia_test::Captured> =
+        lithia_test::find(tracing::Level::DEBUG, &["a cycle cut an effect", here], Duration::from_millis(200)).await;
+    assert!(cut.is_none(), "{cut:?}");
+}
+
+/// A key that counts the values made and dropped; it compares and hashes by its number alone.
+struct CountedKey(u32, Arc<(AtomicU32, AtomicU32)>);
+
+impl CountedKey {
+    fn new(number: u32, counts: &Arc<(AtomicU32, AtomicU32)>) -> CountedKey {
+        counts.0.fetch_add(1, Ordering::SeqCst);
+        CountedKey(number, counts.clone())
+    }
+}
+
+impl PartialEq for CountedKey {
+    fn eq(&self, other: &CountedKey) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for CountedKey {}
+
+impl std::hash::Hash for CountedKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl Drop for CountedKey {
+    fn drop(&mut self) {
+        self.1.1.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[lithia::test]
+async fn keys_a_creator_stops_making_are_let_go_of() {
+    let keys: SourceNode<u32> = node!(0);
+    let counts: Arc<(AtomicU32, AtomicU32)> = Arc::new((AtomicU32::new(0), AtomicU32::new(0)));
+    let made: Arc<(AtomicU32, AtomicU32)> = counts.clone();
+    let _creator: DerivedNode<()> = node!(|keys| {
+        let number: u32 = *keys.get();
+        node!(
+            |keys| {
+                let _ = keys.get();
+            },
+            key = CountedKey::new(number, made)
+        );
+    });
+    lithia::flush().await;
+    for number in 1..=12 {
+        keys.set(number); // a key the creator never made before; the one before it is made no more
+        lithia::flush().await;
+    }
+    let _ = lithia::test::live_nodes().await;
+    let live: u32 = counts.0.load(Ordering::SeqCst) - counts.1.load(Ordering::SeqCst);
+    assert!(live <= 4, "{live} of {} keys still held", counts.0.load(Ordering::SeqCst));
+}
+
+/// A service with no `PartialEq`: captured in an `Arc`, it compares by pointer.
+struct Service(u32);
+
+#[lithia::test]
+async fn a_keyed_node_reruns_when_a_captured_arc_is_another_one() {
+    let config: SourceNode<Arc<Service>> = node!(Arc::new(Service(1)));
+    let tick: SourceNode<u32> = node!(0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _creator: DerivedNode<Vec<DerivedNode<u32>>> = node!(|config| {
+        let shared: Arc<Service> = (*config.get()).clone();
+        vec![node!(
+            |tick| {
+                let _ = tick.get();
+                runs.fetch_add(1, Ordering::SeqCst);
+                shared.0
+            },
+            key = 0u8
+        )]
+    });
+    lithia::flush().await;
+    assert_eq!(count(&runs), 1);
+    let same: Arc<Service> = (*config.get()).clone();
+    config.set(same); // the same `Arc`: the reclaimed node does not rerun
+    lithia::flush().await;
+    assert_eq!(count(&runs), 1);
+    config.set(Arc::new(Service(1))); // another `Arc`, though alike
+    lithia::flush().await;
+    assert_eq!(count(&runs), 2);
+}
+
+/// A key that notes the thread it drops on; compares and hashes by its number alone.
+struct KeyDropsWhere(u32, Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>);
+
+impl PartialEq for KeyDropsWhere {
+    fn eq(&self, other: &KeyDropsWhere) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for KeyDropsWhere {}
+
+impl std::hash::Hash for KeyDropsWhere {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl Drop for KeyDropsWhere {
+    fn drop(&mut self) {
+        self.1.lock().unwrap().push(std::thread::current().id());
+    }
+}
+
+#[lithia::test(flavor = "current_thread")]
+async fn keys_drop_off_the_thread_that_runs_their_creator() {
+    let threads: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let keys: SourceNode<u32> = node!(0);
+    let noted: Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>> = threads.clone();
+    let _creator: DerivedNode<()> = node!(|keys| {
+        let number: u32 = *keys.get();
+        node!(
+            |keys| {
+                let _ = keys.get();
+            },
+            key = KeyDropsWhere(number, noted.clone())
+        );
+    });
+    lithia::flush().await;
+    for number in 1..=6 {
+        keys.set(number); // the creator runs here, on the only worker, and lets go of the key before
+        lithia::flush().await;
+    }
+    let _ = lithia::test::live_nodes().await;
+    let here: std::thread::ThreadId = std::thread::current().id();
+    let dropped: Vec<std::thread::ThreadId> = threads.lock().unwrap().clone();
+    assert!(dropped.len() >= 5, "{dropped:?}");
+    assert!(dropped.iter().all(|thread: &std::thread::ThreadId| *thread != here), "{dropped:?}");
+}
+
+#[lithia::test]
+async fn a_keyed_child_ready_before_its_creator_decides_runs_once_its_creator_keeps_it() {
+    let a: SourceNode<u32> = node!(0);
+    let b: SourceNode<u32> = node!(0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let creator: DerivedNode<Vec<DerivedNode<u32>>> = node!(|a| {
+        let _ = a.get();
+        vec![node!(
+            |b| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                *b.get()
+            },
+            key = 0u8
+        )]
+    });
+    lithia::flush().await;
+    // One batch: the child is ready for `b` while its creator has yet to decide on it for `a`.
+    a.set(1);
+    b.set(7);
+    lithia::flush().await;
+    assert_eq!(*creator.get()[0].get(), 7);
+    assert_eq!(count(&runs), 2, "it waited for its creator, then ran once");
+}
+
+/// A value with no `PartialEq`: a reclaimed keyed source node always takes the new one.
+struct Opaque(u32);
+
+#[lithia::test]
+async fn a_reclaimed_keyed_source_takes_a_new_value_it_cannot_compare() {
+    let n: SourceNode<u32> = node!(1);
+    let creator: DerivedNode<Vec<SourceNode<Opaque>>> = node!(|n| vec![node!(Opaque(*n.get()), key = 0u8)]);
+    lithia::flush().await;
+    assert_eq!(creator.get()[0].get().0, 1);
+    n.set(2);
+    lithia::flush().await;
+    assert_eq!(creator.get()[0].get().0, 2);
 }

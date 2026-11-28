@@ -6,14 +6,17 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
+repository = "https://github.com/lilybw/lithia"
+homepage = "https://lilybw.com/lithia/"
+documentation = "https://lilybw.com/lithia/api/lithia/"
 
 [dependencies]
 lithia = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+lithia-test = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 trybuild = { workspace = true }
 
 [lints]

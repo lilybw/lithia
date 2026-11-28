@@ -12,23 +12,26 @@ members = [
 version = "0.5.0"
 edition = "2024"
 rust-version = "1.95"
-publish = false
+publish = true
 license = "MPL-2.0"
 repository = "https://github.com/lilybw/lithia"
 homepage = "https://lilybw.com/lithia/"
 documentation = "https://lilybw.com/lithia/api/lithia/"
 
 [workspace.dependencies]
-lithia = { path = "crates/lithia", version = "0.5.0" }
-lithia-macro = { path = "crates/macro", version = "0.5.0" }
+lithia = { package = "lithate", path = "crates/lithia", version = "0.5.0" }
+# Exact: the macro expands to `lithia::__private`, which only the same version of lithia provides.
+lithia-macro = { path = "crates/macro", version = "=0.5.0" }
+lithia-test = { path = "crates/test" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-core = "0.3"
-arc-swap = "1"
 parking_lot = "0.13"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 bitflags = "2"
-syn = { version = "3", features = ["full", "visit", "visit-mut", "extra-traits"] }
+pin-project-lite = "0.2"
+smallvec = { version = "1.16", features = ["const_new", "union"] }
+syn = { version = "3", features = ["full", "visit", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"
 trybuild = "1"

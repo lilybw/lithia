@@ -1,0 +1,24 @@
+error[E0277]: can't compare `Connection` with `Connection`
+  --> tests/ui/equals_unknown_type.rs:10:20
+   |
+10 |     let pending = node!(None);
+   |                   -^^^^^^^^^^
+   |                   ||
+   |                   |no implementation for `Connection == Connection`
+   |                   required by a bound introduced by this call
+   |
+   = help: the trait `PartialEq` is not implemented for `Connection`
+help: the trait `lithia::__private::ImplicitViaEq<K>` is implemented for `&lithia::__private::Implicit<K>`
+  --> $WORKSPACE/crates/lithia/src/options.rs
+   |
+   | impl<K: EqualsByDefault> ImplicitViaEq<K> for &Implicit<K> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `Option<Connection>` to implement `PartialEq`
+   = note: required for `Option<Connection>` to implement `lithia::__private::EqualsByDefault`
+   = note: required for `&lithia::__private::Implicit<Option<Connection>>` to implement `lithia::__private::ImplicitViaEq<Option<Connection>>`
+   = note: this error originates in the macro `node` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider annotating `Connection` with `#[derive(PartialEq)]`
+   |
+ 7 + #[derive(PartialEq)]
+ 8 | struct Connection;
+   |

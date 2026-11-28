@@ -8,15 +8,16 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, Weak};
 
-use crate::epoch::{Epoch, Scope};
-use crate::ids::NodeId;
-use crate::node::{NodeRef, WeakNodeRef};
-use crate::run::RunShared;
+use crate::graph::epoch::{Epoch, Scope, ScopeToken};
+use crate::graph::ids::{NodeId, Stamp};
+use crate::graph::node::{NodeRef, WeakNodeRef};
+use crate::run::RunControl;
 
 /// A function deferred until an epoch settles.
 pub(crate) struct Deferred {
     pub(crate) f: Box<dyn FnOnce() + Send>,
-    pub(crate) scope: Arc<Scope>,
+    /// Held until the function has run, or until it is dropped unrun.
+    pub(crate) token: ScopeToken,
     pub(crate) runtime: Option<tokio::runtime::Handle>,
 }
 
@@ -24,9 +25,9 @@ pub(crate) struct Deferred {
 #[derive(Default)]
 pub(crate) struct Batch {
     /// Written source nodes and the stamp each write took.
-    pub(crate) writes: Vec<(WeakNodeRef, NodeId, u64)>,
+    pub(crate) writes: Vec<(WeakNodeRef, NodeId, Stamp)>,
     /// Reflow targets and the stamp each reflow took.
-    pub(crate) reflows: Vec<(WeakNodeRef, NodeId, u64)>,
+    pub(crate) reflows: Vec<(WeakNodeRef, NodeId, Stamp)>,
     /// New derived and async source nodes.
     pub(crate) creations: Vec<WeakNodeRef>,
     /// Surviving children of a disposed node, which rerun.
@@ -53,7 +54,7 @@ pub(crate) enum Target {
     /// An outside batch in this scope: a lithia task, or blocking work it started.
     Scope(Arc<Scope>),
     /// A node's run, polled or doing blocking work: child epochs while in flight, an outside batch after.
-    Run(Arc<RunShared>),
+    Run(Arc<RunControl>),
 }
 
 /// One batch being collected.
@@ -79,44 +80,56 @@ impl Frame {
     }
 }
 
+/// A plain tokio task and the scope its writes go to.
+type TaskScope = (tokio::task::Id, Weak<Scope>);
+/// The scope of each plain task that wrote, by task.
+type TaskScopes = BTreeMap<tokio::task::Id, Weak<Scope>>;
+/// The scope this thread's writes go to outside any task.
+type ThreadScope = Option<Arc<Scope>>;
+
 crate::sync::thread_local! {
-    static CURRENT: Cell<*const Frame> = Cell::new(std::ptr::null());
-    static CLOSURE_DEPTH: Cell<u32> = Cell::new(0);
-    static CLOSURE_CREATIONS: RefCell<Vec<WeakNodeRef>> = RefCell::new(Vec::new());
-    static THREAD_SCOPE: RefCell<Option<Arc<Scope>>> = RefCell::new(None);
+    static CURRENT: Cell<*const Frame> = const { Cell::new(std::ptr::null()) };
+    static CLOSURE_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static CLOSURE_CREATIONS: RefCell<Vec<WeakNodeRef>> = const { RefCell::new(Vec::new()) };
+    static THREAD_SCOPE: RefCell<ThreadScope> = const { RefCell::new(None) };
     /// The task whose scope this thread looked up last, so its repeated writes skip `TASK_SCOPES`.
-    static LAST_TASK: RefCell<Option<(tokio::task::Id, Weak<Scope>)>> = RefCell::new(None);
+    static LAST_TASK: RefCell<Option<TaskScope>> = const { RefCell::new(None) };
 }
 
-/// Restores the previous frame when dropped.
-pub(crate) struct FrameGuard<'a> {
-    previous: *const Frame,
-    _frame: PhantomData<&'a Frame>,
-}
-
-/// Makes `frame` current on this thread until the guard drops.
-pub(crate) fn enter(frame: &Frame) -> FrameGuard<'_> {
-    let previous: *const Frame = CURRENT.with(|current: &Cell<*const Frame>| current.replace(frame));
-    FrameGuard { previous, _frame: PhantomData }
-}
-
-impl Drop for FrameGuard<'_> {
-    fn drop(&mut self) {
-        CURRENT.with(|current: &Cell<*const Frame>| current.set(self.previous));
+/// Runs `f` with `frame` current on this thread; the previous frame is current again once `f`
+/// returns or unwinds. `let n: u32 = context::entered(&frame, || 1);`
+pub(crate) fn entered<R>(frame: &Frame, f: impl FnOnce() -> R) -> R {
+    /// Restores the previous frame; private to this call, so it is never leaked or reordered.
+    struct Restore {
+        previous: *const Frame,
+        entered: *const Frame,
     }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = CURRENT.try_with(|current: &Cell<*const Frame>| {
+                debug_assert!(std::ptr::eq(current.get(), self.entered), "lithia: frames left out of order");
+                current.set(self.previous);
+            });
+        }
+    }
+    let previous: *const Frame = CURRENT.with(|current: &Cell<*const Frame>| current.replace(frame));
+    let _restore: Restore = Restore { previous, entered: frame };
+    f()
 }
 
 /// Calls `f` with the current frame, if any.
+#[allow(unsafe_code)]
 pub(crate) fn with_frame<R>(f: impl FnOnce(Option<&Frame>) -> R) -> R {
     let pointer: *const Frame = CURRENT.try_with(Cell::get).unwrap_or(std::ptr::null());
-    // SAFETY: a non-null pointer was set by `enter`, whose guard keeps the frame alive
-    // and restores the previous pointer before the frame goes out of scope.
+    // SAFETY: a non-null pointer was set by `entered`, which outlives its borrow of the frame and
+    // restores the previous pointer on return or unwind; its guard is private to it, so it can be
+    // neither leaked nor dropped out of order, and the pointer belongs to this thread alone.
     let frame: Option<&Frame> = unsafe { pointer.as_ref() };
     f(frame)
 }
 
 /// The run that creates here: the one being polled, or the one whose blocking work this is.
-pub(crate) fn creating_run() -> Option<Arc<RunShared>> {
+pub(crate) fn creating_run() -> Option<Arc<RunControl>> {
     with_frame(|frame: Option<&Frame>| match frame.map(|f: &Frame| &f.target) {
         Some(Target::Run(run)) => Some(run.clone()),
         _ => None,
@@ -137,18 +150,18 @@ pub(crate) fn detached_scope() -> Arc<Scope> {
         return task_scope(id);
     }
     THREAD_SCOPE
-        .try_with(|slot: &RefCell<Option<Arc<Scope>>>| slot.borrow_mut().get_or_insert_with(Scope::new).clone())
+        .try_with(|slot: &RefCell<ThreadScope>| slot.borrow_mut().get_or_insert_with(Scope::new).clone())
         .unwrap_or_else(|_| Scope::new())
 }
 
 /// Scopes of tasks lithia did not start, by task id.
-static TASK_SCOPES: parking_lot::Mutex<BTreeMap<tokio::task::Id, Weak<Scope>>> =
-    parking_lot::Mutex::new(BTreeMap::new());
+#[allow(clippy::disallowed_types)] // loom models run no tokio tasks
+static TASK_SCOPES: parking_lot::Mutex<TaskScopes> = parking_lot::Mutex::new(BTreeMap::new());
 
 fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
     // A live cached scope is the one the map holds: an entry is replaced only once its scope is gone.
     let cached: Option<Arc<Scope>> = LAST_TASK
-        .try_with(|last: &RefCell<Option<(tokio::task::Id, Weak<Scope>)>>| {
+        .try_with(|last: &RefCell<Option<TaskScope>>| {
             last.borrow()
                 .as_ref()
                 .filter(|(known, _): &&(tokio::task::Id, Weak<Scope>)| *known == id)
@@ -160,7 +173,7 @@ fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
         return scope;
     }
     let scope: Arc<Scope> = {
-        let mut map: parking_lot::MutexGuard<'_, BTreeMap<tokio::task::Id, Weak<Scope>>> = TASK_SCOPES.lock();
+        let mut map: parking_lot::MutexGuard<'_, TaskScopes> = TASK_SCOPES.lock();
         match map.get(&id).and_then(Weak::upgrade) {
             Some(scope) => scope,
             None => {
@@ -175,19 +188,20 @@ fn task_scope(id: tokio::task::Id) -> Arc<Scope> {
             }
         }
     };
-    let _ = LAST_TASK.try_with(|last: &RefCell<Option<(tokio::task::Id, Weak<Scope>)>>| {
+    let _ = LAST_TASK.try_with(|last: &RefCell<Option<TaskScope>>| {
         *last.borrow_mut() = Some((id, Arc::downgrade(&scope)));
     });
     scope
 }
 
-/// Marks the current thread as running a user closure that may not write (spec §6.1).
-pub(crate) struct ClosureGuard(());
+/// Marks the current thread as running a user closure that may not write (spec §6.1); counts on
+/// this thread, so it is not `Send`.
+pub(crate) struct ClosureGuard(PhantomData<*const ()>);
 
 impl ClosureGuard {
     pub(crate) fn enter() -> ClosureGuard {
         CLOSURE_DEPTH.with(|depth: &Cell<u32>| depth.set(depth.get() + 1));
-        ClosureGuard(())
+        ClosureGuard(PhantomData)
     }
 }
 
@@ -198,6 +212,7 @@ impl Drop for ClosureGuard {
 }
 
 /// Panics if called inside an `update`, `modify` or `equals` closure.
+#[track_caller]
 pub(crate) fn assert_not_in_closure(operation: &str) {
     let depth: u32 = CLOSURE_DEPTH.try_with(Cell::get).unwrap_or(0);
     if depth > 0 {
@@ -233,7 +248,7 @@ impl Drop for ClosureCreations {
 }
 
 /// Records a change to a source node in the current batch, or delivers it at once.
-pub(crate) fn record_write(node: &NodeRef, stamp: u64) {
+pub(crate) fn record_write(node: &NodeRef, stamp: Stamp) {
     note_written(node);
     record(|batch: &mut Batch| batch.writes.push((Arc::downgrade(node), node.header().id, stamp)));
 }
@@ -248,18 +263,14 @@ fn note_written(node: &NodeRef) {
     let Some(writer) = writer else {
         return;
     };
-    let header: &crate::node::Header = writer.header();
+    let header: &crate::graph::node::Header = writer.header();
     let target: *const () = Arc::as_ptr(node).cast::<()>();
     let edge: bool = std::ptr::eq(Arc::as_ptr(&writer).cast::<()>(), target)
         || header.targets.iter().any(|weak: &WeakNodeRef| std::ptr::eq(weak.as_ptr().cast::<()>(), target));
     if edge {
         return;
     }
-    let mut guard: crate::sync::MutexGuard<'_, crate::node::Sched> = header.sched.lock();
-    guard.wrote.retain(|weak: &WeakNodeRef| weak.strong_count() > 0);
-    if !guard.wrote.iter().any(|weak: &WeakNodeRef| std::ptr::eq(weak.as_ptr().cast::<()>(), target)) {
-        guard.wrote.push(Arc::downgrade(node));
-    }
+    crate::testing::trace::note_wrote(&mut header.lock_sched().trace, node);
 }
 
 /// Whether the running body's writes to `node` are left alone: a cut writer's rerun (spec §7.4).
@@ -277,7 +288,7 @@ pub(crate) fn record_refresh(node: &NodeRef) {
 }
 
 /// Records a reflow in the current batch, or delivers it at once.
-pub(crate) fn record_reflow(node: &NodeRef, stamp: u64) {
+pub(crate) fn record_reflow(node: &NodeRef, stamp: Stamp) {
     note_written(node);
     record(|batch: &mut Batch| batch.reflows.push((Arc::downgrade(node), node.header().id, stamp)));
 }
@@ -312,7 +323,7 @@ pub(crate) fn record_defer(deferred: Deferred) {
         None => Some(deferred),
     });
     if let Some(deferred) = pending {
-        let epoch: Option<Arc<Epoch>> = deferred.scope.last();
+        let epoch: Option<Arc<Epoch>> = deferred.token.scope().last();
         match epoch {
             Some(epoch) => crate::protocol::attach_defers(vec![epoch], vec![deferred]),
             None => crate::protocol::fire_deferred(deferred),

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use lithia::{DerivedNode, SourceNode, effect};
+use lithia::{DerivedNode, SourceNode, node};
 
 /// One result row.
 struct Row {
@@ -40,13 +40,13 @@ fn spawn_overhead() -> Row {
     const ROUNDS: u64 = 20;
     let rt: tokio::runtime::Runtime = runtime(2);
     let elapsed: Duration = rt.block_on(lithia_task(async {
-        let source: SourceNode<u64> = effect!(0);
-        let mut tail: DerivedNode<u64> = effect!(|source| *source.get() + 1);
+        let source: SourceNode<u64> = node!(0);
+        let mut tail: DerivedNode<u64> = node!(|source| *source.get() + 1);
         let mut chain: Vec<DerivedNode<u64>> = Vec::new();
         for _ in 1..LENGTH {
             let previous: DerivedNode<u64> = tail.clone();
             chain.push(previous.clone());
-            tail = effect!(|previous| *previous.get() + 1);
+            tail = node!(|previous| *previous.get() + 1);
         }
         lithia::flush().await;
         let start: Instant = Instant::now();
@@ -82,8 +82,8 @@ fn framing() -> Row {
     const WRITES: u64 = 100;
     let rt: tokio::runtime::Runtime = runtime(2);
     let (fan, batched, detached): (Duration, Duration, Duration) = rt.block_on(lithia_task(async {
-        let source: SourceNode<u64> = effect!(0);
-        let children: Vec<DerivedNode<u64>> = (0..WIDTH).map(|_| effect!(|source| *source.get())).collect();
+        let source: SourceNode<u64> = node!(0);
+        let children: Vec<DerivedNode<u64>> = (0..WIDTH).map(|_| node!(|source| *source.get())).collect();
         lithia::flush().await;
         let start: Instant = Instant::now();
         for round in 1..=WRITES {
@@ -93,8 +93,8 @@ fn framing() -> Row {
         let fan: Duration = start.elapsed();
         drop(children);
 
-        let narrow: SourceNode<u64> = effect!(0);
-        let _child: DerivedNode<u64> = effect!(|narrow| *narrow.get());
+        let narrow: SourceNode<u64> = node!(0);
+        let _child: DerivedNode<u64> = node!(|narrow| *narrow.get());
         lithia::flush().await;
         let start: Instant = Instant::now();
         for round in 1..=WRITES {
@@ -132,7 +132,7 @@ fn fan_in() -> Row {
     const WRITES: u64 = 200;
     let rt: tokio::runtime::Runtime = runtime(4);
     let (elapsed, runs): (Duration, u64) = rt.block_on(lithia_task(async {
-        let parents: Vec<SourceNode<u64>> = (0..PARENTS).map(|_| effect!(0u64)).collect();
+        let parents: Vec<SourceNode<u64>> = (0..PARENTS).map(|_| node!(0u64)).collect();
         let runs: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
         // A join over 64 parents, built as a balanced tree of 8-way joins.
         let mut level: Vec<DerivedNode<u64>> = Vec::new();
@@ -156,7 +156,7 @@ fn fan_in() -> Row {
                 group[6].clone(),
                 group[7].clone(),
             );
-            level.push(effect!(|a, b, c, d, e, f, g, h| {
+            level.push(node!(|a, b, c, d, e, f, g, h| {
                 *a.get() + *b.get() + *c.get() + *d.get() + *e.get() + *f.get() + *g.get() + *h.get()
             }));
         }
@@ -180,13 +180,13 @@ fn fan_in() -> Row {
             level[7].clone(),
         );
         let counter: Arc<AtomicU64> = runs.clone();
-        let join: DerivedNode<u64> = effect!(|a, b, c, d, e, f, g, h| {
+        let join: DerivedNode<u64> = node!(|a, b, c, d, e, f, g, h| {
             counter.fetch_add(1, Ordering::Relaxed);
             *a.get() + *b.get() + *c.get() + *d.get() + *e.get() + *f.get() + *g.get() + *h.get()
         });
         lithia::flush().await;
         let start: Instant = Instant::now();
-        let tasks: Vec<tokio::task::JoinHandle<()>> = parents
+        let tasks: Vec<lithia::JoinHandle<()>> = parents
             .iter()
             .map(|parent: &SourceNode<u64>| {
                 let parent: SourceNode<u64> = parent.clone();
@@ -228,7 +228,7 @@ fn clock_contention() -> Row {
             let tasks: Vec<tokio::task::JoinHandle<()>> = (0..threads)
                 .map(|_| {
                     tokio::spawn(async move {
-                        let node: SourceNode<u64> = effect!(0);
+                        let node: SourceNode<u64> = node!(0);
                         for round in 1..=WRITES {
                             node.set(round);
                         }
@@ -255,16 +255,16 @@ fn protocol_overhead() -> Row {
     const ROUNDS: u64 = 200;
     let rt: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let lithia_time: Duration = rt.block_on(lithia_task(async {
-        let source: SourceNode<u64> = effect!(0);
-        let mut left: DerivedNode<u64> = effect!(|source| *source.get() + 1);
-        let mut right: DerivedNode<u64> = effect!(|source| *source.get() + 2);
+        let source: SourceNode<u64> = node!(0);
+        let mut left: DerivedNode<u64> = node!(|source| *source.get() + 1);
+        let mut right: DerivedNode<u64> = node!(|source| *source.get() + 2);
         let mut keep: Vec<DerivedNode<u64>> = Vec::new();
         for _ in 0..LAYERS {
             let (l, r): (DerivedNode<u64>, DerivedNode<u64>) = (left.clone(), right.clone());
             keep.push(l.clone());
             keep.push(r.clone());
-            left = effect!(|l, r| *l.get() + *r.get());
-            right = effect!(|l, r| (*l.get()).max(*r.get()));
+            left = node!(|l, r| *l.get() + *r.get());
+            right = node!(|l, r| (*l.get()).max(*r.get()));
         }
         lithia::flush().await;
         let start: Instant = Instant::now();
@@ -306,7 +306,8 @@ fn meshes() -> Row {
     let mut results: Vec<String> = Vec::new();
     for n in [2usize, 3, 4, 6, 8] {
         let runs: u64 = rt.block_on(lithia_task(async move {
-            let nodes: Vec<SourceNode<u64>> = (0..n).map(|_| effect!(0u64)).collect();
+            // Without a comparator every write propagates, so the mesh reaches its worst case.
+            let nodes: Vec<SourceNode<u64>> = (0..n).map(|_| node!(0u64, no_equals)).collect();
             let counter: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
             let mut bindings: Vec<DerivedNode<()>> = Vec::new();
             for index in 0..n {
@@ -314,7 +315,7 @@ fn meshes() -> Row {
                 let others: Vec<SourceNode<u64>> =
                     nodes.iter().enumerate().filter(|(i, _)| *i != index).map(|(_, node)| node.clone()).collect();
                 let counter: Arc<AtomicU64> = counter.clone();
-                bindings.push(effect!(|me| {
+                bindings.push(node!(|me| {
                     counter.fetch_add(1, Ordering::Relaxed);
                     let value: u64 = *me.get();
                     for other in others {
@@ -343,16 +344,16 @@ fn drop_churn() -> Row {
     const RERUNS: u64 = 100;
     let rt: tokio::runtime::Runtime = runtime(2);
     let elapsed: Duration = rt.block_on(lithia_task(async {
-        let version: SourceNode<u64> = effect!(0);
-        let rows: Vec<SourceNode<String>> = (0..ROWS).map(|i| effect!(format!("row {i}"))).collect();
+        let version: SourceNode<u64> = node!(0);
+        let rows: Vec<SourceNode<String>> = (0..ROWS).map(|i| node!(format!("row {i}"))).collect();
         let shared: Arc<Vec<SourceNode<String>>> = Arc::new(rows);
-        let _printers: DerivedNode<Vec<DerivedNode<()>>> = effect!(|version| {
+        let _printers: DerivedNode<Vec<DerivedNode<()>>> = node!(|version| {
             let _ = version.get();
             shared
                 .iter()
                 .map(|row: &SourceNode<String>| {
                     let row: SourceNode<String> = row.clone();
-                    effect!(|row| {
+                    node!(|row| {
                         std::hint::black_box(row.get().len());
                     })
                 })
@@ -377,10 +378,10 @@ fn drop_churn() -> Row {
 fn rerun_rates() -> Row {
     let rt: tokio::runtime::Runtime = runtime(2);
     let rate: f64 = rt.block_on(lithia_task(async {
-        let input: SourceNode<u64> = effect!(0);
+        let input: SourceNode<u64> = node!(0);
         let runs: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
         let counter: Arc<AtomicU64> = runs.clone();
-        let _view: DerivedNode<u64> = effect!(|input| {
+        let _view: DerivedNode<u64> = node!(|input| {
             counter.fetch_add(1, Ordering::Relaxed);
             *input.get() * 2
         });
@@ -408,7 +409,7 @@ fn handle_clone() -> Row {
     const COUNT: u64 = 2_000_000;
     let rt: tokio::runtime::Runtime = runtime(1);
     let (handle, bare, read): (Duration, Duration, Duration) = rt.block_on(async {
-        let n: SourceNode<u64> = effect!(0);
+        let n: SourceNode<u64> = node!(0);
         let start: Instant = Instant::now();
         for _ in 0..COUNT {
             std::hint::black_box(n.clone());
@@ -443,21 +444,21 @@ fn creation_and_sweep() -> Row {
     const COUNT: u64 = 10_000;
     let rt: tokio::runtime::Runtime = runtime(2);
     let (bound, held, sweep, freed): (Duration, Duration, Duration, Duration) = rt.block_on(lithia_task(async {
-        let a: SourceNode<u64> = effect!(0);
+        let a: SourceNode<u64> = node!(0);
         let start: Instant = Instant::now();
         let mut kept: Vec<DerivedNode<()>> = Vec::with_capacity(COUNT as usize);
         for _ in 0..COUNT {
-            kept.push(effect!(|a| {
+            kept.push(node!(|a| {
                 let _ = a.get();
             }));
         }
         let bound: Duration = start.elapsed();
         lithia::flush().await;
         drop(kept);
-        let hub: SourceNode<u64> = effect!(0);
+        let hub: SourceNode<u64> = node!(0);
         let start: Instant = Instant::now();
         for _ in 0..COUNT {
-            effect!(|hub| {
+            node!(|hub| {
                 let _ = hub.get();
             });
         }
@@ -466,10 +467,10 @@ fn creation_and_sweep() -> Row {
         let start: Instant = Instant::now();
         drop(hub); // one sweep lets go of every watcher
         let sweep: Duration = start.elapsed();
-        let hub: SourceNode<u64> = effect!(0);
+        let hub: SourceNode<u64> = node!(0);
         let scoped: Vec<DerivedNode<()>> = (0..COUNT)
             .map(|_| {
-                effect!(|hub| {
+                node!(|hub| {
                     let _ = hub.get();
                 })
                 .scoped()
@@ -502,12 +503,12 @@ fn rebuild_children() -> Row {
     const ROUNDS: u64 = 50;
     let rt: tokio::runtime::Runtime = runtime(2);
     let elapsed: Duration = rt.block_on(lithia_task(async {
-        let tick: SourceNode<u64> = effect!(0);
-        let k: SourceNode<u64> = effect!(0);
-        effect!(|tick| {
+        let tick: SourceNode<u64> = node!(0);
+        let k: SourceNode<u64> = node!(0);
+        node!(|tick| {
             let _ = tick.get();
             for _ in 0..CHILDREN {
-                effect!(|k| {
+                node!(|k| {
                     let _ = k.get();
                 });
             }
@@ -542,20 +543,20 @@ fn keyed_list(keyed: bool, edit: fn(&mut Vec<Item>)) -> Duration {
     let rt: tokio::runtime::Runtime = runtime(2);
     rt.block_on(lithia_task(async move {
         let mut data: Vec<Item> = (0..ROWS).map(|id: u64| Item { id, value: id }).collect();
-        let rows: SourceNode<Vec<Item>> = effect!(data.clone());
-        let k: SourceNode<u64> = effect!(1);
+        let rows: SourceNode<Vec<Item>> = node!(data.clone());
+        let k: SourceNode<u64> = node!(1);
         let list: DerivedNode<Vec<DerivedNode<u64>>> = if keyed {
-            effect!(|rows| {
+            node!(|rows| {
                 rows.get()
                     .iter()
-                    .map(|item: &Item| effect!(|k| item.value * *k.get(), key = item.id))
+                    .map(|item: &Item| node!(|k| item.value * *k.get(), key = item.id))
                     .collect::<Vec<DerivedNode<u64>>>()
             })
         } else {
-            effect!(|rows| rows
+            node!(|rows| rows
                 .get()
                 .iter()
-                .map(|item: &Item| effect!(|k| item.value * *k.get()))
+                .map(|item: &Item| node!(|k| item.value * *k.get()))
                 .collect::<Vec<DerivedNode<u64>>>())
         };
         lithia::flush().await;
@@ -605,11 +606,11 @@ fn last_handle_drops() -> Row {
             let mut triggers: Vec<SourceNode<u64>> = Vec::new();
             let mut sources: Vec<SourceNode<u64>> = Vec::new();
             for _ in 0..threads {
-                let s: SourceNode<u64> = effect!(1);
-                let m: DerivedNode<u64> = effect!(|s| *s.get());
-                let trigger: SourceNode<u64> = effect!(0);
+                let s: SourceNode<u64> = node!(1);
+                let m: DerivedNode<u64> = node!(|s| *s.get());
+                let trigger: SourceNode<u64> = node!(0);
                 let total: Arc<AtomicU64> = total.clone();
-                effect!(|trigger| {
+                node!(|trigger| {
                     if *trigger.get() > 0 {
                         let start: Instant = Instant::now();
                         for _ in 0..DROPS {
@@ -645,8 +646,8 @@ fn discarded_values() -> Row {
     const WRITES: u64 = 20_000;
     let rt: tokio::runtime::Runtime = runtime(2);
     let (runs, equal, strings): (Duration, Duration, Duration) = rt.block_on(lithia_task(async {
-        let input: SourceNode<u64> = effect!(0);
-        let coarse: DerivedNode<u64> = effect!(|input| *input.get() / 1_000_000_000, equals = lithia::eq);
+        let input: SourceNode<u64> = node!(0);
+        let coarse: DerivedNode<u64> = node!(|input| *input.get() / 1_000_000_000, equals = lithia::eq);
         lithia::flush().await;
         let start: Instant = Instant::now();
         for round in 1..=ROUNDS {
@@ -655,8 +656,8 @@ fn discarded_values() -> Row {
         }
         let runs: Duration = start.elapsed();
         std::hint::black_box(*coarse.get());
-        let same: SourceNode<u64> = effect!(5, equals = lithia::eq);
-        let text: SourceNode<String> = effect!(String::new());
+        let same: SourceNode<u64> = node!(5, equals = lithia::eq);
+        let text: SourceNode<String> = node!(String::new(), no_equals);
         lithia::flush().await;
         let start: Instant = Instant::now();
         for _ in 0..WRITES {
@@ -689,12 +690,12 @@ fn wide_creation() -> Row {
     const ROUNDS: u64 = 5;
     let rt: tokio::runtime::Runtime = runtime(2);
     let elapsed: Duration = rt.block_on(lithia_task(async {
-        let tick: SourceNode<u64> = effect!(0);
-        let k: SourceNode<u64> = effect!(0);
-        effect!(|tick| {
+        let tick: SourceNode<u64> = node!(0);
+        let k: SourceNode<u64> = node!(0);
+        node!(|tick| {
             let _ = tick.get();
             for _ in 0..CHILDREN {
-                effect!(|k| {
+                node!(|k| {
                     let _ = k.get();
                 });
             }

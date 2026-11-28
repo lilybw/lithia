@@ -7,7 +7,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use lithia::{DerivedNode, SourceNode, effect};
+use lithia::{DerivedNode, SourceNode, node};
 
 /// Counts every allocation and reallocation, then defers to the system allocator.
 struct Counting;
@@ -73,13 +73,13 @@ fn chain() -> String {
     const LENGTH: u64 = 1_000;
     const ROUNDS: u64 = 20;
     let allocations: u64 = run(async {
-        let source: SourceNode<u64> = effect!(0);
-        let mut tail: DerivedNode<u64> = effect!(|source| *source.get() + 1);
+        let source: SourceNode<u64> = node!(0);
+        let mut tail: DerivedNode<u64> = node!(|source| *source.get() + 1);
         let mut chain: Vec<DerivedNode<u64>> = Vec::new();
         for _ in 1..LENGTH {
             let previous: DerivedNode<u64> = tail.clone();
             chain.push(previous.clone());
-            tail = effect!(|previous| *previous.get() + 1);
+            tail = node!(|previous| *previous.get() + 1);
         }
         lithia::flush().await;
         let before: u64 = count();
@@ -97,8 +97,8 @@ fn fan_out() -> String {
     const WIDTH: u64 = 1_000;
     const ROUNDS: u64 = 20;
     let allocations: u64 = run(async {
-        let source: SourceNode<u64> = effect!(0);
-        let children: Vec<DerivedNode<u64>> = (0..WIDTH).map(|_| effect!(|source| *source.get())).collect();
+        let source: SourceNode<u64> = node!(0);
+        let children: Vec<DerivedNode<u64>> = (0..WIDTH).map(|_| node!(|source| *source.get())).collect();
         lithia::flush().await;
         let before: u64 = count();
         for round in 1..=ROUNDS {
@@ -118,8 +118,8 @@ fn detached_write() -> String {
     // A task lithia did not start: each write is its own batch in the task's scope.
     let allocations: u64 = rt
         .block_on(rt.spawn(async {
-            let source: SourceNode<u64> = effect!(0);
-            let child: DerivedNode<u64> = effect!(|source| *source.get());
+            let source: SourceNode<u64> = node!(0);
+            let child: DerivedNode<u64> = node!(|source| *source.get());
             lithia::flush().await;
             let before: u64 = count();
             for round in 1..=WRITES {
@@ -138,10 +138,10 @@ fn detached_write() -> String {
 fn creation() -> String {
     const COUNT: u64 = 2_000;
     let allocations: u64 = run(async {
-        let a: SourceNode<u64> = effect!(0);
+        let a: SourceNode<u64> = node!(0);
         lithia::flush().await;
         let before: u64 = count();
-        let kept: Vec<DerivedNode<u64>> = (0..COUNT).map(|_| effect!(|a| *a.get())).collect();
+        let kept: Vec<DerivedNode<u64>> = (0..COUNT).map(|_| node!(|a| *a.get())).collect();
         lithia::flush().await;
         let allocations: u64 = count() - before;
         drop(kept);

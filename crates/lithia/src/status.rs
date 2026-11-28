@@ -11,21 +11,23 @@ use crate::Site;
 /// Condition of a node as seen by readers and children.
 /// `if let Status::Failed(f) = lithia::status(&parent) { eprintln!("{}", f.message); }`
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Status {
-    /// The node holds its latest item and no run is pending.
+    /// The node holds its latest item and no run is pending, or it was disposed under `disposed = MASK`.
     Ready,
-    /// A run is in flight and has not produced an item yet.
+    /// A run is in flight and has not produced an item yet, or the node was disposed under `disposed = PEND`.
     Pending,
-    /// The last run panicked, or fragility failed the node.
+    /// The last run panicked, or the node failed through its parents.
     Failed(Arc<Failure>),
-    /// The node was freed by `lithia::dispose`.
+    /// The node was freed by `lithia::dispose` under `disposed = FAIL`, the default.
     Ghost,
 }
 
-/// Why a node failed: its own panic, or its parents' failures under `fragility`.
+/// Why a node failed: its own panic, or its parents' failures under `resilience`.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Failure {
-    /// The panic message, or the fragility reason.
+    /// The panic message, or why its parents failed it.
     pub message: String,
     /// Where the failed node was created.
     pub site: Site,
@@ -33,9 +35,23 @@ pub struct Failure {
     pub causes: Vec<Arc<Failure>>,
 }
 
+impl Failure {
+    /// A failure with no causes.
+    pub(crate) fn new(message: impl Into<String>, site: Site) -> Failure {
+        Failure { message: message.into(), site, causes: Vec::new() }
+    }
+}
+
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} ({})", self.message, self.site)
+    }
+}
+
+/// The first cause is the source; the others are in `causes`.
+impl std::error::Error for Failure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.causes.first().map(|cause: &Arc<Failure>| &**cause as &(dyn std::error::Error + 'static))
     }
 }
 
@@ -50,3 +66,28 @@ impl fmt::Display for Ghosted {
 }
 
 impl std::error::Error for Ghosted {}
+
+/// Error returned by `try_set` on a node freed by `lithia::dispose`, holding the value it was not given.
+/// `if let Err(lithia::Rejected(order)) = queue.try_set(order) { retry.push(order); }`
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Rejected<K>(pub K);
+
+impl<K> fmt::Debug for Rejected<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Rejected { .. }")
+    }
+}
+
+impl<K> fmt::Display for Rejected<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the node was disposed, so the value was not written")
+    }
+}
+
+impl<K> std::error::Error for Rejected<K> {}
+
+impl<K> From<Rejected<K>> for Ghosted {
+    fn from(_: Rejected<K>) -> Ghosted {
+        Ghosted
+    }
+}

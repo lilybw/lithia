@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${CLAUDE_PROJECT_DIR}/.claude/tools/session_start.py\"; if [ -f \"$f\" ]; then python3 \"$f\"; fi",
+            "timeout": 60,
+            "statusMessage": "Mapping lithia's code"
+          }
+        ]
+      }
+    ]
+  }
+}

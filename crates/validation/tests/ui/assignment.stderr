@@ -1,5 +1,5 @@
-error: an assignment is not a value; write `effect!(3)`, or put options after a comma
- --> tests/ui/assignment.rs:8:21
+error: an assignment is not a value; write `node!(3)`, or put options after a comma
+ --> tests/ui/assignment.rs:8:19
   |
-8 |     let _ = effect!(a = 3);
-  |                     ^^^^^
+8 |     let _ = node!(a = 3);
+  |                   ^^^^^

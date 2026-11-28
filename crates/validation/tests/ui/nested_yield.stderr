@@ -1,4 +1,4 @@
-error: `yield` publishes the enclosing effect! body's items and only works directly in that body
+error: `yield` publishes the enclosing node! body's items and only works directly in that body
   --> tests/ui/nested_yield.rs:10:13
    |
 10 |             yield *n.get();

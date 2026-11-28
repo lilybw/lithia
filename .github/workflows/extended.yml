@@ -4,55 +4,63 @@
 # Slower checks: Miri, the loom models at bound 4 with and without the fast path, TLC on the two
 # largest TLA+ models, the kept mutations, and stress runs of every test binary on Linux (x86-64 and
 # ARM) and macOS (ARM). They run on every push to `nightly`, weekly, and on pull requests; a nightly
-# tag is promoted to `release` only once they pass on it.
+# commit is a release candidate for crates.io only once a full run, cargo-mutants included, passes on it.
 name: extended
 
 on:
   push:
     branches: [nightly, "verify/**"]
   pull_request:
-    branches: [nightly, release]
+    branches: [nightly]
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
+    inputs:
+      tlc:
+        description: "Only these TLC models, space-separated (MCCreate MCBlock); empty runs every job"
+        default: ""
+      mutants:
+        description: "Only cargo-mutants on these files, space-separated (crates/lithia/src/api.rs); empty runs every job"
+        default: ""
+      mutants_re:
+        description: "With mutants: only the mutants matching this regex"
+        default: ""
 
 permissions:
   contents: read
 
+# A push cancels the run of an older push; weekly and manual runs, which mutation-test for hours, run on.
 concurrency:
-  group: extended-${{ github.ref }}
-  cancel-in-progress: true
+  group: extended-${{ github.ref }}-${{ github.event_name }}-${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'latest' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 env:
-  RUST_TOOLCHAIN: "1.97.0"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
 
 jobs:
+  miri-shards:
+    name: miri shards
+    if: ${{ !inputs.tlc && !inputs.mutants }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: list
+        run: echo "matrix=$(python3 .github/scripts/miri-shards.py)" >> "$GITHUB_OUTPUT"
+
   miri:
     name: miri (${{ matrix.shard.name }})
+    needs: miri-shards
     strategy:
       fail-fast: false
       matrix:
-        # The edge-case tests in three shards by module, so that no job runs for hours.
-        shard:
-          - name: unit tests and validation cases
-            run: >-
-              cargo miri test --locked --no-fail-fast -p lithia --lib &&
-              cargo miri test --locked --no-fail-fast -p lithia-validation
-              --test cases --test consistency --test support --test keyed
-          - name: edge tests 1
-            run: >-
-              cargo miri test --locked --no-fail-fast -p lithia-test --test edge --
-              async_gen:: capture:: diagnostics:: keyed::
-          - name: edge tests 2
-            run: >-
-              cargo miri test --locked --no-fail-fast -p lithia-test --test edge --
-              lifetime:: propagation:: random::
-          - name: edge tests 3
-            run: >-
-              cargo miri test --locked --no-fail-fast -p lithia-test --test edge --
-              runtime:: support:: values::
+        # The unit tests and validation cases, then the edge tests in shards by module, so that no job
+        # runs for hours; listed from the test files, so a new module or file is never left out.
+        shard: ${{ fromJSON(needs.miri-shards.outputs.matrix) }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
@@ -60,6 +68,8 @@ jobs:
       # starts for detached work outlive a test, so Miri's check for leaks and live threads is off.
       MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
       LITHIA_TEST_TIMEOUT_MS: "3600000"
+      # Overrides rust-toolchain.toml.
+      RUSTUP_TOOLCHAIN: nightly
       LITHIA_RANDOM_SEEDS: "2"
       RUST_TEST_THREADS: "2"
     steps:
@@ -68,7 +78,6 @@ jobs:
       - name: Install Rust nightly with Miri
         run: |
           rustup toolchain install nightly --profile minimal --component miri,rust-src --allow-downgrade
-          rustup default nightly
           cargo miri setup
 
       - uses: Swatinem/rust-cache@v2
@@ -89,6 +98,7 @@ jobs:
 
   loom-deep:
     name: loom bound 4 (fast path ${{ matrix.fast_path }})
+    if: ${{ !inputs.tlc && !inputs.mutants }}
     strategy:
       fail-fast: false
       matrix:
@@ -103,10 +113,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The toolchain and its components are rust-toolchain.toml's.
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -117,6 +126,7 @@ jobs:
 
   stress:
     name: stress (${{ matrix.os }})
+    if: ${{ !inputs.tlc && !inputs.mutants }}
     strategy:
       fail-fast: false
       matrix:
@@ -128,10 +138,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The toolchain and its components are rust-toolchain.toml's.
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -148,18 +157,19 @@ jobs:
           path: target/stress
           if-no-files-found: ignore
 
-  # The two models too large for ci.yml; the others run there. MCDiamond does not finish within a
-  # runner's six hours, so it is explored breadth-first for 270 minutes: every state up to the depth
-  # reached is checked, and only a violation fails the job.
+  # The models too large for ci.yml; the others run there. MCDiamond takes about four hours and
+  # runners differ in speed, so it stops after 270 minutes: every state up to the depth reached is
+  # checked, and only a violation fails the job.
   tla:
     name: tlc (${{ matrix.model }})
+    if: ${{ !inputs.tlc && !inputs.mutants }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - model: MCSharedTarget
+          - model: MCWhole
           - model: MCDiamond
-            limit: 270m
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -170,31 +180,21 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: TLC
-        working-directory: docs/tla/models
-        run: |
-          if [[ -z "${{ matrix.limit }}" ]]; then
-            exec ../tlc.sh ${{ matrix.model }}
-          fi
-          status=0
-          timeout ${{ matrix.limit }} ../tlc.sh ${{ matrix.model }} || status=$?
-          if [[ $status -eq 124 ]]; then
-            echo "No error found within ${{ matrix.limit }}."
-            exit 0
-          fi
-          exit $status
+      # MCDiamond is recorded as bounded: TLC explores it for 270 minutes and passes without an error.
+      - name: TLC, against the model's recorded state count
+        run: python3 .github/scripts/tlc.py ${{ matrix.model }}
 
   mutations:
     name: mutations
+    if: ${{ !inputs.tlc && !inputs.mutants }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v5
 
+      # The toolchain and its components are rust-toolchain.toml's.
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -207,7 +207,7 @@ jobs:
   # listed for review, not failed on: many are equivalent.
   cargo-mutants:
     name: cargo-mutants (shard ${{ matrix.shard }}/16)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !inputs.tlc && !inputs.mutants }}
     strategy:
       fail-fast: false
       matrix:
@@ -217,10 +217,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The toolchain and its components are rust-toolchain.toml's.
       - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -232,7 +231,7 @@ jobs:
       - name: Mutants of crates/lithia
         run: |
           cargo mutants --no-shuffle --shard ${{ matrix.shard }}/16 --file 'crates/lithia/src/**' \
-            --timeout 600 --test-package lithia,lithia-validation,lithia-test -- -- --skip compile_errors || true
+            --timeout 600 --test-package lithate,lithia-validation,lithia-test -- -- --skip compile_errors || true
           cat mutants.out/missed.txt 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
@@ -242,3 +241,53 @@ jobs:
           path: mutants.out
           if-no-files-found: ignore
 
+  tlc-only:
+    name: tlc (${{ inputs.tlc }})
+    if: ${{ inputs.tlc }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: TLC on the models asked for
+        env:
+          MODELS: ${{ inputs.tlc }}
+        run: |
+          set -f
+          python3 .github/scripts/tlc.py $MODELS
+
+  mutants-only:
+    name: cargo-mutants (${{ inputs.mutants }})
+    if: ${{ inputs.mutants }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mutants
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked --version 27.1.0
+
+      - name: Mutants of the files asked for
+        env:
+          FILES: ${{ inputs.mutants }}
+          RE: ${{ inputs.mutants_re }}
+        run: python3 .github/scripts/mutants.py $FILES ${RE:+--re "$RE"}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-only
+          path: target/mutants.out
+          if-no-files-found: ignore

@@ -5,22 +5,64 @@
 
 use std::fmt;
 
+/// A site's identity within one build: the address of its static `Site`.
+pub(crate) type SiteKey = usize;
+
 /// Where a node was created, recorded at compile time for diagnostics.
 /// `eprintln!("{}:{} in {}", site.file, site.line, (site.function)());`
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct Site {
-    /// Source file of the `effect!` call.
+    /// Source file of the `node!` call.
     pub file: &'static str,
-    /// Line of the `effect!` call.
+    /// Line of the `node!` call.
     pub line: u32,
-    /// Column of the `effect!` call.
+    /// Column of the `node!` call.
     pub column: u32,
-    /// Module path of the `effect!` call.
+    /// Module path of the `node!` call.
     pub module: &'static str,
     /// Path of the enclosing function, resolved on first call.
     pub function: fn() -> &'static str,
-    /// The macro input as written.
+    /// The start of the macro input, stringified; empty in builds without debug assertions.
     pub tokens: &'static str,
+    /// Nodes from this site that support holds, for the pile-up warning (spec §12).
+    pub(crate) held: &'static SiteCounter,
+}
+
+/// A count kept per site, beside its `Site`, so counting takes no shared lock.
+#[doc(hidden)]
+pub struct SiteCounter(
+    // A diagnostic count, never synchronising anything, so loom need not see it.
+    #[allow(clippy::disallowed_types)] pub(crate) std::sync::atomic::AtomicUsize,
+);
+
+impl SiteCounter {
+    #[allow(clippy::disallowed_types)]
+    pub const fn new() -> SiteCounter {
+        SiteCounter(std::sync::atomic::AtomicUsize::new(0))
+    }
+}
+
+impl Default for SiteCounter {
+    fn default() -> SiteCounter {
+        SiteCounter::new()
+    }
+}
+
+impl Site {
+    /// Builds a site; only `node!` does, so a field can be added without breaking callers.
+    #[doc(hidden)]
+    pub const fn __new(
+        file: &'static str,
+        line: u32,
+        column: u32,
+        module: &'static str,
+        function: fn() -> &'static str,
+        tokens: &'static str,
+        held: &'static SiteCounter,
+    ) -> Site {
+        Site { file, line, column, module, function, tokens, held }
+    }
 }
 
 impl fmt::Debug for Site {
@@ -42,7 +84,7 @@ impl fmt::Display for Site {
     }
 }
 
-/// Name of the marker function `effect!` declares to find its enclosing function.
+/// Name of the marker function `node!` declares to find its enclosing function.
 pub(crate) const SCOPE_MARKER: &str = "__lithia_scope";
 
 /// Trims the marker function's own name off a `type_name`, leaving the enclosing path.

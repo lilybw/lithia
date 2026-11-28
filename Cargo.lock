@@ -12,15 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arc-swap"
-version = "1.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84a22b5d51209f6de83d37a0b33d320acb8da88823e42a94c075140708f032a5"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -127,15 +118,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
-name = "lithia"
+name = "lithate"
 version = "0.5.0"
 dependencies = [
- "arc-swap",
  "bitflags",
  "futures-core",
  "lithia-macro",
  "loom",
  "parking_lot",
+ "pin-project-lite",
+ "smallvec",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -145,7 +137,7 @@ dependencies = [
 name = "lithia-bench"
 version = "0.5.0"
 dependencies = [
- "lithia",
+ "lithate",
  "tokio",
 ]
 
@@ -162,7 +154,7 @@ dependencies = [
 name = "lithia-test"
 version = "0.5.0"
 dependencies = [
- "lithia",
+ "lithate",
  "loom",
  "tokio",
  "tracing",
@@ -174,10 +166,10 @@ dependencies = [
 name = "lithia-validation"
 version = "0.5.0"
 dependencies = [
- "lithia",
+ "lithate",
+ "lithia-test",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "trybuild",
 ]
 
@@ -263,9 +255,9 @@ dependencies = [
 
 [[package]]
 name = "pin-project-lite"
-version = "0.2.17"
+version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+checksum = "c938015719552d665fd0553b90d96cd7ff58e83e4c061ca99e6bb78865a72752"
 
 [[package]]
 name = "proc-macro2"

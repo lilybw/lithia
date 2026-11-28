@@ -8,24 +8,24 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
-use lithia::{Changes, DerivedNode, Ghosted, SourceNode, Status, effect};
+use lithia::{Changes, DerivedNode, Ghosted, Ref, Rejected, SourceNode, Status, node};
 
 #[lithia::test]
 async fn writes_are_visible_immediately() {
-    let n: SourceNode<u32> = effect!(1);
+    let n: SourceNode<u32> = node!(1);
     n.update(|v: &u32| v + 1);
     assert_eq!(*n.get(), 2);
     n.set(7);
     assert_eq!(*n.get(), 7);
-    let list: SourceNode<Vec<u32>> = effect!(vec![1]);
+    let list: SourceNode<Vec<u32>> = node!(vec![1]);
     list.modify(|v: &mut Vec<u32>| v.push(2));
     assert_eq!(*list.get(), vec![1, 2]);
 }
 
 #[lithia::test]
 async fn writes_inside_closures_panic_and_leave_values_unchanged() {
-    let a: SourceNode<u32> = effect!(0);
-    let b: SourceNode<u32> = effect!(0);
+    let a: SourceNode<u32> = node!(0);
+    let b: SourceNode<u32> = node!(0);
     let nested_write: std::thread::Result<()> = catch_unwind(AssertUnwindSafe(|| {
         a.update(|v: &u32| {
             b.set(1);
@@ -55,9 +55,9 @@ async fn writes_inside_closures_panic_and_leave_values_unchanged() {
 
 #[lithia::test]
 async fn writes_inside_equals_panic() {
-    let other: SourceNode<u32> = effect!(0);
+    let other: SourceNode<u32> = node!(0);
     let probe: SourceNode<u32> = other.clone();
-    let n: SourceNode<u32> = effect!(
+    let n: SourceNode<u32> = node!(
         0,
         equals = move |_old: &u32, _new: &u32| {
             probe.set(9);
@@ -71,7 +71,7 @@ async fn writes_inside_equals_panic() {
 
 #[lithia::test]
 async fn a_panicking_comparator_fails_the_write_and_keeps_the_value() {
-    let n: SourceNode<u32> = effect!(
+    let n: SourceNode<u32> = node!(
         1,
         equals = |_old: &u32, new: &u32| {
             if *new == 13 {
@@ -89,8 +89,8 @@ async fn a_panicking_comparator_fails_the_write_and_keeps_the_value() {
 
 #[lithia::test]
 async fn a_panicking_comparator_fails_the_run() {
-    let n: SourceNode<u32> = effect!(1);
-    let picky: DerivedNode<u32> = effect!(
+    let n: SourceNode<u32> = node!(1);
+    let picky: DerivedNode<u32> = node!(
         |n| *n.get(),
         equals = |_old: &u32, new: &u32| {
             if *new == 13 {
@@ -113,10 +113,10 @@ async fn a_panicking_comparator_fails_the_run() {
 
 #[lithia::test]
 async fn nodes_created_inside_update_closures_are_delivered() {
-    let n: SourceNode<u32> = effect!(2);
-    let holder: SourceNode<Option<DerivedNode<u32>>> = effect!(None);
+    let n: SourceNode<u32> = node!(2);
+    let holder: SourceNode<Option<DerivedNode<u32>>> = node!(None);
     let source: SourceNode<u32> = n.clone();
-    holder.update(move |_old: &Option<DerivedNode<u32>>| Some(effect!(|source| *source.get() * 10)));
+    holder.update(move |_old: &Option<DerivedNode<u32>>| Some(node!(|source| *source.get() * 10)));
     lithia::flush().await;
     let child: DerivedNode<u32> = (*holder.get()).clone().expect("created in the closure");
     assert_eq!(*child.get(), 20);
@@ -126,17 +126,115 @@ async fn nodes_created_inside_update_closures_are_delivered() {
 }
 
 #[lithia::test]
+async fn nodes_created_inside_update_closures_outside_lithia_tasks_are_delivered() {
+    let n: SourceNode<u32> = node!(2);
+    let holder: SourceNode<Option<DerivedNode<u32>>> = node!(None);
+    let (source, slot): (SourceNode<u32>, SourceNode<Option<DerivedNode<u32>>>) = (n.clone(), holder.clone());
+    let runtime: tokio::runtime::Handle = tokio::runtime::Handle::current();
+    // A thread of its own runs no lithia task: its closure's creation is delivered once the lock is released.
+    std::thread::spawn(move || {
+        let _entered: tokio::runtime::EnterGuard<'_> = runtime.enter();
+        slot.update(move |_old: &Option<DerivedNode<u32>>| Some(node!(|source| *source.get() * 10)));
+    })
+    .join()
+    .unwrap();
+    let child: DerivedNode<u32> = (*holder.get()).clone().expect("created in the closure");
+    let ran: Result<(), tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_secs(2), lithia_test::until(|| *child.get() == 20)).await;
+    assert!(ran.is_ok(), "the node's first run was delivered: {}", *child.get());
+}
+
+/// How many times a watcher of `n` runs after `n` is set to the value it already holds.
+async fn reruns_on_an_equal_write<K: lithia::NodeValue + Clone>(n: &SourceNode<K>) -> u32 {
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _watcher: DerivedNode<()> = node!(|n| {
+        let _ = n.get();
+        runs.fetch_add(1, Ordering::SeqCst);
+    });
+    lithia::flush().await;
+    n.set((*n.get()).clone());
+    lithia::flush().await;
+    runs.load(Ordering::SeqCst) - 1
+}
+
+/// Created where only `Clone` is known of `T`: no comparator.
+fn created_without_eq<T: lithia::NodeValue + Clone>(value: T) -> SourceNode<T> {
+    node!(value)
+}
+
+/// Created where `T: PartialEq` is known: compared by `PartialEq`.
+fn created_with_eq<T: lithia::NodeValue + PartialEq>(value: T) -> SourceNode<T> {
+    node!(value)
+}
+
+#[lithia::test]
+async fn equal_values_change_nothing_by_default() {
+    let source: SourceNode<u32> = node!(1);
+    assert_eq!(reruns_on_an_equal_write(&source).await, 0);
+    let parity: DerivedNode<bool> = node!(|source| *source.get() % 2 == 0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _watcher: DerivedNode<()> = node!(|parity| {
+        let _ = parity.get();
+        runs.fetch_add(1, Ordering::SeqCst);
+    });
+    lithia::flush().await;
+    source.set(3); // a change, whose parity is equal: the watcher stays
+    lithia::flush().await;
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    source.set(4);
+    lithia::flush().await;
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+}
+
+#[lithia::test]
+async fn units_no_equals_and_generic_code_propagate_every_value() {
+    let tick: SourceNode<u32> = node!(0);
+    let effect: DerivedNode<()> = node!(|tick| {
+        let _ = tick.get();
+    });
+    let after: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _child: DerivedNode<()> = node!(|effect| {
+        let _ = effect.get();
+        after.fetch_add(1, Ordering::SeqCst);
+    });
+    lithia::flush().await;
+    tick.set(1);
+    lithia::flush().await;
+    assert_eq!(after.load(Ordering::SeqCst), 2, "each run of an effect is a change");
+    assert_eq!(reruns_on_an_equal_write(&node!(1u32, no_equals)).await, 1);
+    assert_eq!(reruns_on_an_equal_write(&node!((), no_equals)).await, 1);
+    assert_eq!(reruns_on_an_equal_write(&node!(())).await, 1, "`()` is never compared");
+    assert_eq!(reruns_on_an_equal_write(&created_without_eq(1u32)).await, 1);
+    assert_eq!(reruns_on_an_equal_write(&created_with_eq(1u32)).await, 0);
+    let never: SourceNode<u32> = node!(1, equals = |_: &u32, _: &u32| false);
+    assert_eq!(reruns_on_an_equal_write(&never).await, 1, "`equals` replaces the default");
+}
+
+#[lithia::test]
+async fn a_rejected_write_hands_its_value_back() {
+    // The value is moved into the write, so only `Rejected` can return it.
+    let n: SourceNode<Vec<String>> = node!(Vec::new());
+    lithia::dispose(&n);
+    let order: Vec<String> = vec!["first".to_string()];
+    let Err(Rejected(back)) = n.try_set(order) else { panic!("a write to a ghost is rejected") };
+    assert_eq!(back, ["first"]);
+    assert_eq!(Rejected(1u8).to_string(), "the node was disposed, so the value was not written");
+}
+
+#[lithia::test]
 async fn try_operations_report_ghosts() {
-    let n: SourceNode<u32> = effect!(1);
+    let n: SourceNode<u32> = node!(1);
     lithia::dispose(&n);
     assert_eq!(n.try_get(), Err(Ghosted));
-    assert_eq!(n.try_set(2), Err(Ghosted));
+    assert_eq!(n.try_get().unwrap_err().to_string(), "the node was disposed");
+    assert_eq!(n.try_set(2), Err(Rejected(2)));
+    assert_eq!(Ghosted::from(Rejected(2)), Ghosted); // `?` turns a rejected write into `Ghosted`
     assert_eq!(n.try_update(|v: &u32| v + 1), Err(Ghosted));
     assert_eq!(n.try_modify(|v: &mut u32| *v += 1), Err(Ghosted));
     assert_eq!(lithia::try_reflow(&n), Err(Ghosted));
-    let read: std::thread::Result<Arc<u32>> = catch_unwind(AssertUnwindSafe(|| n.get()));
+    let read: std::thread::Result<Ref<u32>> = catch_unwind(AssertUnwindSafe(|| n.get()));
     let message: String = match read {
-        Ok(_) => panic!("reading a ghost under ON_GHOST_CAUSE_FAILURE must panic"),
+        Ok(_) => panic!("reading a ghost under `disposed = FAIL` must panic"),
         Err(payload) => payload.downcast_ref::<String>().cloned().unwrap_or_default(),
     };
     assert!(message.contains("values.rs"), "the panic names the site: {message}");
@@ -146,11 +244,12 @@ async fn try_operations_report_ghosts() {
 
 #[lithia::test]
 async fn equal_writes_do_not_reach_changes() {
-    let n: SourceNode<u32> = effect!(1, equals = lithia::eq);
+    let n: SourceNode<u32> = node!(1, equals = lithia::eq);
     let mut stream: Changes<u32> = n.changes();
+    assert_eq!(format!("{stream:?}"), "Changes { ended: false }");
     assert_eq!(*stream.next().await.unwrap(), 1);
     n.set(1);
-    let next: Result<Option<Arc<u32>>, tokio::time::error::Elapsed> =
+    let next: Result<Option<Ref<u32>>, tokio::time::error::Elapsed> =
         tokio::time::timeout(Duration::from_millis(30), stream.next()).await;
     assert!(next.is_err(), "an equal write is skipped");
     n.set(2);
@@ -158,51 +257,29 @@ async fn equal_writes_do_not_reach_changes() {
 }
 
 #[lithia::test]
-async fn always_propagate_reruns_children_of_derived_nodes() {
-    let a: SourceNode<i32> = effect!(1);
-    let parity: DerivedNode<i32> = effect!(|a| *a.get() % 2, equals = lithia::eq, flags = ALWAYS_PROPAGATE);
-    let runs: SourceNode<u32> = effect!(0);
-    let _child: DerivedNode<()> = effect!(|parity| runs.update(|n: &u32| n + 1));
-    lithia::flush().await;
-    let before: Arc<i32> = parity.get();
-    a.set(3);
-    lithia::flush().await;
-    assert!(Arc::ptr_eq(&before, &parity.get()));
-    assert_eq!(*runs.get(), 2);
-}
-
-#[lithia::test]
-async fn always_propagate_without_equals_changes_nothing() {
-    let flags: lithia::Flags = lithia::ALWAYS_PROPAGATE;
-    let literal: SourceNode<u32> = effect!(1, flags = ALWAYS_PROPAGATE);
-    let computed: SourceNode<u32> = effect!(1, flags = flags);
-    let runs: SourceNode<u32> = effect!(0);
-    let _child: DerivedNode<()> = effect!(|literal, computed| {
-        let _ = (literal.get(), computed.get());
-        runs.update(|n: &u32| n + 1);
-    });
-    lithia::flush().await;
-    literal.set(1);
-    lithia::flush().await;
-    computed.set(1);
-    lithia::flush().await;
-    // Without `equals` nothing compares, so every write propagates, flag or not.
-    assert_eq!(*runs.get(), 3);
+async fn an_option_value_may_be_any_expression_of_its_type() {
+    let mask: lithia::disposed::Disposal = lithia::disposed::MASK;
+    let literal: SourceNode<u32> = node!(1, disposed = MASK);
+    let computed: SourceNode<u32> = node!(2, disposed = mask);
+    lithia::dispose(&literal);
+    lithia::dispose(&computed);
+    assert_eq!((*literal.get(), *computed.get()), (1, 2));
+    assert_eq!(format!("{mask:?} {:?}", lithia::resilience::NONE), "disposed::MASK resilience::NONE");
 }
 
 #[lithia::test]
 async fn reflow_of_a_derived_node_reruns_it_and_its_children() {
-    let a: SourceNode<i32> = effect!(1);
-    let body_runs: SourceNode<u32> = effect!(0);
-    let child_runs: SourceNode<u32> = effect!(0);
-    let same: DerivedNode<i32> = effect!(
+    let a: SourceNode<i32> = node!(1);
+    let body_runs: SourceNode<u32> = node!(0);
+    let child_runs: SourceNode<u32> = node!(0);
+    let same: DerivedNode<i32> = node!(
         |a| {
             body_runs.update(|n: &u32| n + 1);
             *a.get()
         },
         equals = lithia::eq
     );
-    let _child: DerivedNode<()> = effect!(|same| child_runs.update(|n: &u32| n + 1));
+    let _child: DerivedNode<()> = node!(|same| child_runs.update(|n: &u32| n + 1));
     lithia::flush().await;
     assert_eq!((*body_runs.get(), *child_runs.get()), (1, 1));
     lithia::reflow(&same);
@@ -212,14 +289,14 @@ async fn reflow_of_a_derived_node_reruns_it_and_its_children() {
 
 #[lithia::test]
 async fn status_follows_runs_failures_and_writes() {
-    let n: SourceNode<u32> = effect!(1);
-    let derived: DerivedNode<u32> = effect!(|n| *n.get());
+    let n: SourceNode<u32> = node!(1);
+    let derived: DerivedNode<u32> = node!(|n| *n.get());
     assert!(matches!(lithia::status(&derived), Status::Pending));
     assert!(matches!(lithia::status(&n), Status::Ready));
     lithia::flush().await;
     assert!(matches!(lithia::status(&derived), Status::Ready));
 
-    let broken: SourceNode<u32> = effect!(async {
+    let broken: SourceNode<u32> = node!(async {
         tokio::time::sleep(Duration::from_millis(5)).await;
         panic!("async source failed")
     });
@@ -234,10 +311,53 @@ async fn status_follows_runs_failures_and_writes() {
 }
 
 #[lithia::test]
+async fn a_rerun_in_flight_is_pending_and_clears_a_failure_as_it_starts() {
+    let n: SourceNode<u32> = node!(0);
+    let gate: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
+    let slow: DerivedNode<u32> = node!(async |n| {
+        let value: u32 = *n.get();
+        assert_ne!(value, 1, "the body refuses 1");
+        if value > 1 {
+            gate.notified().await;
+        }
+        value
+    });
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Ready));
+    n.set(1);
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Failed(_)));
+    n.set(2); // the rerun starts, and waits at the gate: no longer failed, not yet ready
+    lithia::flush().await;
+    assert!(matches!(lithia::status(&slow), Status::Pending), "{:?}", lithia::status(&slow));
+    gate.notify_one();
+    lithia::test::settled(&slow).await;
+    assert!(matches!(lithia::status(&slow), Status::Ready));
+    assert_eq!(*slow.get(), 2);
+}
+
+#[lithia::test]
+async fn a_node_failing_through_its_parent_again_stays_failed() {
+    let n: SourceNode<u32> = node!(0);
+    let parent: DerivedNode<u32> = node!(|n| {
+        let value: u32 = *n.get();
+        assert!(value == 0, "the parent refuses {value}");
+        value
+    });
+    let child: DerivedNode<u32> = node!(|parent| *parent.get(), resilience = NONE);
+    lithia::flush().await;
+    for value in 1..=3 {
+        n.set(value); // the parent fails again; the child fails through it again
+        lithia::flush().await;
+        assert!(matches!(lithia::status(&child), Status::Failed(_)), "{value}: {:?}", lithia::status(&child));
+    }
+}
+
+#[lithia::test]
 async fn a_write_before_the_first_item_keeps_the_block_from_running() {
     let ran: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let flag: Arc<AtomicBool> = ran.clone();
-    let slow: SourceNode<u32> = effect!(async move {
+    let slow: SourceNode<u32> = node!(async move {
         flag.store(true, Ordering::SeqCst);
         1
     });
@@ -249,16 +369,16 @@ async fn a_write_before_the_first_item_keeps_the_block_from_running() {
 }
 
 #[lithia::test]
-async fn a_fragile_child_whose_parent_recovers_unchanged_is_restored_without_running() {
-    let n: SourceNode<i32> = effect!(1);
-    let inv: DerivedNode<i32> = effect!(|n| 100 / *n.get(), equals = lithia::eq);
+async fn a_non_resilient_child_whose_parent_recovers_unchanged_is_restored_without_running() {
+    let n: SourceNode<i32> = node!(1);
+    let inv: DerivedNode<i32> = node!(|n| 100 / *n.get(), equals = lithia::eq);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let strict: DerivedNode<i32> = effect!(
+    let strict: DerivedNode<i32> = node!(
         |inv| {
             runs.fetch_add(1, Ordering::SeqCst);
             *inv.get() + 1
         },
-        fragility = FRAGILE
+        resilience = NONE
     );
     lithia::flush().await;
     n.set(0); // `inv` fails, and `strict` with it, without running
@@ -271,4 +391,17 @@ async fn a_fragile_child_whose_parent_recovers_unchanged_is_restored_without_run
     n.set(2); // a real change runs it
     lithia::flush().await;
     assert_eq!((*strict.get(), runs.load(Ordering::SeqCst)), (51, 2));
+}
+
+#[lithia::test]
+async fn with_reads_the_value_in_place_and_refuses_writes() {
+    let name: SourceNode<String> = node!("ada".to_string());
+    let other: SourceNode<u32> = node!(0);
+    assert_eq!(name.with(|name: &String| name.to_uppercase()), "ADA");
+    // A read of the same node inside `with` does not wait on its own lock.
+    assert_eq!(name.with(|outer: &String| name.with(|inner: &String| outer.len() + inner.len())), 6);
+    let written: std::thread::Result<()> =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| name.with(|_: &String| other.set(1))));
+    assert!(written.is_err(), "a write inside `with` must panic");
+    assert_eq!(*other.get(), 0);
 }

@@ -1,0 +1,40 @@
+// node!(row.clone(), key = row.id)
+
+{
+    fn __lithia_scope () {
+    } fn __lithia_path () -> & 'static str {
+        :: lithia :: __private :: fn_path (:: core :: any :: type_name_of_val (& __lithia_scope ) )
+    } static __LITHIA_HELD : :: lithia :: __private :: SiteCounter = :: lithia :: __private :: SiteCounter :: new () ;
+    static __LITHIA_SITE : :: lithia :: Site = :: lithia :: Site :: __new (:: core :: file ! () , :: core :: line ! () , :: core :: column ! () , :: core :: module_path ! () , __lithia_path , if :: core :: cfg ! (debug_assertions ) {
+        "row . clone () , key = row . id"
+    } else {
+        ""
+    } , & __LITHIA_HELD , ) ;
+    let __lithia_key = :: lithia :: __private :: NodeKey :: new (row . id ) ;
+    let __lithia_shape : :: lithia :: __private :: Shape = :: lithia :: __private :: Shape :: new () ;
+    let __lithia_value = row . clone () ;
+    let __lithia_probe = {
+        # [allow (unused_imports ) ] use :: lithia :: __private :: {
+            ProbeViaArc as _ , ProbeViaEq as _ , ProbeViaHandle as _ , ProbeViaOpaque as _
+        } ;
+        (&& && :: lithia :: __private :: Probed (& __lithia_value ) ) . __lithia_probe ()
+    } ;
+    let __lithia_probes : [& dyn :: lithia :: __private :: Probe ; 0 ] = [] ;
+    let __lithia_reclaim = :: lithia :: __private :: reclaim_source (& :: lithia :: __private :: KeyRef :: new (& __LITHIA_SITE , & __lithia_key ) , & __lithia_shape , & __lithia_probe ) ;
+    match __lithia_reclaim {
+        __lithia_reclaim @ (:: lithia :: __private :: Reclaim :: Changed (_ ) | :: lithia :: __private :: Reclaim :: Fresh ) => {
+            let __lithia_inputs : :: lithia :: __private :: Inputs = :: lithia :: __private :: Inputs :: of (& __lithia_probes ) ;
+            :: lithia :: __private :: source (& __LITHIA_SITE , __lithia_value , :: lithia :: __private :: Options :: new (__lithia_shape ) . keyed (__lithia_reclaim , __lithia_key , __lithia_inputs ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+                # [allow (unused_imports ) ] use :: lithia :: __private :: {
+                    ImplicitViaEq as _ , ImplicitViaNone as _
+                } ;
+                (&& __lithia_p ) . __lithia_implicit ()
+            } )
+        } :: lithia :: __private :: Reclaim :: Same (__lithia_node ) => __lithia_node . source (:: lithia :: __private :: Options :: new (__lithia_shape ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+            # [allow (unused_imports ) ] use :: lithia :: __private :: {
+                ImplicitViaEq as _ , ImplicitViaNone as _
+            } ;
+            (&& __lithia_p ) . __lithia_implicit ()
+        } ) ,
+    }
+}

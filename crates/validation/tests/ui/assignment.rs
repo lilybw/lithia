@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 lithia Authors
 // SPDX-License-Identifier: MPL-2.0
 
-use lithia::effect;
+use lithia::node;
 
 fn main() {
     let a: i32 = 0;
-    let _ = effect!(a = 3);
+    let _ = node!(a = 3);
 }
