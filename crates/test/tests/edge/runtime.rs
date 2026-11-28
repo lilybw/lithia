@@ -37,7 +37,13 @@ fn a_runtime_shutting_down_fails_the_strict_children_of_its_runs() {
             *n.get()
         });
         let strict: DerivedNode<u32> = node!(|sleepy| *sleepy.get(), resilience = NONE);
-        tokio::time::sleep(Duration::from_millis(20)).await; // sleepy suspends, and strict runs on its item
+        for _ in 0..500 {
+            // Until sleepy suspends and strict has run on its item.
+            if matches!(lithia::status(&strict), Status::Ready) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         (n, sleepy, strict)
     });
     assert!(matches!(lithia::status(&strict), Status::Ready));
