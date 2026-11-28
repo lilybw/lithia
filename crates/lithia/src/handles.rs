@@ -13,7 +13,7 @@ use crate::expand::capture::SharedLease;
 use crate::graph::ids::Stamp;
 use crate::graph::node::{Commit, Displaced, Header, Kind, Node, NodeRef, TypedNodeRef};
 use crate::sync::MutexGuard;
-use crate::{Ghosted, NodeValue, Ref, Status, diag, protocol};
+use crate::{Ghosted, NodeValue, Ref, Rejected, Status, diag, protocol};
 
 /// Type-erased reference to a node, used by `node!` and the free functions.
 #[doc(hidden)]
@@ -93,8 +93,8 @@ pub trait Writable: sealed::Sealed + Send + Sync {
     type Value: NodeValue;
     /// Replaces the value; every read sees it immediately. Panics on a ghost.
     fn set(&self, value: Self::Value);
-    /// Like `set`, but returns `Err(Ghosted)` instead of panicking.
-    fn try_set(&self, value: Self::Value) -> Result<(), Ghosted>;
+    /// Like `set`, but hands the value back in `Err(Rejected(value))` instead of panicking.
+    fn try_set(&self, value: Self::Value) -> Result<(), Rejected<Self::Value>>;
 }
 
 /// May be passed to `lithia::reflow`; implemented by `SourceNode`, `DerivedNode` and `Setter`.
@@ -533,8 +533,12 @@ macro_rules! writable {
                 }
             }
             #[track_caller]
-            fn try_set(&self, value: K) -> Result<(), Ghosted> {
-                self.node.write(false, move |_: &K| value)
+            fn try_set(&self, value: K) -> Result<(), Rejected<K>> {
+                // A write fails before it computes the new value, so a rejected value is still here.
+                let mut held: Option<K> = Some(value);
+                let written: Result<(), Ghosted> =
+                    self.node.write(false, |_: &K| -> K { held.take().expect("a write computes its value once") });
+                written.map_err(|_: Ghosted| Rejected(held.take().expect("a rejected write keeps its value")))
             }
         }
 
@@ -545,9 +549,9 @@ macro_rules! writable {
                 Writable::set(self, value)
             }
 
-            /// Like `set`, but returns `Err(Ghosted)` instead of panicking.
+            /// Like `set`, but hands the value back in `Err(Rejected(value))` instead of panicking.
             #[track_caller]
-            pub fn try_set(&self, value: K) -> Result<(), Ghosted> {
+            pub fn try_set(&self, value: K) -> Result<(), Rejected<K>> {
                 Writable::try_set(self, value)
             }
         }

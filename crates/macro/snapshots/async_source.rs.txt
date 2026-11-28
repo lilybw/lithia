@@ -17,5 +17,10 @@
     let __lithia_captured : :: lithia :: __private :: Captured = __lithia_cap . finish () ;
     :: lithia :: __private :: source_async (& __LITHIA_SITE , & __lithia_captured , < _ as :: lithia :: __private :: InitDefault > :: __lithia_init () , async move {
         lookup () . await
-    } , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () ) , )
+    } , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+        # [allow (unused_imports ) ] use :: lithia :: __private :: {
+            ImplicitViaEq as _ , ImplicitViaNone as _
+        } ;
+        (&& __lithia_p ) . __lithia_implicit ()
+    } , )
 }

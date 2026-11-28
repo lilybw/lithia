@@ -137,7 +137,7 @@ Solid 2.0 behaviour as described in RFC 01: reactivity, batching and effects.
 
 ## 3. Public API
 
-The whole surface is `node!`, two node types, two views, the `Ref`, `Status`, `Failure`, `Site` and `Ghosted` types, the `Changes` stream, typed option constants (3.2), nine free functions and the `JoinHandle` and `JoinError` types of the two that spawn, the `#[lithia::main]` and `#[lithia::test]` attributes, and the `lithia::test` module (3.5). Four sealed traits state what each handle may do, and `NodeValue` bounds every value (11.1). The validation cases of section 13 live in the `lithia-validation` crate, not in a public module.
+The whole surface is `node!`, two node types, two views, the `Ref`, `Status`, `Failure`, `Site`, `Ghosted` and `Rejected` types, the `Changes` stream, typed option constants (3.2), nine free functions and the `JoinHandle` and `JoinError` types of the two that spawn, the `#[lithia::main]` and `#[lithia::test]` attributes, and the `lithia::test` module (3.5). Four sealed traits state what each handle may do, and `NodeValue` bounds every value (11.1). The validation cases of section 13 live in the `lithia-validation` crate, not in a public module.
 
 ### 3.1 node!
 
@@ -180,13 +180,14 @@ let total: DerivedNode<i32> = node!(|a, b| *a.get() + *b.get(),
 | Option | Values | Default | Applies to |
 | --- | --- | --- | --- |
 | `init` | an expression of type `K` | `K::default()` | derived nodes and async source nodes |
-| `equals` | a comparator taking `(&K, &K)` and returning `bool`, or `lithia::eq` | none: every write propagates | all nodes |
+| `equals` | a comparator taking `(&K, &K)` and returning `bool`, or `lithia::eq` | `PartialEq` where `K` implements it, except for `()`; otherwise none (6.4) | all nodes |
+| `no_equals` | none: a flag on its own, which leaves the node without a comparator, so every write propagates | off | all nodes |
 | `key` | an expression whose type is `Hash + Eq + Send + Sync + 'static`, or a closure `\|a, b\| expr` whose parameters name variables in scope | none: every run creates new nodes | all nodes created inside a body (10.1, Keyed nodes) |
 | `batches` | `WHOLE`: run once every batch that reached the node is ready at it; `PARTIAL`: run on each batch as it is ready (8) | `PARTIAL` | derived nodes |
 | `resilience` | `COMPLETE`: never fail because of parents; `PARTIAL`: fail once all parents are failed; `NONE`: fail once any parent is (9.2) | `COMPLETE` | derived nodes |
 | `disposed` | `FAIL`, `MASK`, `PEND`: what readers and children see once the node is disposed (10.5) | `FAIL` | all nodes |
 
-Reserving the slot now means adding options later is never a breaking change. Each option may appear once; an unknown name, a repeated option, `init` on a plain source node, and `batches` or `resilience` on any source node are compile errors (4.6).
+Reserving the slot now means adding options later is never a breaking change. Each option may appear once; an unknown name, a repeated option, `equals` together with `no_equals`, `init` on a plain source node, and `batches` or `resilience` on any source node are compile errors (4.6).
 
 Each option's constants live in a module of its name: `batches` takes a `lithia::batches::Batches`, `resilience` a `lithia::resilience::Resilience` and `disposed` a `lithia::disposed::Disposal`. The types are opaque, so their constants are their only values, and each prints as its path, such as `resilience::NONE`. Inside an option, that option's constants resolve without an import and no other option's do, so `resilience = WHOLE` does not compile; any other expression of the right type works too, such as `resilience = my_policy` (Case BM).
 
@@ -262,8 +263,8 @@ pub trait Writable: Sealed + Send + Sync {
     type Value: NodeValue;
     /// Replaces the value; every read sees it immediately. Panics on a ghost.
     fn set(&self, value: Self::Value);
-    /// Like `set`, but returns `Err(Ghosted)` instead of panicking.
-    fn try_set(&self, value: Self::Value) -> Result<(), Ghosted>;
+    /// Like `set`, but hands the value back in `Err(Rejected(value))` instead of panicking.
+    fn try_set(&self, value: Self::Value) -> Result<(), Rejected<Self::Value>>;
 }
 
 /// May be passed to `lithia::reflow`; implemented by `SourceNode`, `DerivedNode` and `Setter`.
@@ -275,6 +276,11 @@ pub trait Dispose: Sealed + Send + Sync { … }
 /// Error returned by the `try_` operations on a node freed by `lithia::dispose`; implements `Error`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ghosted;
+
+/// Error returned by `try_set` on a node freed by `lithia::dispose`, holding the value it was not given.
+/// `if let Err(lithia::Rejected(order)) = queue.try_set(order) { retry.push(order); }`
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Rejected<K>(pub K);
 
 /// `Unpin` `Stream<Item = Ref<K>>` of a node's values, current value first; holds the node weakly.
 /// `while let Some(v) = changes.next().await { println!("{v}"); }`
@@ -508,7 +514,7 @@ Rule: a body, or an async source block, captures a clone of everything it refere
 
 ### 4.5 Expansion
 
-`node!` expands into a block that declares the call site's `Site` static, gathers the dependencies through `Readable`, takes each capture inside a capture session (4.2), and calls a private constructor with the site, the dependencies, the recorded captures, the initial value, the body and the options. The body is a `move` closure that rebinds each capture by reference at the top of every run; an async or generator body bundles its captures into one `Arc` that each run clones, and a generator's direct `yield x` becomes an await on a yielder that publishes the item (3.6, 16). The options that shape how a node behaves, `batches`, `resilience` and `disposed`, build a `Shape`; each value is wrapped in a block that glob-imports its own option's module (3.2), and `equals` is added to the options after it. `cargo expand` shows the full expansion of any call.
+`node!` expands into a block that declares the call site's `Site` static, gathers the dependencies through `Readable`, takes each capture inside a capture session (4.2), and calls a private constructor with the site, the dependencies, the recorded captures, the initial value, the body and the options. The body is a `move` closure that rebinds each capture by reference at the top of every run; an async or generator body bundles its captures into one `Arc` that each run clones, and a generator's direct `yield x` becomes an await on a yielder that publishes the item (3.6, 16). The options that shape how a node behaves, `batches`, `resilience` and `disposed`, build a `Shape`; each value is wrapped in a block that glob-imports its own option's module (3.2), and `equals` is added to the options after it. The constructor's last argument is a closure that picks the default comparator, or `no_implicit` when `equals` or `no_equals` is given; closures are type-checked after a call's other arguments, so the closure sees the value type the body or value fixed (6.4). `cargo expand` shows the full expansion of any call.
 
 ### 4.6 Compile errors
 
@@ -521,7 +527,7 @@ Each of these inputs gets a dedicated message instead of a generic parse or trai
 | `node!(a = 3)` | "an assignment is not a value; write `node!(3)`, or put options after a comma" |
 | `yield` inside a nested closure, async block or item | "`yield` publishes the enclosing node! body's items and only works directly in that body" |
 | A value type that is not `Send + Sync + 'static` | "`T` cannot be a node value: values must be `Send + Sync + 'static`", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell` (11.1). rustc shows this `NodeValue` message, once even when both `Send` and `Sync` are missing. |
-| An unknown option | "unknown option `x`; expected one of init, equals, key, batches, resilience, disposed" |
+| An unknown option | "unknown option `x`; expected one of init, equals, no_equals, key, batches, resilience, disposed" |
 | A repeated option | "option `x` is given twice" |
 | `init` on a synchronous source node | "`init` applies to derived nodes and async source nodes; a source node starts with its value" |
 | `batches` or `resilience` on any source node | "`x` applies to derived nodes only; a source node has no parents" |
@@ -612,7 +618,7 @@ A write is visible to every read immediately; only the reruns it causes wait for
 - Any lithia write inside an `update` or `modify` closure, or inside an `equals` comparator, panics, through a thread-local flag, and so do `lithia::reflow` and `lithia::dispose`. Otherwise two threads updating A and B in opposite nesting order would deadlock on each other's locks. Reading nodes and creating nodes are allowed there.
 - Only `modify` requires `K: Clone`, and only where it is called. `update` builds the new value from a reference to the old one, which readers may still hold.
 - Values are replaced, never mutated where readers can see them. Interior mutability inside a value (a `Mutex` or atomic field) compiles, but bypasses lithia: such changes trigger no reflow.
-- By default every write propagates; the `equals` option lets a node skip equal values (6.4).
+- By default a value equal to the current one, by `PartialEq`, changes nothing; `equals` and `no_equals` change what counts as equal (6.4).
 - Creating a node and calling `lithia::reflow` are recorded in the batch the same way. A node links to its parents the moment it is created (11.4); only its scheduling waits for the batch.
 
 ### 6.2 Batch boundaries
@@ -636,14 +642,19 @@ Use it when a write must deliberately happen after the current propagation, inst
 
 ### 6.4 Equality (`equals`)
 
-By default every write propagates. The `equals` option lets each node decide which new values count as changes:
+By default a node compares each new value with its current one by `PartialEq`, when its value type has it, so an equal value changes nothing. The `equals` option replaces the comparator, and `no_equals` removes it:
 
 ```rust
-let name: SourceNode<String> = node!(String::new(), equals = lithia::eq);
+let name: SourceNode<String> = node!(String::new()); // compared by PartialEq
 let user: SourceNode<User> = node!(User::guest(),
     equals = |a: &User, b: &User| a.id == b.id && a.version == b.version);
+let tick: SourceNode<u64> = node!(0, no_equals); // every write propagates
 ```
 
+- The default is chosen where the node is created, from what the compiler knows of `K` there: `PartialEq` if `K` implements it, otherwise none. `()` is never compared, so an effect's runs keep reaching its children. In generic code, a `K` compares only if the function's bounds include `PartialEq`; `equals = lithia::eq` asks for it where the bounds don't show it.
+- Where `K` is not yet known at the creation, as in `node!(None)` whose type a later `set` fixes, the default assumes `PartialEq`, and a type that turns out to lack it fails to compile, naming `EqualsByDefault`. Naming the type, as in `let conn: SourceNode<Option<Conn>> = node!(None)`, or `no_equals`, avoids it.
+- A comparison costs what `PartialEq` costs: a long `Vec` or `String` is compared in full on every write, which `no_equals` or a cheaper `equals` avoids. Floating-point values follow `PartialEq`: `-0.0` equals `0.0`, and a `NaN` never equals anything, so it always propagates.
+- `lithia::reflow` reruns a node's children even when its value is equal (7.2), which is how a node with a comparator signals a change that `PartialEq` cannot see.
 - `equals` takes `|old: &K, new: &K| -> bool`, where `true` means equal.
 - `lithia::eq` is a ready-made comparator for `K: PartialEq` that requires the trait only where it is used.
 - When a new value equals the current one, three things happen: the node keeps its old value, `changes()` skips the new one, and nothing propagates. This holds for `set`, `update` and `modify` on source nodes, and for yielded items and return values on derived nodes.
@@ -651,7 +662,7 @@ let user: SourceNode<User> = node!(User::guest(),
 - An equal write is no run, so it does not supersede an async block or generator feeding the node.
 - If the comparator panics, a write panics in its caller and leaves the value unchanged, and an item from a run fails that run (9.1).
 
-There is no implicit default. A node never compares unless asked, so an effect's `()` values keep propagating, and deriving `PartialEq` on a type changes nothing by itself. With `equals`, most write cycles converge on their own; the writer-only cut (7.4) remains the backstop.
+With a comparator, most write cycles converge on their own; the writer-only cut (7.4) remains the backstop.
 
 ## 7. Propagation
 
@@ -1013,9 +1024,9 @@ The `disposed` option of the freed node decides what readers and children see:
 | `MASK` | the last value | a ready parent, frozen | kept until the last handle drops |
 | `PEND` | the last value | a parent pending forever | kept until the last handle drops |
 
-`lithia::status` reports what the option names: `Ghost` under `FAIL`, `Ready` under `MASK` and `Pending` under `PEND`; a write still returns `Err(Ghosted)` under all three. Neither `MASK` nor `PEND` fails a child, whatever its resilience (Case AD). Children keep using a pending parent's latest item (8), so the scheduler treats `MASK` and `PEND` alike until a child can wait for pending parents (16).
+`lithia::status` reports what the option names: `Ghost` under `FAIL`, `Ready` under `MASK` and `Pending` under `PEND`; a write still fails under all three. Neither `MASK` nor `PEND` fails a child, whatever its resilience (Case AD). Children keep using a pending parent's latest item (8), so the scheduler treats `MASK` and `PEND` alike until a child can wait for pending parents (16).
 
-Writes always fail on a ghost, whatever its `disposed` option. `set`, `update`, `modify` and `reflow` panic, and their `try_` forms return `Err(Ghosted)`. Inside a body, any of these panics puts that body's node into `Failed`. A ghost's body is dropped at disposal under all three.
+Writes always fail on a ghost, whatever its `disposed` option. `set`, `update`, `modify` and `reflow` panic, and their `try_` forms return an error: `try_set` returns `Err(Rejected(value))` with the value it was given, which moves into the write and could not otherwise come back, and the others `Err(Ghosted)`. `Rejected` implements `Error` whatever `K`, prints no value in `Debug`, and converts into `Ghosted`, so `?` works where `Ghosted` is the error. Inside a body, any of these panics puts that body's node into `Failed`. A ghost's body is dropped at disposal under all three.
 
 When a node becomes a ghost, its surviving children rerun, so resilience and the `disposed` option take effect at once (Case F). A node created later with a ghost among its parents behaves as such a surviving child: it is linked to every parent and sees each ghost through that ghost's `disposed` option, at its first run and after. A node created with only ghosts for parents is disposed at once, as disposal would have done to it, and is a ghost under its own `disposed` option (Case BO). Creation and disposal may race: disposal hands back the children linked by the time each disposed node closes, and handles them as it handles the rest, while a child linked later finds the node closed and handles itself. A node disposed of while it is still being created is never held by support. Its `changes()` streams end when it is freed or disposed, whatever its `disposed` option, and `changes()` on an existing ghost returns a stream that ends at once. A read of a ghost is logged at debug (12).
 
@@ -1244,13 +1255,9 @@ Two changes would alter stated behaviour, so they come as options or in a major 
 
 ## 17. Open questions
 
-To settle before 1.0, since an answer after it would change the API or a stated behaviour:
+None is left to settle before 1.0. These are additive, so they can wait for a minor release:
 
-- An implicit `equals` default for `K: PartialEq`? Left out for now: it would stop `()` effects propagating, and behave differently in generic code (6.4).
-- Should `try_set` hand the rejected value back, e.g. `Result<(), Ghosted<K>>`?
-- Should write cycles be defined as rounds, so that run counts are fixed? Run counts in an eight-way binding mesh vary with scheduling, from 15 to 58 (7.4, 15).
-
-Additive, so they can wait for a minor release:
+- Write cycles in rounds, as an option a node opts into, so that run counts are fixed? Run counts in an eight-way binding mesh vary with scheduling, from 15 to 58 (7.4, 15).
 
 - Keep the token stream in release builds, or only behind a diagnostics feature?
 - Tasks lithia did not start get one batch per write. Offer a runtime hook to batch them too? Batching cuts the cost of 100 writes to under a third (15).

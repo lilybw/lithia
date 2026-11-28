@@ -306,7 +306,8 @@ fn meshes() -> Row {
     let mut results: Vec<String> = Vec::new();
     for n in [2usize, 3, 4, 6, 8] {
         let runs: u64 = rt.block_on(lithia_task(async move {
-            let nodes: Vec<SourceNode<u64>> = (0..n).map(|_| node!(0u64)).collect();
+            // Without a comparator every write propagates, so the mesh reaches its worst case.
+            let nodes: Vec<SourceNode<u64>> = (0..n).map(|_| node!(0u64, no_equals)).collect();
             let counter: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
             let mut bindings: Vec<DerivedNode<()>> = Vec::new();
             for index in 0..n {
@@ -656,7 +657,7 @@ fn discarded_values() -> Row {
         let runs: Duration = start.elapsed();
         std::hint::black_box(*coarse.get());
         let same: SourceNode<u64> = node!(5, equals = lithia::eq);
-        let text: SourceNode<String> = node!(String::new());
+        let text: SourceNode<String> = node!(String::new(), no_equals);
         lithia::flush().await;
         let start: Instant = Instant::now();
         for _ in 0..WRITES {

@@ -13,5 +13,5 @@
     :: lithia :: __private :: source (& __LITHIA_SITE , 0 , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () . disposed ({
         # [allow (unused_imports ) ] use :: lithia :: disposed :: * ;
         MASK
-    } ) ) . equals (| a : & u32 , b : & u32 | a == b ) )
+    } ) ) . equals (| a : & u32 , b : & u32 | a == b ) , :: lithia :: __private :: no_implicit )
 }

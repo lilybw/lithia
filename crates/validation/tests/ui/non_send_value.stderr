@@ -8,6 +8,6 @@ error[E0277]: `Rc<{integer}>` cannot be a node value: values must be `Send + Syn
 note: required by a bound in `lithia::__private::source`
  --> $WORKSPACE/crates/lithia/src/expand/create.rs
   |
-  | pub fn source<K: NodeValue>(site: &'static Site, value: K, options: Options<K>) -> SourceNode<K> {
+  | pub fn source<K: NodeValue>(
   |                  ^^^^^^^^^ required by this bound in `source`
   = note: this error originates in the macro `node` (in Nightly builds, run with -Z macro-backtrace for more info)

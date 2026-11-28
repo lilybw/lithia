@@ -35,7 +35,7 @@ pub use lithia_macro::{main, node, test};
 pub use options::{batches, disposed, resilience};
 pub use reference::Ref;
 pub use site::Site;
-pub use status::{Failure, Ghosted, Status};
+pub use status::{Failure, Ghosted, Rejected, Status};
 pub use task::{JoinError, JoinHandle};
 pub use value::NodeValue;
 
@@ -58,7 +58,7 @@ pub mod __private {
     };
     pub use crate::expand::traits::{Capture, CaptureAny, CaptureSend, FieldAny, InitDefault, MoveAny};
     pub use crate::handles::NodeHandle;
-    pub use crate::options::{Options, Shape};
+    pub use crate::options::{EqualsByDefault, Implicit, ImplicitViaEq, ImplicitViaNone, Options, Shape, no_implicit};
     pub use crate::run::{TaskFuture, YieldItem, Yielder};
     pub use crate::site::{SiteCounter, fn_path};
     pub use tokio;

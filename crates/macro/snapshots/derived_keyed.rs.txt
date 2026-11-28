@@ -44,7 +44,17 @@
                 # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let n = & n ;
                 # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let factor = & factor ;
                 * n . get () * factor
-            } , :: lithia :: __private :: Options :: new (__lithia_shape ) . keyed (__lithia_reclaim , __lithia_key , __lithia_inputs ) )
-        } :: lithia :: __private :: Reclaim :: Same (__lithia_node ) => __lithia_node . derived (:: lithia :: __private :: Options :: new (__lithia_shape ) ) ,
+            } , :: lithia :: __private :: Options :: new (__lithia_shape ) . keyed (__lithia_reclaim , __lithia_key , __lithia_inputs ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+                # [allow (unused_imports ) ] use :: lithia :: __private :: {
+                    ImplicitViaEq as _ , ImplicitViaNone as _
+                } ;
+                (&& __lithia_p ) . __lithia_implicit ()
+            } )
+        } :: lithia :: __private :: Reclaim :: Same (__lithia_node ) => __lithia_node . derived (:: lithia :: __private :: Options :: new (__lithia_shape ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+            # [allow (unused_imports ) ] use :: lithia :: __private :: {
+                ImplicitViaEq as _ , ImplicitViaNone as _
+            } ;
+            (&& __lithia_p ) . __lithia_implicit ()
+        } ) ,
     }
 }
