@@ -3,7 +3,11 @@
 
 # A sweep lock that scales
 
-A plan for discussion, on the branch `optimizations/locking`. Nothing here is implemented yet.
+A plan for discussion, on the branch `optimizations/locking`.
+
+Status (2026-11-28): approach 1 is implemented, modelled and checked (spec §10.1, `docs/tla/README.md`),
+and approach 2a has its benchmark, `.github/scripts/lock_bench.py`. Next: the scaling table and the
+lock comparison on the 7950X3D, then 2b only if sweeps that let go still degrade.
 
 ## What the measurements say
 
