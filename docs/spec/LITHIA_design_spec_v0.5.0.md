@@ -1233,7 +1233,7 @@ The benchmarks live in the `lithia-bench` crate: `cargo bench -p lithia-bench` p
 - reruns one node 40 000–140 000 times a second when driven as fast as `flush` allows;
 - makes 10 allocations per run.
 
-They show orders of magnitude and relative costs only. `cargo bench -p lithia-bench --bench scaling`, run only on request, measures the sweep lock, the version clock, value cells and the scheduling locks at 1 to N threads. On a 16-core desktop the version clock scales, but the one sweep lock does not: a last-handle drop takes about 0.3 µs on one thread and about 90 µs on each of 32 at once (16).
+They show orders of magnitude and relative costs only. `cargo bench -p lithia-bench --bench scaling`, run only on request, measures the sweep lock, the version clock, value cells and the scheduling locks at 1 to N threads. On a 16-core desktop the version clock scales, and so does a last-handle drop on a supported node, which takes no lock (10.1): about 20 ns on one thread and 26 ns on each of 32 at once, against 0.3 µs and 90 µs while it took the sweep lock twice. Sweeps that let go of nodes still run one at a time, whichever lock serves them (16).
 
 ## 16. Roadmap
 

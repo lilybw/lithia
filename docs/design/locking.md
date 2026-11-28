@@ -5,9 +5,13 @@
 
 A plan for discussion, on the branch `optimizations/locking`.
 
-Status (2026-11-28): approach 1 is implemented, modelled and checked (spec §10.1, `docs/tla/README.md`),
-and approach 2a has its benchmark, `.github/scripts/lock_bench.py`. Next: the scaling table and the
-lock comparison on the 7950X3D, then 2b only if sweeps that let go still degrade.
+Status (2026-11-28): approach 1 is implemented, modelled and checked (spec §10.1, `docs/tla/README.md`).
+On the 7950X3D a last-handle drop takes 26 ns on each of 32 threads, against 91 µs before. Approach 2a
+is measured: five locks, no difference beyond noise in any row (`docs/BENCHMARKS.md`), so `parking_lot`
+stays. 2b is set aside too: what remains is the sweeps' own work, which a cheaper handoff or a combiner
+would still do one sweep at a time. Next, by profile: what dropping a hub spends per node it lets go of
+(about 7 µs on one thread, freeing included), and why a creation costs ten times as much at 32 threads,
+which takes the sweep lock nowhere. Approach 5 is the only one that would run sweeps side by side.
 
 ## What the measurements say
 

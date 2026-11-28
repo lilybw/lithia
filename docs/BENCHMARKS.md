@@ -74,6 +74,38 @@ about ±5%.
 
 ## History
 
+### Sweep lock taken only where something changes, and five locks compared (2026-11-28)
+
+The same 7950X3D, at f91a039 on `optimizations/locking`: rises from zero and falls on a supported node
+take no lock (spec §10.1). `python3 .github/scripts/lock_bench.py`, one run per lock:
+
+| Row | Lock | 1 | 2 | 4 | 8 | 16 | 32 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `last-handle`, per drop | `parking_lot` | 20 ns | 21 ns | 21 ns | 21 ns | 22 ns | 26 ns |
+| | `fair` | 20 ns | 21 ns | 20 ns | 21 ns | 23 ns | 26 ns |
+| | `std` | 20 ns | 20 ns | 20 ns | 21 ns | 24 ns | 24 ns |
+| | `spin` | 22 ns | 20 ns | 20 ns | 21 ns | 22 ns | 26 ns |
+| | `ticket` | 20 ns | 21 ns | 20 ns | 20 ns | 24 ns | 24 ns |
+| `sweeps`, per creation / per sweep | `parking_lot` | 645 ns / 14.53 ms | 626 ns / 6.17 ms | 725 ns / 35.08 ms | 897 ns / 67.73 ms | 3.11 µs / 151.96 ms | 6.58 µs / 293.81 ms |
+| | `fair` | 646 ns / 20.63 ms | 665 ns / 4.45 ms | 721 ns / 22.97 ms | 1.45 µs / 148.78 ms | 2.78 µs / 138.57 ms | 6.84 µs / 242.84 ms |
+| | `std` | 678 ns / 10.22 ms | 618 ns / 14.49 ms | 750 ns / 44.88 ms | 1.03 µs / 79.74 ms | 3.01 µs / 222.91 ms | 6.54 µs / 383.80 ms |
+| | `spin` | 684 ns / 14.62 ms | 610 ns / 16.09 ms | 771 ns / 37.30 ms | 977 ns / 129.50 ms | 2.89 µs / 173.00 ms | 6.45 µs / 583.35 ms |
+| | `ticket` | 702 ns / 16.28 ms | 652 ns / 17.07 ms | 786 ns / 49.25 ms | 1.04 µs / 74.83 ms | 2.90 µs / 134.01 ms | 6.38 µs / 362.01 ms |
+| `rebuild`, per rerun | `parking_lot` | 151.49 µs | 141.63 µs | 129.49 µs | 151.28 µs | 146.14 µs | 145.21 µs |
+| | `fair` | 154.99 µs | 145.50 µs | 130.57 µs | 145.39 µs | 146.94 µs | 137.16 µs |
+| | `std` | 149.75 µs | 138.83 µs | 146.58 µs | 139.30 µs | 141.15 µs | 145.05 µs |
+| | `spin` | 151.14 µs | 138.69 µs | 134.92 µs | 153.63 µs | 139.28 µs | 137.49 µs |
+| | `ticket` | 151.06 µs | 144.53 µs | 136.30 µs | 139.16 µs | 139.30 µs | 148.29 µs |
+
+- A last-handle drop on a supported node no longer takes the lock: 20 ns on one thread instead of 311 ns,
+  and 26 ns on each of 32 instead of 91 µs.
+- The lock makes no difference beyond run-to-run noise in any row, so `parking_lot` stays.
+- What still grows is real work. 32 sweeps of 2 000 nodes each wait about half of 32 sweeps' work in
+  turn, as one lock predicts, whichever lock it is. A creation costs ten times as much at 32 threads,
+  though it takes the sweep lock nowhere: the allocator (Windows' heap) and the shared counters a
+  creation touches (the `NodeId` counter, a per-site count) are the suspects, for a profile to confirm.
+  A sweep's figure is the whole `drop(hub)`: the sweep and freeing the 2 000 effects.
+
 ### Thread scaling on a 16-core desktop (2026-11-28)
 
 AMD Ryzen 9 7950X3D (16 cores, 32 threads, two 8-core dies, one with 3D V-Cache), 64 GB, Windows, at

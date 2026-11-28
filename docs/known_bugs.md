@@ -19,9 +19,11 @@ None.
 
 ## Performance
 
-- One process-wide lock serialises sweeps, rises of anchor counts from zero and writer registration,
-  and it contends: on a 16-core Ryzen 9 7950X3D, a last-handle drop takes 311 ns on one thread and
-  91 µs on each of 32 at once (`docs/BENCHMARKS.md`). The version clock, by contrast, scales.
+- One process-wide lock serialises sweeps that may let go of nodes: on a 16-core Ryzen 9 7950X3D, 32
+  threads each dropping a hub of 2 000 effects wait for each other's sweeps in turn, 20 times as long
+  as one alone (`docs/BENCHMARKS.md`). Rises and falls that change nothing no longer take it.
+- A creation costs ten times as much on each of 32 threads as on one, though it takes no lithia lock;
+  not profiled yet.
 
 ## Gaps in verification
 
