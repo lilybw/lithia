@@ -14,6 +14,7 @@ each run goes to `target/tlc/MODEL.log`; a failure also prints TLC's error and t
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import signal
@@ -31,7 +32,7 @@ ERRORS: re.Pattern[str] = re.compile(r"^Error:|is violated|Deadlock reached|Temp
 
 def read_counts() -> dict[str, list[str]]:
     rows: dict[str, list[str]] = {}
-    for line in COUNTS.read_text().splitlines():
+    for line in COUNTS.read_text(encoding="utf-8").splitlines():
         if line.strip() and not line.startswith("#"):
             fields: list[str] = line.split("\t")
             rows[fields[0]] = fields[1:]
@@ -39,28 +40,40 @@ def read_counts() -> dict[str, list[str]]:
 
 
 def write_counts(rows: dict[str, list[str]]) -> None:
-    header: list[str] = [line for line in COUNTS.read_text().splitlines() if line.startswith("#")]
+    header: list[str] = [line for line in COUNTS.read_text(encoding="utf-8").splitlines() if line.startswith("#")]
     body: list[str] = ["\t".join([model, *rows[model]]) for model in sorted(rows)]
-    COUNTS.write_text("\n".join(header + body) + "\n")
+    COUNTS.write_text("\n".join(header + body) + "\n", encoding="utf-8", newline="\n")
 
 
 def run(model: str, workers: str, minutes: int | None) -> tuple[str, float]:
     """TLC's whole output for `model`, and the seconds it took; stops it after `minutes` if given."""
     LOGS.mkdir(parents=True, exist_ok=True)
     started: float = time.monotonic()
-    command: list[str] = [str(ROOT / "docs/tla/tlc.sh"), model, "-workers", workers]
-    # A session of its own, so a timeout stops Java with the script that started it.
-    tlc: subprocess.Popen[str] = subprocess.Popen(
-        command, cwd=MODELS, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
-    )
+    # Through bash, which Windows has with Git for Windows; tlc.sh fetches the jar and starts Java.
+    command: list[str] = ["bash", (ROOT / "docs/tla/tlc.sh").as_posix(), model, "-workers", workers]
+    tlc: subprocess.Popen[str]
+    # A process group of its own, so a timeout stops Java with the script that started it.
+    if sys.platform == "win32":
+        tlc = subprocess.Popen(
+            command, cwd=MODELS, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8",
+            errors="replace", creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    else:
+        tlc = subprocess.Popen(
+            command, cwd=MODELS, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8",
+            errors="replace", start_new_session=True,
+        )
     output: str
     try:
         output = tlc.communicate(timeout=minutes * 60 if minutes else None)[0]
     except subprocess.TimeoutExpired:
-        os.killpg(tlc.pid, signal.SIGTERM)
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(tlc.pid)], capture_output=True)
+        else:
+            os.killpg(tlc.pid, signal.SIGTERM)
         output = tlc.communicate()[0] + f"\n(stopped after {minutes} minutes)\n"
     output = "\n".join(line for line in output.splitlines() if not line.startswith("Picked up JAVA_TOOL_OPTIONS"))
-    (LOGS / f"{model}.log").write_text(output)
+    (LOGS / f"{model}.log").write_text(output, encoding="utf-8", newline="\n")
     return output, time.monotonic() - started
 
 
@@ -103,6 +116,8 @@ def check(model: str, recorded: list[str] | None, record: bool, workers: str) ->
 
 
 def main(argv: list[str]) -> int:
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows consoles default to a code page
     record: bool = "--record" in argv
     workers: str = "auto"
     models: list[str] = []

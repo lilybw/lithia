@@ -18,6 +18,7 @@ stale outline is found without reading any code. `.ignore` keeps them out of rep
 from __future__ import annotations
 
 import hashlib
+import io
 import re
 import subprocess
 import sys
@@ -40,7 +41,7 @@ def sources() -> list[Path]:
     """The crates' Rust files that git tracks or would track."""
     listed: str = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", *CRATES.values()],
-        cwd=ROOT, capture_output=True, text=True, check=True,
+        cwd=ROOT, capture_output=True, encoding="utf-8", errors="replace", check=True,
     ).stdout
     return sorted(Path(p) for p in set(listed.splitlines()) if p.endswith(".rs") and (ROOT / p).is_file())
 
@@ -55,7 +56,8 @@ def outlined(source: Path) -> Path:
 
 
 def source_hash(source: Path) -> str:
-    return hashlib.sha256((ROOT / source).read_bytes()).hexdigest()[:16]
+    """A hash of the source with LF line ends, so a CRLF checkout hashes as CI's LF one does."""
+    return hashlib.sha256((ROOT / source).read_bytes().replace(b"\r\n", b"\n")).hexdigest()[:16]
 
 
 def render(source: Path) -> str:
@@ -116,7 +118,7 @@ def write_index(files: list[Path]) -> None:
         doc: str = first_doc(f)
         lines: int = (ROOT / f).read_bytes().count(b"\n")
         rows.append(f"| [`{f.as_posix()}`]({outlined(f).relative_to(OUT).as_posix()}) | {lines} | {doc} |")
-    INDEX.write_text("\n".join([
+    write(INDEX, "\n".join([
         "<!-- SPDX-FileCopyrightText: 2026 lithia Authors -->",
         "<!-- SPDX-License-Identifier: MPL-2.0 -->",
         f"<!-- sources {sources_hash(files)}, generator {GENERATOR} -->",
@@ -130,6 +132,11 @@ def write_index(files: list[Path]) -> None:
         "| --- | ---: | --- |",
         *rows,
     ]) + "\n")
+
+
+def write(path: Path, text: str) -> None:
+    """Writes UTF-8 with LF line ends on every platform, as the repository stores text."""
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def report(files: list[Path], markdown: bool) -> States:
@@ -169,7 +176,7 @@ def generate(files: list[Path], everything: bool) -> None:
         if everything or state(f) != "current":
             target: Path = outlined(f)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(render(f))
+            write(target, render(f))
             rebuilt += 1
     removed: list[Path] = orphans(files)
     for gone in removed:
@@ -184,6 +191,8 @@ def generate(files: list[Path], everything: bool) -> None:
 
 
 def main(argv: list[str]) -> int:
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows consoles default to a code page
     files: list[Path] = sources()
     if "--status" in argv or "--check" in argv:
         states: States = report(files, "--markdown" in argv)

@@ -14,6 +14,7 @@ lithia-validation and lithia-test. Results stay in target/mutants.out.
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import subprocess
@@ -27,6 +28,8 @@ PACKAGES: str = "lithia,lithia-validation,lithia-test"
 
 
 def main(argv: list[str]) -> int:
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows consoles default to a code page
     split: int = argv.index("--") if "--" in argv else len(argv)
     own: list[str] = argv[:split]
     test_args: list[str] = argv[split + 1 :] or ["--", "--skip", "compile_errors"]
@@ -72,14 +75,14 @@ def main(argv: list[str]) -> int:
 
 def report() -> int:
     try:
-        outcomes: dict[str, object] = json.loads((OUT / "outcomes.json").read_text())
+        outcomes: dict[str, object] = json.loads((OUT / "outcomes.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         print("cargo-mutants wrote no outcomes; see target/mutants.out/debug.log", file=sys.stderr)
         return 1
     counts: list[str] = [f"{key} {outcomes[key]}" for key in ("caught", "missed", "timeout", "unviable") if key in outcomes]
     print(f"{outcomes.get('total_mutants', '?')} mutants: {', '.join(counts)}")
     missed: Path = OUT / "missed.txt"
-    for line in (missed.read_text().splitlines() if missed.is_file() else []):
+    for line in (missed.read_text(encoding="utf-8").splitlines() if missed.is_file() else []):
         print(f"  missed: {line}")
     baseline: object = outcomes.get("outcomes")
     if isinstance(baseline, list) and baseline and isinstance(baseline[0], dict):
@@ -87,7 +90,7 @@ def report() -> int:
         if summary not in (None, "Success"):
             print(f"  the unmutated tests did not pass ({summary}): fix them first", file=sys.stderr)
             return 1
-    return 0 if not missed.is_file() or not missed.read_text().strip() else 1
+    return 0 if not missed.is_file() or not missed.read_text(encoding="utf-8").strip() else 1
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import json
 import re
 import signal
@@ -497,7 +498,7 @@ def folders() -> dict[str, list[Path]]:
     """Each folder holding sources git tracks or would track, with its sources."""
     listed: str = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-        cwd=ROOT, capture_output=True, text=True, check=True,
+        cwd=ROOT, capture_output=True, encoding="utf-8", errors="replace", check=True,
     ).stdout
     found: dict[str, list[Path]] = {}
     for name in sorted(set(listed.splitlines())):
@@ -510,7 +511,8 @@ def folders() -> dict[str, list[Path]]:
 def folder_hash(files: list[Path]) -> str:
     digest = hashlib.sha256(VERSION.encode())
     for path in files:
-        digest.update(path.name.encode() + b"\0" + hashlib.sha256((ROOT / path).read_bytes()).digest())
+        text: bytes = (ROOT / path).read_bytes().replace(b"\r\n", b"\n")  # CRLF checkouts hash as LF ones
+        digest.update(path.name.encode() + b"\0" + hashlib.sha256(text).digest())
     return digest.hexdigest()[:16]
 
 
@@ -578,7 +580,7 @@ def cached(folder: str) -> Path:
 
 def load_index() -> Index:
     try:
-        data: Index = json.loads(INDEX.read_text())
+        data: Index = json.loads(INDEX.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data
@@ -596,7 +598,7 @@ def update(only: set[str] | None = None) -> tuple[Index, list[str]]:
         if index.get(folder, {}).get("hash") == h and cached(folder).is_file():
             continue
         cached(folder).parent.mkdir(parents=True, exist_ok=True)
-        cached(folder).write_text(render(files, False))
+        cached(folder).write_text(render(files, False), encoding="utf-8", newline="\n")
         lines: int = sum((ROOT / p).read_bytes().count(b"\n") for p in files)
         index[folder] = {"hash": h, "files": len(files), "lines": lines, "summary": summary(folder, files)}
         rebuilt.append(folder)
@@ -605,7 +607,7 @@ def update(only: set[str] | None = None) -> tuple[Index, list[str]]:
         del index[folder]
     if rebuilt or gone:
         CACHE.mkdir(parents=True, exist_ok=True)
-        INDEX.write_text(json.dumps(index, indent=1, sort_keys=True))
+        INDEX.write_text(json.dumps(index, indent=1, sort_keys=True), encoding="utf-8", newline="\n")
     return index, rebuilt
 
 
@@ -618,6 +620,8 @@ def relative(arg: str) -> str:
 
 
 def main(argv: list[str]) -> int:
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows consoles default to a code page
     public: bool = "--pub" in argv
     args: list[str] = [a for a in argv if a != "--pub"]
     command: str = args[0] if args else "index"
@@ -649,7 +653,7 @@ def main(argv: list[str]) -> int:
                     sys.stdout.write(render(current[p], True))
                 else:
                     update({p})
-                    sys.stdout.write(cached(p).read_text())
+                    sys.stdout.write(cached(p).read_text(encoding="utf-8"))
             elif (ROOT / p).is_file() and Path(p).suffix in EXTENSIONS:
                 sys.stdout.write(render([Path(p)], public))
             else:

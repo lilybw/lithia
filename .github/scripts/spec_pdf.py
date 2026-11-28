@@ -11,6 +11,7 @@ docs/spec/print.css, printed by Chromium through Playwright. Needs pandoc and `p
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,7 @@ def newest() -> Path:
 
 def main(argv: list[str]) -> int:
     source: Path = Path(argv[0]).resolve() if argv else newest()
-    title: str = source.read_text().splitlines()[0].lstrip("# ").strip()
+    title: str = source.read_text(encoding="utf-8").splitlines()[0].lstrip("# ").strip()
     pdf: Path = source.with_suffix(".pdf")
     with tempfile.TemporaryDirectory() as scratch:
         page_file: Path = Path(scratch) / "spec.html"
@@ -51,7 +52,9 @@ def main(argv: list[str]) -> int:
             page.pdf(path=str(pdf), format="A4", print_background=False,
                      margin={"top": "18mm", "bottom": "18mm", "left": "16mm", "right": "16mm"})
             browser.close()
-    pages: str = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True).stdout
+    pages: str = ""
+    if shutil.which("pdfinfo"):
+        pages = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, encoding="utf-8", errors="replace").stdout
     count: re.Match[str] | None = re.search(r"^Pages:\s+(\d+)", pages, re.M)
     print(f"{pdf.relative_to(ROOT)}" + (f": {count.group(1)} pages" if count else ""))
     return 0

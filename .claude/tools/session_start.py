@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import io
 import shutil
 import subprocess
 import sys
@@ -25,7 +26,9 @@ TOOLS: dict[str, list[str]] = {
 
 
 def git(*args: str) -> str:
-    done: subprocess.CompletedProcess[str] = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    done: subprocess.CompletedProcess[str] = subprocess.run(
+        ["git", *args], cwd=ROOT, capture_output=True, encoding="utf-8", errors="replace"
+    )
     return done.stdout.strip()
 
 
@@ -36,6 +39,8 @@ def present(command: list[str]) -> bool:
 
 
 def main() -> int:
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows consoles default to a code page
     branch: str = git("branch", "--show-current") or "(detached)"
     head: str = git("log", "-1", "--format=%h %s")
     dirty: int = len([line for line in git("status", "--porcelain").splitlines() if line])

@@ -13,6 +13,7 @@ Steps: fmt, clippy, clippy-loom, doc, test, loom, loom-slow, tools. Exits 1 if a
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import shutil
@@ -46,7 +47,7 @@ STEPS: list[Step] = [
     Step("loom", ["cargo", "test", "-p", "lithia-test", "--test", "loom", "--release", "--locked"], LOOM),
     Step("loom-slow", ["cargo", "test", "-p", "lithia-test", "--test", "loom", "--release", "--locked"],
          {**LOOM, "LITHIA_LOOM_FAST_PATH": "off"}),
-    Step("tools", ["python3", "-m", "unittest", "discover", "-s", ".claude/tools", "-q"]),
+    Step("tools", [sys.executable, "-m", "unittest", "discover", "-s", ".claude/tools", "-q"]),
 ]
 QUICK: list[str] = ["fmt", "clippy", "doc", "test", "tools"]
 
@@ -79,10 +80,10 @@ def run(step: Step) -> bool:
     LOGS.mkdir(parents=True, exist_ok=True)
     started: float = time.monotonic()
     done: subprocess.CompletedProcess[str] = subprocess.run(
-        step.command, cwd=ROOT, env={**os.environ, **step.env}, capture_output=True, text=True,
+        step.command, cwd=ROOT, env={**os.environ, **step.env}, capture_output=True, encoding="utf-8", errors="replace",
     )
     output: str = done.stdout + done.stderr
-    (LOGS / f"{step.name}.log").write_text(output)
+    (LOGS / f"{step.name}.log").write_text(output, encoding="utf-8", newline="\n")
     seconds: float = time.monotonic() - started
     took: str = f"{seconds / 60:.1f} min" if seconds >= 120 else f"{seconds:.0f} s"
     said: str = summary(step, output)
@@ -96,6 +97,8 @@ def run(step: Step) -> bool:
 
 
 def main(argv: list[str]) -> int:
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows consoles default to a code page
     names: list[str] = QUICK
     args: list[str] = list(argv)
     if args and args[0] in ("quick", "full"):
