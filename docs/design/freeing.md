@@ -55,9 +55,10 @@ grows), the allocator (`--features mimalloc` moves it), or lithia's own per-node
    slab behind a reader-writer lock once several threads use it [7].
 6. **A region per generation.** The nodes one run creates are released together when its creator runs
    again (spec §10.1, Generations), which is what regions are for: everything in a region is freed at
-   once, in constant time [8]. Counting the references into each region keeps that safe when a
-   member escapes, by deleting a region only once nothing points into it [9]. Leptos ties its signals' lives to an ownership tree
-   over an arena [10]; lithia has no owner hierarchy, but generations are one in all but name.
+   once, in constant time [8]. Counting the references into each region keeps that safe when a member
+   escapes, by deleting a region only once nothing points into it [9]. Leptos ties its signals' lives
+   to an ownership tree over an arena [10]; lithia has no owner hierarchy, but generations are one in
+   all but name.
 
 ### Decide support without tracing
 
@@ -89,8 +90,8 @@ grows), the allocator (`--features mimalloc` moves it), or lithia's own per-node
     parents before children (spec §5.1), and a child is always created after its parents. A Lamport
     clock gives exactly that without a shared counter: a thread's next id is one more than the largest
     of its own last id and its parents' ids, ties broken by thread [16]. Jane Street's Incremental orders
-    by height instead, each node's height above that of every node it reads [17]. Either keeps the topological order;
-    what else reads ids as a global creation order needs checking first.
+    by height instead, each node's height above that of every node it reads [17]. Either keeps the
+    topological order; what else reads ids as a global creation order needs checking first.
 11. **Per-thread diagnostic counts.** Each site counts its live nodes for the growth warning (12) in one
     atomic, which every thread creating at that site writes; per-thread shards summed on read cost
     nothing to the warning.
