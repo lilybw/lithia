@@ -187,7 +187,7 @@ let total: DerivedNode<i32> = node!(|a, b| *a.get() + *b.get(),
 | `resilience` | `COMPLETE`: never fail because of parents; `PARTIAL`: fail once all parents are failed; `NONE`: fail once any parent is (9.2) | `COMPLETE` | derived nodes |
 | `disposed` | `FAIL`, `MASK`, `PEND`: what readers and children see once the node is disposed (10.5) | `FAIL` | all nodes |
 
-Reserving the slot now means adding options later is never a breaking change. Each option may appear once; an unknown name, a repeated option, `equals` together with `no_equals`, `init` on a plain source node, and `batches` or `resilience` on any source node are compile errors (4.6).
+Reserving the slot now means adding options later is never a breaking change. Each option may appear once; an unknown name, a repeated option, `equals` together with `no_equals`, a value given to `no_equals` or none to another option, `init` on a plain source node, and `batches` or `resilience` on any source node are compile errors (4.6).
 
 Each option's constants live in a module of its name: `batches` takes a `lithia::batches::Batches`, `resilience` a `lithia::resilience::Resilience` and `disposed` a `lithia::disposed::Disposal`. The types are opaque, so their constants are their only values, and each prints as its path, such as `resilience::NONE`. Inside an option, that option's constants resolve without an import and no other option's do, so `resilience = WHOLE` does not compile; any other expression of the right type works too, such as `resilience = my_policy` (Case BM).
 
@@ -523,12 +523,16 @@ Each of these inputs gets a dedicated message instead of a generic parse or trai
 | Input | Message |
 | --- | --- |
 | `node!(\|\| x)`, `node!(async \|\| x)`, `node!(move \|\| x)` | "a source node is written `node!(x)`; to store this closure as the value, bind it to a name or wrap it in parentheses" |
-| `node!(1, 2)` | "expected `name = value`; wrap tuple values in parentheses" |
+| `node!(1, 2)` | "expected `name = value` or `no_equals`; wrap tuple values in parentheses" |
 | `node!(a = 3)` | "an assignment is not a value; write `node!(3)`, or put options after a comma" |
 | `yield` inside a nested closure, async block or item | "`yield` publishes the enclosing node! body's items and only works directly in that body" |
 | A value type that is not `Send + Sync + 'static` | "`T` cannot be a node value: values must be `Send + Sync + 'static`", noting `Arc` for `Rc` and `Mutex`, `RwLock` or an atomic for `RefCell` and `Cell` (11.1). rustc shows this `NodeValue` message, once even when both `Send` and `Sync` are missing. |
 | An unknown option | "unknown option `x`; expected one of init, equals, no_equals, key, batches, resilience, disposed" |
 | A repeated option | "option `x` is given twice" |
+| `equals` together with `no_equals` | "`no_equals` and `equals` exclude each other" |
+| `no_equals = …` | "`no_equals` takes no value" |
+| Any other option without a value, such as `node!(0, equals)` | "`x` needs a value: `x = …`" |
+| A value type fixed only after the creation, as in `node!(None)`, that lacks `PartialEq` | rustc's "can't compare `T` with `T`", noting that `EqualsByDefault` is required, with its suggestion to derive `PartialEq` (6.4) |
 | `init` on a synchronous source node | "`init` applies to derived nodes and async source nodes; a source node starts with its value" |
 | `batches` or `resilience` on any source node | "`x` applies to derived nodes only; a source node has no parents" |
 | Another option's constant, or a value of another option's type | rustc's "cannot find value" or mismatched-types error at the value |
@@ -1106,7 +1110,7 @@ Unlike in MV-RP, concurrent outside batches are not ordered as if they ran one a
 
 ## 12. Diagnostics
 
-Every node carries its `Site` (4.3): file, line, column, module, function and the macro's tokens as written. Every event below includes the site of the node concerned, except a panicking drop, whose node may be gone; ghost panics include it in their message. Events are emitted outside every scheduling lock and outside the sweep lock (11.4, step 1). A subscriber that panics is caught where the event is emitted, so it cannot interrupt the protocol; that event is lost.
+Every node carries its `Site` (4.3): file, line, column, module, function and the macro's tokens as written. Every event below includes the site of the node concerned, except a panicking drop, whose node may be gone, a panicking deferred function and a sweep, which belong to no one node; ghost panics include it in their message. Events are emitted outside every scheduling lock and outside the sweep lock (11.4, step 1). A subscriber that panics is caught where the event is emitted, so it cannot interrupt the protocol; that event is lost.
 
 | Event | `tracing` level | Also includes |
 | --- | --- | --- |
@@ -1259,7 +1263,6 @@ Two changes would alter stated behaviour, so they come as options or in a major 
 None is left to settle before 1.0. These are additive, so they can wait for a minor release:
 
 - Write cycles in rounds, as an option a node opts into, so that run counts are fixed? Run counts in an eight-way binding mesh vary with scheduling, from 15 to 58 (7.4, 15).
-
 - Keep the token stream in release builds, or only behind a diagnostics feature?
 - Tasks lithia did not start get one batch per write. Offer a runtime hook to batch them too? Batching cuts the cost of 100 writes to under a third (15).
 - The rerun-rate threshold is an environment variable (`LITHIA_RERUN_RATE`); should it also get an API (12)?

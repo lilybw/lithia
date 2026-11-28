@@ -46,7 +46,7 @@ publishes a release candidate, which Cargo picks only when asked for it.
 
 | Directory | Package | Holds |
 |---|---|---|
-| `crates/lithia` | `lithia` | The engine and its public API |
+| `crates/lithia` | `lithate` | The engine and its public API, as the library `lithia` |
 | `crates/macro` | `lithia-macro` | `node!`, `#[lithia::main]`, `#[lithia::test]` |
 | `crates/validation` | `lithia-validation` | The spec's validation cases (§13), verbatim, and the compile-fail cases |
 | `crates/test` | `lithia-test` | The helpers the test crates share (`src/`), the edge-case tests (`tests/edge/`, one module per area, built as one binary), the deep-chain test and the loom models (`tests/loom/`, likewise) |
@@ -61,7 +61,7 @@ Inside `crates/lithia/src`:
 |---|---|
 | `api.rs`, `handles.rs`, `changes.rs`, `reference.rs`, `task.rs`, `status.rs`, `site.rs`, `options.rs`, `value.rs` | The public API |
 | `expand/` | What the macro's expansions call: creation, keyed reclaim, captures, the hidden traits, the entry points |
-| `graph/` | The node record: ids and the clock, header, scheduler state, sets, epochs |
+| `graph/` | The node record: ids and the clock, header, scheduler state, sets, epochs, lineages |
 | `protocol/` | The scheduling protocol (§7, §11.4): work done after unlocking, propagation, delivery, the run lifecycle, linking, defers |
 | `run/` | A run's future and control block, the yielder, tasks |
 | `lifetime/` | Operations, support and sweeps, disposal, teardown, deferred drops (§10) |

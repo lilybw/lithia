@@ -12,6 +12,8 @@ Every version's changes, newest first. Section numbers refer to that version's d
 v0.5.0 hardens lithia towards v1.0: a TLA+ model of node lifetimes found five faults, all fixed; the
 open questions of v0.4.0 are decided; and the spec is trimmed to what a reader of the design needs,
 with the validation cases, verification details, benchmark history and this changelog kept beside it.
+On crates.io the crate is `lithate`, as `lithia` is taken there; code still names it `lithia`. Versions
+are published from `nightly` by `publish.yml`, and pushes to `nightly` are no longer released.
 
 | Section | Change | Found by |
 | --- | --- | --- |

@@ -30,6 +30,7 @@ MCReturn	23240	19
 MCReturnFast	36236	21
 MCScoped	77166	23
 MCScopedFast	117418	24
+MCSharedTarget	8708689	85
 MCShutdown	1718	50
 MCSkip	2840	16
 MCSupersede	265525	77

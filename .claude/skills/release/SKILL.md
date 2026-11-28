@@ -32,7 +32,7 @@ asking for it: the version bump below committed on `nightly`, its `nightly` run 
 
 ## A version bump
 
-- `version` in the workspace `Cargo.toml`, and `lithia`'s dependency on `lithia-macro`.
+- `version` in the workspace `Cargo.toml`, and the `=` pin of `lithia-macro` beside it.
 - `CHANGELOG.md`: the open heading becomes `## X.Y.Z (YYYY-MM-DD)` with a one-paragraph summary.
 - The spec file's name and title, then `python3 .github/scripts/spec_pdf.py`.
 - README's install line, if it names a version.
