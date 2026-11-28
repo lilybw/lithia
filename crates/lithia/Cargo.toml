@@ -11,7 +11,7 @@ homepage.workspace = true
 documentation.workspace = true
 readme = "../../README.md"
 keywords = ["reactive", "signals", "tokio", "async", "frp"]
-categories = ["asynchronous", "concurrency", "parallel"]
+categories = ["asynchronous", "concurrency"]
 
 [features]
 # Lets `#[lithia::main]` and `#[lithia::test]` take `start_paused`, through tokio's clock control.

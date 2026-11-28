@@ -19,8 +19,9 @@ None.
 
 ## Performance
 
-- One process-wide lock serialises sweeps, rises of anchor counts from zero and writer registration.
-  Benchmarks so far ran on two cores; contention on 8–64 cores is unmeasured.
+- One process-wide lock serialises sweeps, rises of anchor counts from zero and writer registration,
+  and it contends: on a 16-core Ryzen 9 7950X3D, a last-handle drop takes 311 ns on one thread and
+  91 µs on each of 32 at once (`docs/BENCHMARKS.md`). The version clock, by contrast, scales.
 
 ## Gaps in verification
 

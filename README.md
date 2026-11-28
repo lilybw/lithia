@@ -47,6 +47,12 @@ lithia = { git = "https://github.com/lilybw/lithia", branch = "release" }
 It needs Rust 1.95 or newer and runs on tokio: start with `#[lithia::main]` and `#[lithia::test]`, or use
 it from inside any tokio runtime. Until 1.0, the API may still change between releases.
 
+From 1.0, lithia follows semantic versioning, except for `lithia::__private`, which only the macros'
+expansions use, and `lithia::test`, test utilities that may change in any release. `lithia-macro` is
+pinned to the exact version of `lithia` it belongs to: depend on `lithia` alone. Raising the minimum Rust
+version is a minor release, never a patch. One rise is expected: once Rust stabilizes `async gen` blocks
+and `yield`, `node!` will lower its generator bodies to them instead of by hand.
+
 ## Releases and docs
 
 Every push to `nightly` that passes CI becomes a release named `v<version>.<n>`, such as `v0.5.0.1`, with

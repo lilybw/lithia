@@ -2,8 +2,8 @@
 
 `cargo bench -p lithia-bench` prints one table of results; `LITHIA_BENCH=spawn,clock` runs only the named
 rows, and `cargo bench -p lithia-bench --bench allocs` counts heap allocations. Every figure here comes
-from a 2-core shared cloud container in release mode. They show orders of magnitude and relative costs:
-measure on your own machine before relying on them. Nothing has been measured on more than two cores.
+from a 2-core shared cloud container in release mode, unless it names another machine. They show orders of
+magnitude and relative costs: measure on your own machine before relying on them.
 
 ## Scaling with threads
 
@@ -63,6 +63,22 @@ about ±5%.
 - Mesh run counts vary with scheduling and stay far below n².
 
 ## History
+
+### Thread scaling on a 16-core desktop (2026-11-28)
+
+AMD Ryzen 9 7950X3D (16 cores, 32 threads, two 8-core dies, one with 3D V-Cache), 64 GB, Windows, at
+0b2da25, `cargo bench -p lithia-bench --bench scaling` with `LITHIA_BENCH=last-handle,clock`:
+
+| Row | 1 | 2 | 4 | 8 | 16 | 32 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `last-handle`, per drop | 311 ns | 810 ns | 1.94 µs | 6.67 µs | 48.18 µs | 91.04 µs |
+| `clock`, per write | 415 ns | 516 ns | 551 ns | 652 ns | 703 ns | 992 ns |
+
+The sweep lock does not scale: a last-handle drop costs 290 times as much at 32 threads as at one, though
+each thread drops its own nodes. Fully serialised, 32 threads at 311 ns each would cost about 10 µs, so
+the lock's waiters cost far more than its work, and the jump between 8 and 16 threads fits contention
+spreading across the two dies. The version clock stays within 2.4 times, so the machine is not the
+cause. Work on a replacement is on the `optimizations/locking` branch.
 
 ### v0.5.0 code review tuning (2026-11-24)
 

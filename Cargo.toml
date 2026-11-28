@@ -20,7 +20,8 @@ documentation = "https://lilybw.com/lithia/api/lithia/"
 
 [workspace.dependencies]
 lithia = { path = "crates/lithia", version = "0.5.0" }
-lithia-macro = { path = "crates/macro", version = "0.5.0" }
+# Exact: the macro expands to `lithia::__private`, which only the same version of lithia provides.
+lithia-macro = { path = "crates/macro", version = "=0.5.0" }
 lithia-test = { path = "crates/test" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

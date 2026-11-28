@@ -320,6 +320,7 @@ Handles state how a node is reached, not how long it lives: a node with a body n
 /// Condition of a node as seen by readers and children.
 /// `if let Status::Failed(f) = lithia::status(&parent) { eprintln!("{f}"); }`
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Status { Ready, Pending, Failed(Arc<Failure>), Ghost }
 
 /// Why a node failed: its own panic, or its parents' failures under `resilience`; displays as `message (site)`.
@@ -338,7 +339,7 @@ pub struct Site {
 }
 ```
 
-`Site`'s `Debug` output resolves `function` to its path rather than printing a pointer (4.3).
+`Site`'s `Debug` output resolves `function` to its path rather than printing a pointer (4.3). `Status` is non-exhaustive: a match needs a wildcard arm, so a later version can add a state, such as one for children waiting on pending parents (16), without breaking it.
 
 ### 3.5 Free functions
 
@@ -1220,15 +1221,15 @@ The benchmarks live in the `lithia-bench` crate: `cargo bench -p lithia-bench` p
 - reruns one node 40 000–140 000 times a second when driven as fast as `flush` allows;
 - makes 10 allocations per run.
 
-They show orders of magnitude and relative costs only. Contention on 8–64 cores, the padding of hot statics and the one sweep lock are not measured yet (16); `cargo bench -p lithia-bench --bench scaling`, run only on request, measures the sweep lock, the version clock, value cells and the scheduling locks at 1 to N threads for that.
+They show orders of magnitude and relative costs only. `cargo bench -p lithia-bench --bench scaling`, run only on request, measures the sweep lock, the version clock, value cells and the scheduling locks at 1 to N threads. On a 16-core desktop the version clock scales, but the one sweep lock does not: a last-handle drop takes about 0.3 µs on one thread and about 90 µs on each of 32 at once (16).
 
 ## 16. Roadmap
 
 Expected changes, and what they replace. None changes the API or a behaviour this spec states; each lands in a minor or patch release:
 
-- Measurements on 8–64 cores: the fast path, the padding of hot statics and the one sweep lock (15), and finer-grained sweep locking if they show contention. Both are internal.
+- A sweep lock that scales: the one process-wide lock contends on many cores (15). Further measurements on 8–64 cores: the fast path and the padding of hot statics. Both are internal.
 - Scratch buffers per thread for a step's work lists and a run's shared record, which would save most of the ten allocations a run still makes (15).
-- Native generators. `yield` in `node!` uses the syntax of Rust's unstable `async gen` blocks; the macro lowers it as the `async-stream` crate does on stable, and will lower generator bodies to native `async gen` blocks once they stabilize. Both allow a borrow across a `yield`, so user code does not change (3.6).
+- Native generators. `yield` in `node!` uses the syntax of Rust's unstable `async gen` blocks; the macro lowers it as the `async-stream` crate does on stable, and will lower generator bodies to native `async gen` blocks once they stabilize. Both allow a borrow across a `yield`, so user code does not change (3.6); the minimum Rust version rises to the release that stabilizes them.
 - `Share` and precise captures. Handles will implement Rust's planned `Share` trait once it stabilizes, and captures of `Share` types will use it; the capture rule stays the same (4.2).
 - Keyed collections. A keyed map over a collection node, which would let a list's rerun visit only the rows that changed instead of probing every row's captures; `key` covers the rows' own nodes today (10.1, Keyed nodes).
 - An option for waiting on pending parents, such as `parents = READY | ANY`, beside `batches`, whose default keeps today's behaviour; a ghost under `disposed = PEND` would keep a waiting child waiting (3.2, 8, 10.5).
@@ -1248,7 +1249,6 @@ To settle before 1.0, since an answer after it would change the API or a stated 
 - An implicit `equals` default for `K: PartialEq`? Left out for now: it would stop `()` effects propagating, and behave differently in generic code (6.4).
 - Should `try_set` hand the rejected value back, e.g. `Result<(), Ghosted<K>>`?
 - Should write cycles be defined as rounds, so that run counts are fixed? Run counts in an eight-way binding mesh vary with scheduling, from 15 to 58 (7.4, 15).
-- Should `Status` be `#[non_exhaustive]`, so a later state, such as one for children waiting on pending parents (16), is not a breaking change (3.4)?
 
 Additive, so they can wait for a minor release:
 

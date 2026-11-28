@@ -11,6 +11,7 @@ use crate::Site;
 /// Condition of a node as seen by readers and children.
 /// `if let Status::Failed(f) = lithia::status(&parent) { eprintln!("{}", f.message); }`
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Status {
     /// The node holds its latest item and no run is pending, or it was disposed under `disposed = MASK`.
     Ready,
