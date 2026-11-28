@@ -57,8 +57,9 @@ conventions, `docs/VERIFICATION.md` what checks it, `docs/known_bugs.md` what is
 
 ## Git
 
-- Work on a `verify/...` branch. `nightly` and `release` take only fully verified work (CI and the
-  extended run green), and only when the maintainer asks. Never push tags or delete remote branches.
+- Work on a `verify/...` branch. `nightly` takes only fully verified work (CI and the extended run
+  green), and only when the maintainer asks; crates.io releases are the maintainer's, through
+  `publish.yml`. Never push tags or delete remote branches.
 - Commit with the identity configured in the clone; don't change it or print it. Agents commit on
   their own branches and never push; the main session merges, checks and pushes.
 

@@ -37,11 +37,11 @@ async fn main() {
 
 ## Using it
 
-lithia is not on crates.io yet. Depend on the `release` branch, or pin a release tag:
+lithia is not on crates.io yet. Pin a release tag, or follow `nightly` with `branch = "nightly"`:
 
 ```toml
 [dependencies]
-lithia = { git = "https://github.com/lilybw/lithia", branch = "release" }
+lithia = { git = "https://github.com/lilybw/lithia", tag = "v0.5.0.1" }
 ```
 
 It needs Rust 1.95 or newer and runs on tokio: start with `#[lithia::main]` and `#[lithia::test]`, or use
@@ -56,8 +56,8 @@ and `yield`, `node!` will lower its generator bodies to them instead of by hand.
 ## Releases and docs
 
 Every push to `nightly` that passes CI becomes a release named `v<version>.<n>`, such as `v0.5.0.1`, with
-the crate packages, the docs and the spec attached. `release` follows later, once a nightly release has
-passed the slower checks and gone a few days without a fix. Each release's docs stay online: add
+the crate packages, the docs and the spec attached. Versions go to crates.io from a `nightly` commit
+that has also passed the slower checks, by hand and after stricter ones. Each release's docs stay online: add
 `?v=0.5.0.1` to any page under `api/` or `spec/` of the [docs site](https://lilybw.com/lithia/).
 
 The [design spec](https://lilybw.com/lithia/spec/) is the full reference for how lithia behaves and why.

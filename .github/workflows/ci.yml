@@ -10,7 +10,7 @@ on:
   workflow_call:
   workflow_dispatch:
   pull_request:
-    branches: [nightly, release]
+    branches: [nightly]
   # Branches named verify/… run CI on push, so a change can be checked before its pull request.
   push:
     branches: ["verify/**"]
