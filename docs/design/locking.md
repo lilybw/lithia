@@ -11,7 +11,8 @@ is measured: five locks, no difference beyond noise in any row (`docs/BENCHMARKS
 stays. 2b is set aside too: what remains is the sweeps' own work, which a cheaper handoff or a combiner
 would still do one sweep at a time. Next, by profile: what dropping a hub spends per node it lets go of
 (about 7 µs on one thread, freeing included), and why a creation costs ten times as much at 32 threads,
-which takes the sweep lock nowhere. Approach 5 is the only one that would run sweeps side by side.
+which takes the sweep lock nowhere. Approach 5 is the only one that would run sweeps side by side. `freeing.md` surveys what else could cut
+the cost of sweeping, freeing and creating on many threads.
 
 ## What the measurements say
 
