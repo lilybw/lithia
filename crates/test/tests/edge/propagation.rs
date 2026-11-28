@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use lithia::{Accessor, DerivedNode, SourceNode, node};
+use tracing::Level;
 
 #[lithia::test]
 async fn a_wide_join_runs_once_per_change() {
@@ -673,27 +674,48 @@ async fn settled_follows_every_node_a_run_creates() {
 
 #[lithia::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_superseded_run_publishes_nothing() {
+    let _ = lithia_test::events();
     let n: SourceNode<u32> = node!(0);
     let started: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    let finished: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let release_first: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let first_returned: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let release_second: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let site: String = format!("propagation.rs:{}", line!() + 1);
     let slow: DerivedNode<u32> = node!(|n| {
         let value: u32 = *n.get();
-        if value == 1 {
-            started.store(true, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(60));
-            finished.store(true, Ordering::SeqCst);
-        } else if value == 2 {
-            std::thread::sleep(Duration::from_millis(150));
+        let gate: Option<&AtomicBool> = match value {
+            1 => Some(release_first),
+            2 => Some(release_second),
+            _ => None,
+        };
+        if let Some(gate) = gate {
+            if value == 1 {
+                started.store(true, Ordering::SeqCst);
+            }
+            tokio::task::block_in_place(|| {
+                while !gate.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            });
+            if value == 1 {
+                first_returned.store(true, Ordering::SeqCst);
+            }
         }
         value * 10
     });
     lithia::flush().await;
     n.set(1);
     lithia_test::until(|| started.load(Ordering::SeqCst)).await;
-    n.set(2); // supersedes the run still computing 10
-    lithia_test::until(|| finished.load(Ordering::SeqCst)).await;
-    tokio::time::sleep(Duration::from_millis(30)).await; // the superseded run has returned; its successor runs
-    assert_eq!(*slow.get(), 0, "a superseded run's item is discarded");
+    n.set(2); // once delivered, supersedes the run computing 10; its successor waits at the second gate
+    let superseded: Option<lithia_test::Captured> =
+        lithia_test::find(Level::TRACE, &["run superseded or aborted", &site], Duration::from_secs(10)).await;
+    release_first.store(true, Ordering::SeqCst);
+    assert!(superseded.is_some(), "the write of 2 supersedes the run computing 10");
+    lithia_test::until(|| first_returned.load(Ordering::SeqCst)).await;
+    tokio::time::sleep(Duration::from_millis(30)).await; // time for the returned item to be (wrongly) published
+    let seen: u32 = *slow.get();
+    release_second.store(true, Ordering::SeqCst); // before asserting: a blocked body would hold the runtime open
+    assert_eq!(seen, 0, "a superseded run's item is discarded");
     lithia::flush().await;
     assert_eq!(*slow.get(), 20);
 }
