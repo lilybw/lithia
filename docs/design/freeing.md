@@ -128,8 +128,9 @@ Still unmeasured on many cores: the allocator (`alloc` row, `--features mimalloc
 
 ## A plan
 
-1. Done: the lock's figures, and approach 4. Still to run on the 7950X3D: the full scaling table with
-   `--features mimalloc`, to see whether the allocator or the id counter shows in creation.
+1. Done: the lock's figures, approach 4, and mimalloc against Windows' heap, which was most of what
+   creation lost on many threads (6.6 µs at 32 threads, 2.6 µs with mimalloc, against 0.55 µs on one).
+   Still to run there: the `alloc`, `counter` and `create-source` rows, which split the rest.
 2. The sweep lock's hold, now the larger cost on many threads: 2 (marks), then 1 (in-place body drops),
    11 (sharded site counts), 3, each with the benchmark before and after.
 3. For sweeps on many threads, freeing or not: 7, modelled in `Lifetimes.tla` first; 8 only if 7 does

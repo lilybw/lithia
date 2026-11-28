@@ -94,6 +94,25 @@ about ±5%.
 
 ## History
 
+### mimalloc against the system allocator (2026-11-28)
+
+The same 7950X3D and build, `lock_bench.py` without `--stats`, once with the system allocator and once
+with `--features mimalloc`. Each cell is the range over the five locks; `ticket`'s outliers aside.
+
+| Row | 1 thread: system → mimalloc | 32 threads: system → mimalloc |
+| --- | ---: | ---: |
+| `sweeps`, per creation | 654–717 → 537–572 ns | 6.4–6.8 → 2.3–2.9 µs |
+| `sweeps`, per drop | 2.2–2.4 → 1.4–1.5 ms | 31–32 → 18–40 ms |
+| `sweep-kept`, per drop | 0.90–1.00 → 0.61–0.79 ms | 26–28 → 17–22 ms |
+| `churn`, per cycle | 26–36 → 25–33 µs | 0.33–0.49 → 0.22–0.55 ms |
+| `create-shared`, per creation | 518–612 → 332–509 ns | 25–26 → 20–22 µs |
+| `rebuild`, per rerun | 141–148 → 113–119 µs | 139–162 → 108–126 µs |
+
+- Most of what creation lost on many threads was Windows' heap: at 32 threads a creation costs 2.6 µs
+  with mimalloc instead of 6.6. Against 0.55 µs on one thread, the rest is lithia's own shared state.
+- A sweep that keeps everything is a quarter faster: it allocates its maps under the sweep lock.
+- Drops at 32 threads and creation on a shared hub hardly move: they wait for a lock.
+
 ### Drop threads on the 7950X3D (2026-11-28)
 
 `lock_bench.py --stats` on 753a3f3, system allocator. Each after is the range over the five locks, with
