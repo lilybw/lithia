@@ -19,7 +19,7 @@ type Bucket = Vec<NodeRef>;
 /// A captured input kept for comparison with the next creation's, type-erased.
 type StoredInput = Box<dyn Any + Send + Sync>;
 use crate::graph::node::{Header, Kind, Node, NodeRef, TypedNodeRef};
-use crate::options::{Options, Shape};
+use crate::options::{Equals, Implicit, Options, Shape};
 use crate::run::RunControl;
 use crate::{NodeValue, Site};
 
@@ -294,14 +294,18 @@ pub struct Reclaimed<K: NodeValue>(pub(crate) TypedNodeRef<K>);
 
 impl<K: NodeValue> Reclaimed<K> {
     /// A new outside handle to the reclaimed derived node, which takes the creation's comparator.
-    pub fn derived(self, options: Options<K>) -> DerivedNode<K> {
-        self.adopt(options);
+    pub fn derived(
+        self,
+        options: Options<K>,
+        implicit: impl FnOnce(Implicit<K>) -> Option<Equals<K>>,
+    ) -> DerivedNode<K> {
+        self.adopt(options.or_implicit(implicit));
         DerivedNode::outside(&self.0)
     }
 
     /// A new outside handle to the reclaimed source node, which takes the creation's comparator.
-    pub fn source(self, options: Options<K>) -> SourceNode<K> {
-        self.adopt(options);
+    pub fn source(self, options: Options<K>, implicit: impl FnOnce(Implicit<K>) -> Option<Equals<K>>) -> SourceNode<K> {
+        self.adopt(options.or_implicit(implicit));
         SourceNode::outside(&self.0)
     }
 

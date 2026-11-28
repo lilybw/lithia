@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
-use lithia::{Changes, DerivedNode, Ghosted, Ref, SourceNode, Status, node};
+use lithia::{Changes, DerivedNode, Ghosted, Ref, Rejected, SourceNode, Status, node};
 
 #[lithia::test]
 async fn writes_are_visible_immediately() {
@@ -144,13 +144,91 @@ async fn nodes_created_inside_update_closures_outside_lithia_tasks_are_delivered
     assert!(ran.is_ok(), "the node's first run was delivered: {}", *child.get());
 }
 
+/// How many times a watcher of `n` runs after `n` is set to the value it already holds.
+async fn reruns_on_an_equal_write<K: lithia::NodeValue + Clone>(n: &SourceNode<K>) -> u32 {
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _watcher: DerivedNode<()> = node!(|n| {
+        let _ = n.get();
+        runs.fetch_add(1, Ordering::SeqCst);
+    });
+    lithia::flush().await;
+    n.set((*n.get()).clone());
+    lithia::flush().await;
+    runs.load(Ordering::SeqCst) - 1
+}
+
+/// Created where only `Clone` is known of `T`: no comparator.
+fn created_without_eq<T: lithia::NodeValue + Clone>(value: T) -> SourceNode<T> {
+    node!(value)
+}
+
+/// Created where `T: PartialEq` is known: compared by `PartialEq`.
+fn created_with_eq<T: lithia::NodeValue + PartialEq>(value: T) -> SourceNode<T> {
+    node!(value)
+}
+
+#[lithia::test]
+async fn equal_values_change_nothing_by_default() {
+    let source: SourceNode<u32> = node!(1);
+    assert_eq!(reruns_on_an_equal_write(&source).await, 0);
+    let parity: DerivedNode<bool> = node!(|source| *source.get() % 2 == 0);
+    let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _watcher: DerivedNode<()> = node!(|parity| {
+        let _ = parity.get();
+        runs.fetch_add(1, Ordering::SeqCst);
+    });
+    lithia::flush().await;
+    source.set(3); // a change, whose parity is equal: the watcher stays
+    lithia::flush().await;
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    source.set(4);
+    lithia::flush().await;
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+}
+
+#[lithia::test]
+async fn units_no_equals_and_generic_code_propagate_every_value() {
+    let tick: SourceNode<u32> = node!(0);
+    let effect: DerivedNode<()> = node!(|tick| {
+        let _ = tick.get();
+    });
+    let after: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let _child: DerivedNode<()> = node!(|effect| {
+        let _ = effect.get();
+        after.fetch_add(1, Ordering::SeqCst);
+    });
+    lithia::flush().await;
+    tick.set(1);
+    lithia::flush().await;
+    assert_eq!(after.load(Ordering::SeqCst), 2, "each run of an effect is a change");
+    assert_eq!(reruns_on_an_equal_write(&node!(1u32, no_equals)).await, 1);
+    assert_eq!(reruns_on_an_equal_write(&node!((), no_equals)).await, 1);
+    assert_eq!(reruns_on_an_equal_write(&node!(())).await, 1, "`()` is never compared");
+    assert_eq!(reruns_on_an_equal_write(&created_without_eq(1u32)).await, 1);
+    assert_eq!(reruns_on_an_equal_write(&created_with_eq(1u32)).await, 0);
+    let never: SourceNode<u32> = node!(1, equals = |_: &u32, _: &u32| false);
+    assert_eq!(reruns_on_an_equal_write(&never).await, 1, "`equals` replaces the default");
+}
+
+#[lithia::test]
+async fn a_rejected_write_hands_its_value_back() {
+    // The value is moved into the write, so only `Rejected` can return it.
+    let n: SourceNode<Vec<String>> = node!(Vec::new());
+    lithia::dispose(&n);
+    let order: Vec<String> = vec!["first".to_string()];
+    let Err(Rejected(back)) = n.try_set(order) else { panic!("a write to a ghost is rejected") };
+    assert_eq!(back, ["first"]);
+    assert_eq!(Rejected(1u8).to_string(), "the node was disposed, so the value was not written");
+}
+
 #[lithia::test]
 async fn try_operations_report_ghosts() {
     let n: SourceNode<u32> = node!(1);
     lithia::dispose(&n);
     assert_eq!(n.try_get(), Err(Ghosted));
     assert_eq!(n.try_get().unwrap_err().to_string(), "the node was disposed");
-    assert_eq!(n.try_set(2), Err(Ghosted));
+    assert_eq!(n.try_set(2), Err(Rejected(2)));
+    assert_eq!(Ghosted::from(Rejected(2)), Ghosted); // `?` turns a rejected write into `Ghosted`
     assert_eq!(n.try_update(|v: &u32| v + 1), Err(Ghosted));
     assert_eq!(n.try_modify(|v: &mut u32| *v += 1), Err(Ghosted));
     assert_eq!(lithia::try_reflow(&n), Err(Ghosted));

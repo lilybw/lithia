@@ -24,7 +24,17 @@
     match __lithia_reclaim {
         __lithia_reclaim @ (:: lithia :: __private :: Reclaim :: Changed (_ ) | :: lithia :: __private :: Reclaim :: Fresh ) => {
             let __lithia_inputs : :: lithia :: __private :: Inputs = :: lithia :: __private :: Inputs :: of (& __lithia_probes ) ;
-            :: lithia :: __private :: source (& __LITHIA_SITE , __lithia_value , :: lithia :: __private :: Options :: new (__lithia_shape ) . keyed (__lithia_reclaim , __lithia_key , __lithia_inputs ) )
-        } :: lithia :: __private :: Reclaim :: Same (__lithia_node ) => __lithia_node . source (:: lithia :: __private :: Options :: new (__lithia_shape ) ) ,
+            :: lithia :: __private :: source (& __LITHIA_SITE , __lithia_value , :: lithia :: __private :: Options :: new (__lithia_shape ) . keyed (__lithia_reclaim , __lithia_key , __lithia_inputs ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+                # [allow (unused_imports ) ] use :: lithia :: __private :: {
+                    ImplicitViaEq as _ , ImplicitViaNone as _
+                } ;
+                (&& __lithia_p ) . __lithia_implicit ()
+            } )
+        } :: lithia :: __private :: Reclaim :: Same (__lithia_node ) => __lithia_node . source (:: lithia :: __private :: Options :: new (__lithia_shape ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+            # [allow (unused_imports ) ] use :: lithia :: __private :: {
+                ImplicitViaEq as _ , ImplicitViaNone as _
+            } ;
+            (&& __lithia_p ) . __lithia_implicit ()
+        } ) ,
     }
 }

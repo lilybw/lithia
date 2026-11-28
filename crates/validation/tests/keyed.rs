@@ -311,7 +311,7 @@ async fn case_bk_captures_without_partial_eq() {
     struct Opaque(u32);
     let service: Arc<Service> = Arc::new(Service(AtomicU32::new(0)));
     let opaque: Opaque = Opaque(0);
-    let rows: SourceNode<Vec<Row>> = node!(vec![row(1, "a")]);
+    let rows: SourceNode<Vec<Row>> = node!(vec![row(1, "a")], no_equals);
     let tick: SourceNode<u32> = node!(0);
     let by_arc: DerivedNode<Vec<DerivedNode<u32>>> = node!(|rows| {
         rows.get()

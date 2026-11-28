@@ -224,7 +224,8 @@ async fn replaced_values_from_one_step_all_drop_once() {
                     let _ = tick.get();
                     Counted(counter.clone())
                 },
-                init = Counted(Arc::new(AtomicUsize::new(0)))
+                init = Counted(Arc::new(AtomicUsize::new(0))),
+                no_equals
             )
         })
         .collect();
@@ -311,7 +312,7 @@ async fn a_ghost_reports_the_status_its_disposed_option_names() {
     assert!(matches!(lithia::status(&failing), Status::Ghost));
     assert!(matches!(lithia::status(&masked), Status::Ready));
     assert!(matches!(lithia::status(&pending), Status::Pending));
-    assert_eq!((masked.try_set(4), pending.try_set(5)), (Err(lithia::Ghosted), Err(lithia::Ghosted)));
+    assert_eq!((masked.try_set(4), pending.try_set(5)), (Err(lithia::Rejected(4)), Err(lithia::Rejected(5))));
     assert_eq!((*masked.get(), *pending.get()), (2, 3));
 }
 

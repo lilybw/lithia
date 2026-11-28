@@ -66,3 +66,28 @@ impl fmt::Display for Ghosted {
 }
 
 impl std::error::Error for Ghosted {}
+
+/// Error returned by `try_set` on a node freed by `lithia::dispose`, holding the value it was not given.
+/// `if let Err(lithia::Rejected(order)) = queue.try_set(order) { retry.push(order); }`
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Rejected<K>(pub K);
+
+impl<K> fmt::Debug for Rejected<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Rejected { .. }")
+    }
+}
+
+impl<K> fmt::Display for Rejected<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the node was disposed, so the value was not written")
+    }
+}
+
+impl<K> std::error::Error for Rejected<K> {}
+
+impl<K> From<Rejected<K>> for Ghosted {
+    fn from(_: Rejected<K>) -> Ghosted {
+        Ghosted
+    }
+}

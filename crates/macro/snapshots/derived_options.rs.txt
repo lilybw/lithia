@@ -29,5 +29,10 @@
     } ) . resilience ({
         # [allow (unused_imports ) ] use :: lithia :: resilience :: * ;
         NONE
-    } ) ) )
+    } ) ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+        # [allow (unused_imports ) ] use :: lithia :: __private :: {
+            ImplicitViaEq as _ , ImplicitViaNone as _
+        } ;
+        (&& __lithia_p ) . __lithia_implicit ()
+    } )
 }

@@ -1,0 +1,17 @@
+error: `no_equals` and `equals` exclude each other
+ --> tests/ui/equals_flags.rs:7:51
+  |
+7 |     let _a: SourceNode<u32> = node!(0, no_equals, equals = lithia::eq);
+  |                                                   ^^^^^^
+
+error: `no_equals` takes no value
+ --> tests/ui/equals_flags.rs:8:40
+  |
+8 |     let _b: SourceNode<u32> = node!(0, no_equals = true);
+  |                                        ^^^^^^^^^
+
+error: `equals` needs a value: `equals = …`
+ --> tests/ui/equals_flags.rs:9:40
+  |
+9 |     let _c: SourceNode<u32> = node!(0, equals);
+  |                                        ^^^^^^

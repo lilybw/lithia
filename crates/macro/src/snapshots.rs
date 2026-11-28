@@ -12,6 +12,7 @@ use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 const CASES: &[(&str, &str)] = &[
     ("source", "0"),
     ("source_options", "0, equals = |a: &u32, b: &u32| a == b, disposed = MASK"),
+    ("source_no_equals", "0, no_equals"),
     ("source_keyed", "row.clone(), key = row.id"),
     ("async_source", "async { lookup().await }"),
     ("async_source_move", "async move { tx.send(1) }"),

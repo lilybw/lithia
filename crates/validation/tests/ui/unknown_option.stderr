@@ -1,4 +1,4 @@
-error: unknown option `colour`; expected one of init, equals, key, batches, resilience, disposed
+error: unknown option `colour`; expected one of init, equals, no_equals, key, batches, resilience, disposed
  --> tests/ui/unknown_option.rs:7:22
   |
 7 |     let _ = node!(0, colour = 1);

@@ -425,7 +425,7 @@ async fn a_loop_through_a_keyed_creation_is_cut_when_a_new_node_takes_the_key() 
 
 #[lithia::test]
 async fn a_cut_writer_reruns_once_its_epoch_settles() {
-    let x: SourceNode<i32> = node!(0);
+    let x: SourceNode<i32> = node!(0, no_equals);
     let doubled: DerivedNode<i32> = node!(|x| *x.get() * 2);
     let runs: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let over: DerivedNode<bool> = node!(|doubled| {

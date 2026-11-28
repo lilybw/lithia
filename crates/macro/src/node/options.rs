@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(super) const OPTIONS: &[&str] = &["init", "equals", "key", "batches", "resilience", "disposed"];
+pub(super) const OPTIONS: &[&str] = &["init", "equals", "no_equals", "key", "batches", "resilience", "disposed"];
 
 /// Validated options, as token streams ready for the expansion.
 pub(super) struct Resolved {
@@ -14,6 +14,8 @@ pub(super) struct Resolved {
     pub(super) shape: TokenStream,
     /// `.equals(…)`, or nothing.
     pub(super) equals: TokenStream,
+    /// What picks the comparator by type when neither `equals` nor `no_equals` is given (spec §6.4).
+    pub(super) implicit: TokenStream,
     pub(super) key: Option<KeyArg>,
 }
 
@@ -23,6 +25,11 @@ pub(super) fn resolve_options(input: &NodeInput, form: &Form<'_>) -> syn::Result
     let mut shape: TokenStream = quote!(::lithia::__private::Shape::new());
     let mut equals: TokenStream = TokenStream::new();
     let mut key: Option<KeyArg> = None;
+    let mut implicit: TokenStream = quote!(|__lithia_p: ::lithia::__private::Implicit<_>| {
+        #[allow(unused_imports)]
+        use ::lithia::__private::{ImplicitViaEq as _, ImplicitViaNone as _};
+        (&&__lithia_p).__lithia_implicit()
+    });
     let mut errors: Option<syn::Error> = None;
     for option in &input.options {
         let name: String = option.name.to_string();
@@ -40,7 +47,30 @@ pub(super) fn resolve_options(input: &NodeInput, form: &Form<'_>) -> syn::Result
             combine(&mut errors, syn::Error::new_spanned(&option.name, format!("option `{name}` is given twice")));
             continue;
         }
-        let value: &Expr = &option.value;
+        let value: &Expr = match (&option.value, name.as_str()) {
+            (None, "no_equals") => {
+                if seen.contains("equals") {
+                    combine(
+                        &mut errors,
+                        syn::Error::new_spanned(&option.name, "`no_equals` and `equals` exclude each other"),
+                    );
+                }
+                implicit = quote!(::lithia::__private::no_implicit);
+                continue;
+            }
+            (Some(_), "no_equals") => {
+                combine(&mut errors, syn::Error::new_spanned(&option.name, "`no_equals` takes no value"));
+                continue;
+            }
+            (None, _) => {
+                combine(
+                    &mut errors,
+                    syn::Error::new_spanned(&option.name, format!("`{name}` needs a value: `{name} = …`")),
+                );
+                continue;
+            }
+            (Some(value), _) => value,
+        };
         match name.as_str() {
             "init" => {
                 if let Form::Source(_) = form {
@@ -56,7 +86,14 @@ pub(super) fn resolve_options(input: &NodeInput, form: &Form<'_>) -> syn::Result
                 init = Some(value.clone());
             }
             "equals" => {
+                if seen.contains("no_equals") {
+                    combine(
+                        &mut errors,
+                        syn::Error::new_spanned(&option.name, "`no_equals` and `equals` exclude each other"),
+                    );
+                }
                 equals = quote!(.equals(#value));
+                implicit = quote!(::lithia::__private::no_implicit);
             }
             "batches" | "resilience" | "disposed" => {
                 if name != "disposed" && !matches!(form, Form::Derived(_)) {
@@ -86,7 +123,7 @@ pub(super) fn resolve_options(input: &NodeInput, form: &Form<'_>) -> syn::Result
     }
     match errors {
         Some(errors) => Err(errors),
-        None => Ok(Resolved { init, shape, equals, key }),
+        None => Ok(Resolved { init, shape, equals, implicit, key }),
     }
 }
 
@@ -100,19 +137,20 @@ pub(super) struct Chains {
 
 impl Chains {
     pub(super) fn of(resolved: &Resolved) -> Chains {
-        let Resolved { shape, equals, key, .. }: &Resolved = resolved;
+        let Resolved { shape, equals, implicit, key, .. }: &Resolved = resolved;
+        // Each chain ends a constructor's arguments: the options, then the comparator picked by type.
         match key {
             None => Chains {
                 bind: TokenStream::new(),
-                create: quote!(::lithia::__private::Options::new(#shape) #equals),
+                create: quote!(::lithia::__private::Options::new(#shape) #equals, #implicit),
                 same: TokenStream::new(),
             },
             Some(_) => {
-                let same: TokenStream = quote!(::lithia::__private::Options::new(__lithia_shape) #equals);
+                let options: TokenStream = quote!(::lithia::__private::Options::new(__lithia_shape) #equals);
                 Chains {
                     bind: quote!(let __lithia_shape: ::lithia::__private::Shape = #shape;),
-                    create: quote!(#same.keyed(__lithia_reclaim, __lithia_key, __lithia_inputs)),
-                    same,
+                    create: quote!(#options.keyed(__lithia_reclaim, __lithia_key, __lithia_inputs), #implicit),
+                    same: quote!(#options, #implicit),
                 }
             }
         }

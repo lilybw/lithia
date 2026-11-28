@@ -27,5 +27,10 @@
             # [allow (unused_variables , clippy :: shadow_reuse , clippy :: shadow_same , clippy :: shadow_unrelated ) ] let (n , ) = & * __lithia_caps ;
             __lithia_y . item (u64 :: from (* n . get () ) ) . await ;
         }
-    } , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () ) , )
+    } , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+        # [allow (unused_imports ) ] use :: lithia :: __private :: {
+            ImplicitViaEq as _ , ImplicitViaNone as _
+        } ;
+        (&& __lithia_p ) . __lithia_implicit ()
+    } , )
 }

@@ -22,7 +22,7 @@ use crate::graph::node::{
     TypedNodeRef, WeakNodeRef, phase,
 };
 use crate::handles::{DerivedNode, NodeHandle, SourceNode};
-use crate::options::{Equals, Options};
+use crate::options::{Equals, Implicit, Options};
 use crate::run::{RunControl, Yielder};
 use crate::site::SiteKey;
 use crate::{NodeValue, Readable, Site, protocol, testing::progress};
@@ -342,49 +342,58 @@ impl Drop for EndsLease {
 
 /// Creates a source node holding `value` (spec §3.1).
 #[doc(hidden)]
-pub fn source<K: NodeValue>(site: &'static Site, value: K, options: Options<K>) -> SourceNode<K> {
+pub fn source<K: NodeValue>(
+    site: &'static Site,
+    value: K,
+    options: Options<K>,
+    implicit: impl FnOnce(Implicit<K>) -> Option<Equals<K>>,
+) -> SourceNode<K> {
     SourceNode {
-        node: new_node(site, Kind::Source, &[], &Captured::default(), value, None, options),
+        node: new_node(site, Kind::Source, &[], &Captured::default(), value, None, options.or_implicit(implicit)),
         internal: crate::handles::HandleCount::new(false),
     }
 }
 
 /// Creates a source node fed by an async block, pending with `init` until its first item (spec §8).
 #[doc(hidden)]
-pub fn source_async<K, F>(
+pub fn source_async<K, F, I>(
     site: &'static Site,
     captured: &Captured,
     init: K,
     block: F,
     options: Options<K>,
+    implicit: I,
 ) -> SourceNode<K>
 where
     K: NodeValue,
     F: Future<Output = K> + Send + 'static,
+    I: FnOnce(Implicit<K>) -> Option<Equals<K>>,
 {
     let body: Body<K> = Body::Once(match captured.2.clone() {
         Some(lease) => Box::pin(LeasedBlock { block, lease: EndsLease(lease) }),
         None => Box::pin(block),
     });
     SourceNode {
-        node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options),
+        node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options.or_implicit(implicit)),
         internal: crate::handles::HandleCount::new(false),
     }
 }
 
 /// Creates a source node fed by an async block that yields (spec §3.6).
 #[doc(hidden)]
-pub fn source_gen<K, G, F>(
+pub fn source_gen<K, G, F, I>(
     site: &'static Site,
     captured: &Captured,
     init: K,
     block: G,
     options: Options<K>,
+    implicit: I,
 ) -> SourceNode<K>
 where
     K: NodeValue,
     G: FnOnce(Yielder<K>) -> F + Send + 'static,
     F: Future<Output = ()> + Send + 'static,
+    I: FnOnce(Implicit<K>) -> Option<Equals<K>>,
 {
     let lease: Option<SharedLease> = captured.2.clone();
     let start: Box<dyn FnOnce(Yielder<K>) -> BoxFut<()> + Send> = Box::new(move |yielder: Yielder<K>| -> BoxFut<()> {
@@ -395,72 +404,78 @@ where
     });
     let body: Body<K> = Body::OnceGen(start);
     SourceNode {
-        node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options),
+        node: new_node(site, Kind::AsyncSource, &[], captured, init, Some(body), options.or_implicit(implicit)),
         internal: crate::handles::HandleCount::new(false),
     }
 }
 
 /// Creates a derived node with a synchronous body (spec §3.1).
 #[doc(hidden)]
-pub fn derived<K, B>(
+pub fn derived<K, B, I>(
     site: &'static Site,
     deps: &[NodeHandle],
     captured: &Captured,
     init: K,
     body: B,
     options: Options<K>,
+    implicit: I,
 ) -> DerivedNode<K>
 where
     K: NodeValue,
     B: Fn() -> K + Send + Sync + 'static,
+    I: FnOnce(Implicit<K>) -> Option<Equals<K>>,
 {
     let body: Body<K> = Body::Sync(Arc::new(body));
     DerivedNode {
-        node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
+        node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options.or_implicit(implicit)),
         internal: crate::handles::HandleCount::new(false),
     }
 }
 
 /// Creates a derived node with an async body (spec §8).
 #[doc(hidden)]
-pub fn derived_async<K, B, F>(
+pub fn derived_async<K, B, F, I>(
     site: &'static Site,
     deps: &[NodeHandle],
     captured: &Captured,
     init: K,
     body: B,
     options: Options<K>,
+    implicit: I,
 ) -> DerivedNode<K>
 where
     K: NodeValue,
     B: Fn() -> F + Send + Sync + 'static,
     F: Future<Output = K> + Send + 'static,
+    I: FnOnce(Implicit<K>) -> Option<Equals<K>>,
 {
     let body: Body<K> = Body::Async(Arc::new(move || -> BoxFut<K> { Box::pin(body()) }));
     DerivedNode {
-        node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
+        node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options.or_implicit(implicit)),
         internal: crate::handles::HandleCount::new(false),
     }
 }
 
 /// Creates a derived node with a generator body (spec §3.6).
 #[doc(hidden)]
-pub fn derived_gen<K, B, F>(
+pub fn derived_gen<K, B, F, I>(
     site: &'static Site,
     deps: &[NodeHandle],
     captured: &Captured,
     init: K,
     body: B,
     options: Options<K>,
+    implicit: I,
 ) -> DerivedNode<K>
 where
     K: NodeValue,
     B: Fn(Yielder<K>) -> F + Send + Sync + 'static,
     F: Future<Output = ()> + Send + 'static,
+    I: FnOnce(Implicit<K>) -> Option<Equals<K>>,
 {
     let body: Body<K> = Body::Gen(Arc::new(move |yielder: Yielder<K>| -> BoxFut<()> { Box::pin(body(yielder)) }));
     DerivedNode {
-        node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options),
+        node: new_node(site, Kind::Derived, deps, captured, init, Some(body), options.or_implicit(implicit)),
         internal: crate::handles::HandleCount::new(false),
     }
 }

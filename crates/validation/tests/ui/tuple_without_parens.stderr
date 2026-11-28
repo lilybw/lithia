@@ -1,4 +1,4 @@
-error: expected `name = value`; wrap tuple values in parentheses
+error: expected `name = value` or `no_equals`; wrap tuple values in parentheses
  --> tests/ui/tuple_without_parens.rs:7:22
   |
 7 |     let _ = node!(1, 2);

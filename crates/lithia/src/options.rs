@@ -3,6 +3,8 @@
 
 //! Option values for `node!`: each option's constants live in a module of its name (spec §3.2).
 
+use std::any::TypeId;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::NodeValue;
@@ -165,4 +167,59 @@ impl<K> Options<K> {
         self.keyed = Some(Keyed::new(reclaim, key, inputs));
         self
     }
+
+    /// Takes the comparator `pick` chooses by type when no `equals` was given (spec §6.4).
+    pub(crate) fn or_implicit(mut self, pick: impl FnOnce(Implicit<K>) -> Option<Equals<K>>) -> Self {
+        let implicit: Option<Equals<K>> = pick(Implicit(PhantomData));
+        if self.equals.is_none() {
+            self.equals = implicit;
+        }
+        self
+    }
+}
+
+/// What `node!` probes, once the value type is known, for the comparator a node takes by default (spec §6.4).
+#[doc(hidden)]
+pub struct Implicit<K>(PhantomData<fn() -> K>);
+
+/// A value type `node!` compares with `PartialEq` unless told otherwise (spec §6.4).
+#[doc(hidden)]
+pub trait EqualsByDefault: PartialEq + NodeValue {}
+
+impl<T: PartialEq + NodeValue> EqualsByDefault for T {}
+
+/// The default comparator of a type with `PartialEq`: `PartialEq`, except for `()` (spec §6.4).
+#[doc(hidden)]
+pub trait ImplicitViaEq<K> {
+    /// The comparator, if any.
+    fn __lithia_implicit(&self) -> Option<Equals<K>>;
+}
+
+impl<K: EqualsByDefault> ImplicitViaEq<K> for &Implicit<K> {
+    fn __lithia_implicit(&self) -> Option<Equals<K>> {
+        // An effect's `()` is always equal to the last one, yet each run of it is a change.
+        if TypeId::of::<K>() == TypeId::of::<()>() {
+            return None;
+        }
+        Some(Arc::new(|old: &K, new: &K| -> bool { old == new }))
+    }
+}
+
+/// The default comparator of any other type: none, so every value propagates (spec §6.4).
+#[doc(hidden)]
+pub trait ImplicitViaNone<K> {
+    /// No comparator.
+    fn __lithia_implicit(&self) -> Option<Equals<K>>;
+}
+
+impl<K> ImplicitViaNone<K> for Implicit<K> {
+    fn __lithia_implicit(&self) -> Option<Equals<K>> {
+        None
+    }
+}
+
+/// No comparator by default: what `no_equals`, or an explicit `equals`, expands to (spec §6.4).
+#[doc(hidden)]
+pub fn no_implicit<K>(_: Implicit<K>) -> Option<Equals<K>> {
+    None
 }

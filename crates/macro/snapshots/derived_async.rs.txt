@@ -28,5 +28,10 @@
             tokio :: task :: yield_now () . await ;
             * n . get ()
         }
-    } , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () ) , )
+    } , :: lithia :: __private :: Options :: new (:: lithia :: __private :: Shape :: new () ) , | __lithia_p : :: lithia :: __private :: Implicit < _ > | {
+        # [allow (unused_imports ) ] use :: lithia :: __private :: {
+            ImplicitViaEq as _ , ImplicitViaNone as _
+        } ;
+        (&& __lithia_p ) . __lithia_implicit ()
+    } , )
 }

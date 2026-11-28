@@ -5,10 +5,10 @@
 
 use super::*;
 
-/// One `name = value` option.
+/// One `name = value` option, or a bare `name` flag.
 pub(crate) struct OptionArg {
     pub(super) name: Ident,
-    pub(super) value: Expr,
+    pub(super) value: Option<Expr>,
 }
 
 /// The parsed input of `node!`: a value or closure, then options.
@@ -30,13 +30,19 @@ impl Parse for NodeInput {
                 break;
             }
             let is_option: bool = input.peek(Ident) && input.peek2(Token![=]) && !input.peek2(Token![==]);
-            if !is_option {
-                return Err(input.error("expected `name = value`; wrap tuple values in parentheses"));
+            if is_option {
+                let name: Ident = input.parse()?;
+                input.parse::<Token![=]>()?;
+                let value: Expr = input.parse()?;
+                options.push(OptionArg { name, value: Some(value) });
+                continue;
             }
-            let name: Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-            let value: Expr = input.parse()?;
-            options.push(OptionArg { name, value });
+            let ahead: ParseStream<'_> = &input.fork();
+            let is_flag: bool = ahead.parse::<Ident>().is_ok() && (ahead.is_empty() || ahead.peek(Token![,]));
+            if !is_flag {
+                return Err(input.error("expected `name = value` or `no_equals`; wrap tuple values in parentheses"));
+            }
+            options.push(OptionArg { name: input.parse()?, value: None });
         }
         Ok(NodeInput { value, options, tokens })
     }
@@ -121,7 +127,8 @@ impl NodeInput {
             other => captures.expr(other),
         }
         for option in &self.options {
-            match (option.name == "key", &option.value) {
+            let Some(value) = &option.value else { continue };
+            match (option.name == "key", value) {
                 // A key closure's parameters name variables of the enclosing scope.
                 (true, Expr::Closure(closure)) => {
                     for input in &closure.inputs {
@@ -131,7 +138,7 @@ impl NodeInput {
                     }
                     captures.expr(&closure.body);
                 }
-                _ => captures.expr(&option.value),
+                _ => captures.expr(value),
             }
         }
     }

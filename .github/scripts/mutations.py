@@ -157,6 +157,18 @@ MUTATIONS: list[Mutation] = [
         "    if false && !served.is_empty() {\n",
         "edge", "a_runtime_shutting_down_fails_the_strict_children_of_its_runs",
     ),
+    Mutation(
+        "Q1", "No comparator by default for a value type with `PartialEq`", "crates/lithia/src/options.rs",
+        "        Some(Arc::new(|old: &K, new: &K| -> bool { old == new }))\n",
+        "        None\n",
+        "edge", "equal_values_change_nothing_by_default",
+    ),
+    Mutation(
+        "Q2", "`()` compared by default, so an effect's runs stop reaching its children", "crates/lithia/src/options.rs",
+        "        if TypeId::of::<K>() == TypeId::of::<()>() {\n",
+        "        if false {\n",
+        "edge", "units_no_equals_and_generic_code_propagate_every_value",
+    ),
 ]
 
 SUITES: dict[str, list[str]] = {
