@@ -3,7 +3,8 @@
 
 //! How lithia's shared state behaves as threads are added, for the 8–64 cores it targets (spec §15).
 //! Run on purpose: `cargo bench -p lithia-bench --bench scaling`; `LITHIA_BENCH_THREADS=1,8,64` picks counts,
-//! `LITHIA_BENCH_PIN=dense|spread` pins worker threads, and `--cfg lithia_lock_stats` adds the sweep lock's figures.
+//! `LITHIA_BENCH_PIN=dense|spread` pins worker threads, `--cfg lithia_lock_stats` adds the sweep lock's figures,
+//! and `--features mimalloc` swaps the allocator.
 
 #![allow(clippy::type_complexity)]
 
@@ -12,6 +13,13 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use lithia::{DerivedNode, SourceNode, node};
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// The allocator the benchmark runs on, for its header.
+const ALLOCATOR_NAME: &str = if cfg!(feature = "mimalloc") { "mimalloc" } else { "the system allocator" };
 
 /// One benchmark across thread counts: a cell per count.
 struct Scaling {
@@ -664,9 +672,10 @@ fn main() {
     let only: Option<String> = std::env::var("LITHIA_BENCH").ok();
     let cores: usize = std::thread::available_parallelism().map_or(0, |n: std::num::NonZeroUsize| n.get());
     println!(
-        "Host: {} {}, {cores} hardware threads. Threads per cell: {:?}.\n",
+        "Host: {} {}, {cores} hardware threads, {ALLOCATOR_NAME}{}. Threads per cell: {:?}.\n",
         std::env::consts::OS,
         std::env::consts::ARCH,
+        std::env::var("LITHIA_BENCH_PIN").map(|pin: String| format!(", pinned {pin}")).unwrap_or_default(),
         counts
     );
     let header: Vec<String> = counts.iter().map(|n: &usize| n.to_string()).collect();

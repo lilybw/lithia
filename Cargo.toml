@@ -39,6 +39,8 @@ loom = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Pins the scaling benchmark's threads (`LITHIA_BENCH_PIN`).
 core_affinity = "0.8"
+# An allocator the benchmarks may run on (`--features mimalloc`).
+mimalloc = "0.1"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -13,7 +13,8 @@ powers of two up to the machine's hardware threads and that count itself, or the
 `LITHIA_BENCH_THREADS=1,8,64`. `LITHIA_BENCH` picks rows, as for the spec rows. `LITHIA_BENCH_PIN=dense`
 pins worker `i` to logical CPU `i`, and `spread` to every other logical CPU first, which on most machines
 is one per physical core first; a build with `RUSTFLAGS="--cfg lithia_lock_stats"` follows each cell with
-what the sweep lock went through: acquisitions, mean and longest hold, mean wait. Rows that time one
+what the sweep lock went through: acquisitions, mean and longest hold, mean wait; and `--features mimalloc`
+runs it on mimalloc instead of the system allocator, which tells the allocator's share of a cost. Rows that time one
 operation per thread give its median and, in brackets, the fastest and slowest thread: a wide range is
 threads waiting for each other.
 

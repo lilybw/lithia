@@ -13,6 +13,7 @@ documentation = "https://lilybw.com/lithia/api/lithia/"
 [dependencies]
 core_affinity = { workspace = true }
 lithia = { workspace = true }
+mimalloc = { workspace = true, optional = true }
 tokio = { workspace = true }
 
 [[bench]]
@@ -31,3 +32,7 @@ bench = false
 
 [lints]
 workspace = true
+
+[features]
+# Runs the benchmarks on mimalloc instead of the system allocator, to tell its share of a cost.
+mimalloc = ["dep:mimalloc"]
