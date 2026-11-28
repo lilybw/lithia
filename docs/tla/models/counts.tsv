@@ -1,0 +1,30 @@
+# Distinct states and depth of each model's complete search, which .github/scripts/tlc.py checks.
+# A model or spec change that moves them is recorded with `tlc.py MODEL --record` in the same commit.
+# A model too large to finish is `bounded` with the minutes TLC explores it for.
+MCAbsorb	265525	77
+MCAsyncChain	1351417	101
+MCBinding	1145	63
+MCBlock	54156	69
+MCCreate	183924	70
+MCCreateRun	226219	81
+MCCreator	673071	77
+MCDefer	935	51
+MCDiamond	bounded	270
+MCDisposal	71693	24
+MCDispose	933498	84
+MCGeneration	78358	24
+MCGenerator	361921	74
+MCKeyed	53870	24
+MCKeyedRerun	139861	75
+MCLateChild	13842	19
+MCRecover	784405	93
+MCReflow	1657084	91
+MCReflowBack	1278	73
+MCResilience	101481	101
+MCReturn	23240	19
+MCScoped	77166	23
+MCShutdown	1718	50
+MCSupersede	265525	77
+MCWhole	4278523	107
+MCWriteBack	2645	78
+MCWriter	66731	26

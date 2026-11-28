@@ -1,0 +1,32 @@
+---
+name: release
+description: How work moves from a verify branch to nightly and release in lithia, what must be green first, and what only the maintainer does (tags, crates.io). Use only when the maintainer asks for a merge to nightly or release, or for a version bump.
+disable-model-invocation: true
+---
+
+# Releasing lithia
+
+Only on the maintainer's explicit request. Never push tags (the maintainer tags), never delete remote
+branches, never publish to crates.io without being handed the token for it.
+
+## Gates, on the exact commit
+
+- `ci.yml` green: tests on Linux x86-64 and ARM, macOS, Windows and the minimum rustc; loom at bound 3
+  both ways; TLC on every `ci.yml` model with its recorded count.
+- `extended.yml` green: Miri, loom at bound 4 both ways, stress on three platforms, TLC on the large
+  models (`MCDiamond` bounded), the kept mutations.
+- The latest cargo-mutants run reviewed: nothing alive that `known_bugs.md` does not explain.
+
+## Flow
+
+1. `verify/...` → `nightly`, by pull request or, when the maintainer says so, a direct push. Each push to
+   `nightly` is released as `v<version>.<n>` by `nightly.yml`, and the docs site is rebuilt.
+2. `nightly` → `release` once a nightly release has passed the extended checks and gone a few days
+   without a fix on top. `release` is the default branch.
+
+## A version bump
+
+- `version` in the workspace `Cargo.toml`, and `lithia`'s dependency on `lithia-macro`.
+- `CHANGELOG.md`: the open heading becomes `## X.Y.Z (YYYY-MM-DD)` with a one-paragraph summary.
+- The spec file's name and title, then `python3 .github/scripts/spec_pdf.py`.
+- README's install line, if it names a version.

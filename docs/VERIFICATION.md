@@ -12,8 +12,8 @@ commands to run them, and [`known_bugs.md`](known_bugs.md) lists what they have 
 | Compile errors (spec §4.6), one case per row; `node!`'s expansions, one snapshot per body form | `crates/validation/tests/ui`; `crates/macro/snapshots` | `ci.yml` |
 | Edge-case tests, one module per area, and the random differential test | `crates/test/tests/edge` | `ci.yml` |
 | Loom models of the real engine, one module per area | `crates/test/tests/loom` | `ci.yml` at bound 3, `extended.yml` at bound 4 |
-| TLA+ models of scheduling and lifetimes | `docs/tla` | `ci.yml`; the three largest in `extended.yml`, `MCDiamond` for 270 minutes |
-| Kept mutations, cargo-mutants | `.github/scripts/mutations.py` | `extended.yml`; cargo-mutants weekly |
+| TLA+ models of scheduling and lifetimes, each against its recorded state count | `docs/tla` | `ci.yml`; the three largest in `extended.yml`, `MCDiamond` for 270 minutes |
+| Kept mutations, cargo-mutants | `.github/scripts/mutations.py`, `.github/scripts/mutants.py` | `extended.yml`; cargo-mutants weekly, or on given files by a manual run |
 | Stress runs of every test binary | `.github/scripts/stress.sh` | `extended.yml`, on Linux x86-64 and ARM and macOS |
 | Miri | `extended.yml` | unit tests, validation cases and edge-case tests |
 

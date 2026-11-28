@@ -52,11 +52,18 @@ cargo bench -p lithia-bench     # prints a results table; LITHIA_BENCH=spawn,clo
 cargo bench -p lithia-bench --bench allocs  # heap allocations per run, per write and per node
 RUSTFLAGS="--cfg lithia_loom" CARGO_TARGET_DIR=target/loom cargo test --release -p lithia-test --test loom
 LITHIA_RANDOM_SEEDS=500 cargo test -p lithia-test --test edge --release -- random  # more random graphs
-(cd docs/tla/models && ../tlc.sh MCReturn)  # one TLA+ model with TLC; needs Java 11+
+python3 .github/scripts/tlc.py MCReturn  # one TLA+ model, against its recorded state count; Java 11+
+python3 .github/scripts/check.py full    # fmt, clippy, rustdoc, tests and loom, one line per step
 .github/scripts/mutations.py    # each kept mutation must fail the test named for it (docs/VERIFICATION.md)
 .github/scripts/stress.sh 100 50 50  # every test binary 100 times in release, 50 in debug, 50 on one core
 python3 .github/scripts/site.py snapshot --version 0.0.0 --out target/site-snapshot  # needs pandoc and npx
+python3 .github/scripts/mutants.py crates/lithia/src/api.rs  # cargo-mutants in place on a few files
+python3 .github/scripts/spec_pdf.py  # reprints the spec's PDF; needs pandoc and Playwright
+python3 .claude/tools/outline.py show crates/lithia/src --pub  # signatures and docs, no bodies
 ```
+
+`CLAUDE.md` and `.claude/` hold the setup for working on lithia with Claude: agents, skills, and
+the outline tool, which caches each folder's outline under `target/outline` with a hash of its sources.
 
 Loom explores every thread interleaving up to a preemption bound: 3 by default, and
 `LOOM_MAX_PREEMPTIONS=4` goes deeper in minutes rather than seconds. `LITHIA_LOOM_FAST_PATH=off` gives

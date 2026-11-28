@@ -6,3 +6,5 @@
 # Traces TLC writes next to a model that fails.
 *_TTrace_*.tla
 *_TTrace_*.bin
+# Python bytecode from the scripts and harness tools.
+__pycache__/

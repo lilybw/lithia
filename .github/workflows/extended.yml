@@ -15,14 +15,24 @@ on:
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
+    inputs:
+      tlc:
+        description: "Only these TLC models, space-separated (MCCreate MCBlock); empty runs every job"
+        default: ""
+      mutants:
+        description: "Only cargo-mutants on these files, space-separated (crates/lithia/src/api.rs); empty runs every job"
+        default: ""
+      mutants_re:
+        description: "With mutants: only the mutants matching this regex"
+        default: ""
 
 permissions:
   contents: read
 
-# A push cancels the run of an older push, but not a weekly or manual run, which mutation-tests for hours.
+# A push cancels the run of an older push; weekly and manual runs, which mutation-test for hours, run on.
 concurrency:
-  group: extended-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  group: extended-${{ github.ref }}-${{ github.event_name }}-${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'latest' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,6 +41,7 @@ env:
 jobs:
   miri-shards:
     name: miri shards
+    if: ${{ !inputs.tlc && !inputs.mutants }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -87,6 +98,7 @@ jobs:
 
   loom-deep:
     name: loom bound 4 (fast path ${{ matrix.fast_path }})
+    if: ${{ !inputs.tlc && !inputs.mutants }}
     strategy:
       fail-fast: false
       matrix:
@@ -114,6 +126,7 @@ jobs:
 
   stress:
     name: stress (${{ matrix.os }})
+    if: ${{ !inputs.tlc && !inputs.mutants }}
     strategy:
       fail-fast: false
       matrix:
@@ -149,6 +162,7 @@ jobs:
   # checked, and only a violation fails the job.
   tla:
     name: tlc (${{ matrix.model }})
+    if: ${{ !inputs.tlc && !inputs.mutants }}
     strategy:
       fail-fast: false
       matrix:
@@ -156,7 +170,6 @@ jobs:
           - model: MCSharedTarget
           - model: MCWhole
           - model: MCDiamond
-            limit: 270m
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -167,22 +180,13 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: TLC
-        working-directory: docs/tla/models
-        run: |
-          if [[ -z "${{ matrix.limit }}" ]]; then
-            exec ../tlc.sh ${{ matrix.model }}
-          fi
-          status=0
-          timeout ${{ matrix.limit }} ../tlc.sh ${{ matrix.model }} || status=$?
-          if [[ $status -eq 124 ]]; then
-            echo "No error found within ${{ matrix.limit }}."
-            exit 0
-          fi
-          exit $status
+      # MCDiamond is recorded as bounded: TLC explores it for 270 minutes and passes without an error.
+      - name: TLC, against the model's recorded state count
+        run: python3 .github/scripts/tlc.py ${{ matrix.model }}
 
   mutations:
     name: mutations
+    if: ${{ !inputs.tlc && !inputs.mutants }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -203,7 +207,7 @@ jobs:
   # listed for review, not failed on: many are equivalent.
   cargo-mutants:
     name: cargo-mutants (shard ${{ matrix.shard }}/16)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !inputs.tlc && !inputs.mutants }}
     strategy:
       fail-fast: false
       matrix:
@@ -237,3 +241,53 @@ jobs:
           path: mutants.out
           if-no-files-found: ignore
 
+  tlc-only:
+    name: tlc (${{ inputs.tlc }})
+    if: ${{ inputs.tlc }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: TLC on the models asked for
+        env:
+          MODELS: ${{ inputs.tlc }}
+        run: |
+          set -f
+          python3 .github/scripts/tlc.py $MODELS
+
+  mutants-only:
+    name: cargo-mutants (${{ inputs.mutants }})
+    if: ${{ inputs.mutants }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mutants
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked --version 27.1.0
+
+      - name: Mutants of the files asked for
+        env:
+          FILES: ${{ inputs.mutants }}
+          RE: ${{ inputs.mutants_re }}
+        run: python3 .github/scripts/mutants.py $FILES ${RE:+--re "$RE"}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-only
+          path: target/mutants.out
+          if-no-files-found: ignore

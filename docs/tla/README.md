@@ -319,3 +319,8 @@ models at once needs `-Xmx` per process, since each otherwise sizes its heap for
 cd docs/tla/models
 ../tlc.sh MCReturn
 ```
+
+CI runs each model through [`.github/scripts/tlc.py`](../../.github/scripts/tlc.py), which also checks its
+distinct states and depth against [`models/counts.tsv`](models/counts.tsv): a change to a spec or a model
+that moves a count fails until `tlc.py MODEL --record` records the new figures, in the same commit and
+with the reason. `MCDiamond` is recorded as bounded: TLC explores it for 270 minutes.

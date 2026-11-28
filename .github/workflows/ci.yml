@@ -65,6 +65,10 @@ jobs:
         if: matrix.suite == 'tests' && matrix.os == 'ubuntu-latest'
         run: cargo fmt --all --check
 
+      - name: Harness tools
+        if: matrix.suite == 'tests' && matrix.os == 'ubuntu-latest'
+        run: python3 -m unittest discover -s .claude/tools -q
+
       - name: Lint
         if: matrix.suite == 'tests'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -172,6 +176,5 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: TLC
-        working-directory: docs/tla/models
-        run: ../tlc.sh ${{ matrix.model }}
+      - name: TLC, against the model's recorded state count
+        run: python3 .github/scripts/tlc.py ${{ matrix.model }}
