@@ -1,6 +1,6 @@
 ---
 name: release
-description: How work moves from a verify branch to nightly and release in lithia, what must be green first, and what only the maintainer does (tags, crates.io). Use only when the maintainer asks for a merge to nightly or release, or for a version bump.
+description: How work moves from a verify branch to nightly and on to crates.io in lithia, what must be green first, and what only the maintainer does (tags, crates.io). Use only when the maintainer asks for a merge to nightly, a release, or a version bump.
 disable-model-invocation: true
 ---
 
@@ -21,8 +21,8 @@ branches, never publish to crates.io without being handed the token for it.
 
 1. `verify/...` → `nightly`, by pull request or, when the maintainer says so, a direct push. Each push to
    `nightly` is released as `v<version>.<n>` by `nightly.yml`, and the docs site is rebuilt.
-2. `nightly` → `release` once a nightly release has passed the extended checks and gone a few days
-   without a fix on top. `release` is the default branch.
+2. `nightly`, the default branch, → crates.io: a nightly commit on which the extended checks passed too
+   is a release candidate, published with `publish.yml` (below).
 
 ## Publishing
 

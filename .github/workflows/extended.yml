@@ -4,14 +4,14 @@
 # Slower checks: Miri, the loom models at bound 4 with and without the fast path, TLC on the two
 # largest TLA+ models, the kept mutations, and stress runs of every test binary on Linux (x86-64 and
 # ARM) and macOS (ARM). They run on every push to `nightly`, weekly, and on pull requests; a nightly
-# tag is promoted to `release` only once they pass on it.
+# commit is a release candidate for crates.io only once a full run, cargo-mutants included, passes on it.
 name: extended
 
 on:
   push:
     branches: [nightly, "verify/**"]
   pull_request:
-    branches: [nightly, release]
+    branches: [nightly]
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:

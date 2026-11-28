@@ -32,7 +32,7 @@ cp "$spec" target/dist/
 (cd target/dist && sha256sum -- * > SHA256SUMS)
 
 {
-    echo "Automated nightly release of \`$(git rev-parse --short HEAD)\`, built after the test matrix passed on Linux, macOS and Windows. It is promoted to \`release\` only once the slower checks (\`extended.yml\`) pass on it."
+    echo "Automated nightly release of \`$(git rev-parse --short HEAD)\`, built after the test matrix passed on Linux, macOS and Windows. It becomes a candidate for crates.io once the slower checks (\`extended.yml\`) pass on it too."
     echo
     echo "Assets: the \`lithia\` and \`lithia-macro\` crate packages (version ${base}), the docs (API reference and spec as HTML), the spec PDF and SHA-256 sums."
     echo

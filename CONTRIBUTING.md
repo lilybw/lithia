@@ -10,10 +10,10 @@ keeping the code, the tests and the spec in step.
    maintainer reviews. The slower checks of [`extended.yml`](.github/workflows/extended.yml) run too but
    do not gate a merge. [`docs/VERIFICATION.md`](docs/VERIFICATION.md) lists what each one runs.
 3. Once merged, the push to `nightly` is released as the next `v<version>.<n>` and the docs site is
-   rebuilt. `release` later moves to that release's commit, once the extended checks have passed on it
-   and it has gone a few days on `nightly` without a fix on top.
+   rebuilt. A `nightly` commit on which the extended checks have passed too is a release candidate, which
+   the maintainer may publish to crates.io (below).
 
-Changes reach `nightly` and `release` through pull requests; the maintainer may also push directly.
+Changes reach `nightly` through pull requests; the maintainer may also push directly.
 
 ## Publishing to crates.io
 
