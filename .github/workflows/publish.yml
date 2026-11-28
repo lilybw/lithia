@@ -1,0 +1,169 @@
+# SPDX-FileCopyrightText: 2026 lithia Authors
+# SPDX-License-Identifier: MPL-2.0
+
+# Publishes lithia-macro and lithia to crates.io from a release candidate: a `nightly` commit whose
+# `nightly` run passed and whose full `extended` run, cargo-mutants included, passed. Run by hand from
+# `nightly`, once the version is committed there; a pre-release version such as 1.0.0-rc.1 publishes a
+# release candidate. A dry run, the default, checks and packages everything and publishes nothing. The
+# publish job runs in the `crates-io` environment, so it waits for the maintainer's approval.
+name: publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The version committed in Cargo.toml: 1.0.0, or 1.0.0-rc.1 for a release candidate"
+        required: true
+        type: string
+      auth:
+        description: "trusted: crates.io trusted publishing; token: the crates-io environment's CARGO_REGISTRY_TOKEN, which must expire within a week"
+        required: true
+        type: choice
+        options: [trusted, token]
+        default: trusted
+      dry-run:
+        description: "Check and package everything; publish nothing"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# One publish at a time, never cancelled half-way.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  candidate:
+    name: release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+      previous: ${{ steps.check.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - name: The commit, the version, and the runs that passed on it
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/release.py check --version "$VERSION" ${{ inputs.dry-run && '--dry-run' || '' }}
+
+  package:
+    name: packages, docs and semver
+    needs: candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      # The toolchain and its components are rust-toolchain.toml's.
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Package both crates, building lithia against the packaged lithia-macro
+        run: cargo package -p lithia-macro -p lithia --locked
+
+      - name: Docs, warnings denied
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps -p lithia -p lithia-macro --locked
+
+      - name: Install cargo-semver-checks
+        if: needs.candidate.outputs.previous != ''
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
+      - name: No break the version number does not allow, against the last published version
+        if: needs.candidate.outputs.previous != ''
+        env:
+          PREVIOUS: ${{ needs.candidate.outputs.previous }}
+        run: cargo semver-checks -p lithia --baseline-version "$PREVIOUS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          # By name: a cached target directory may hold packages of other versions.
+          path: |
+            target/package/lithia-macro-${{ inputs.version }}.crate
+            target/package/lithia-${{ inputs.version }}.crate
+          if-no-files-found: error
+
+  publish:
+    name: publish to crates.io
+    needs: [candidate, package]
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: crates-io
+    permissions:
+      contents: write # the tag and the GitHub release
+      id-token: write # trusted publishing
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - name: A token from crates.io that lives for this job only
+        if: inputs.auth == 'trusted'
+        id: trusted
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: The environment's token, refused unless it expires within a week and only publishes
+        if: inputs.auth == 'token'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CRATES_IO_TOKEN_EXPIRES: ${{ vars.CRATES_IO_TOKEN_EXPIRES }}
+        run: python3 .github/scripts/release.py token
+
+      - name: lithia-macro, then lithia, skipping either crates.io has
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ inputs.auth == 'trusted' && steps.trusted.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: python3 .github/scripts/release.py publish --version "$VERSION"
+
+      # Whatever happened, a stored token has been in a job; it publishes nothing more.
+      - name: Revoke the environment's token
+        if: always() && inputs.auth == 'token'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: python3 .github/scripts/release.py revoke
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: target/dist
+
+      - name: Tag and GitHub release, with the packages and the spec
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.candidate.outputs.tag }}
+          PRERELEASE: ${{ needs.candidate.outputs.prerelease }}
+        run: |
+          python3 .github/scripts/release.py notes --version "$VERSION" > target/release-notes.md
+          spec="$(printf "%s\n" docs/spec/LITHIA_design_spec_v*.pdf | sort -V | tail -n 1)"
+          cp "$spec" target/dist/
+          (cd target/dist && sha256sum -- * > SHA256SUMS)
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" target/dist/* --target "$GITHUB_SHA" --title "lithia $VERSION" \
+            --notes-file target/release-notes.md "${flags[@]}"

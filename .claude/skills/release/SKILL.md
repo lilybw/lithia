@@ -24,6 +24,12 @@ branches, never publish to crates.io without being handed the token for it.
 2. `nightly` → `release` once a nightly release has passed the extended checks and gone a few days
    without a fix on top. `release` is the default branch.
 
+## Publishing
+
+`publish.yml`, run by the maintainer from `nightly` (CONTRIBUTING.md, Publishing to crates.io). Before
+asking for it: the version bump below committed on `nightly`, its `nightly` run green, and a full
+`extended` run dispatched on that commit and green. Never run it with `dry-run` off yourself.
+
 ## A version bump
 
 - `version` in the workspace `Cargo.toml`, and `lithia`'s dependency on `lithia-macro`.

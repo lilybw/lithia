@@ -15,6 +15,32 @@ keeping the code, the tests and the spec in step.
 
 Changes reach `nightly` and `release` through pull requests; the maintainer may also push directly.
 
+## Publishing to crates.io
+
+[`publish.yml`](.github/workflows/publish.yml) publishes `lithia-macro`, then `lithia`, from a release
+candidate: a `nightly` commit whose `nightly` run passed, and whose full `extended` run, cargo-mutants
+included, passed too (`gh workflow run extended.yml --ref nightly` starts one). The maintainer runs it
+by hand from `nightly` with the version already committed there. A version such as `1.0.0-rc.1`
+publishes a release candidate, which Cargo picks only when asked for it.
+
+- **Version.** The input confirms what is committed; it changes nothing. The run refuses unless both
+  crates have that version, `lithia-macro` is pinned to it with `=`, no tag `v<version>` exists, and
+  crates.io lacks it. A release also needs `CHANGELOG.md`'s section dated, the spec file of that
+  version with its PDF, and the README's install line; a dry run reports those as warnings.
+- **Dry run.** The default: every check, `cargo package` of both crates, the docs, and
+  `cargo-semver-checks` against the last published version. Nothing is published.
+- **Credentials.** The publish job runs in the `crates-io` environment, which must require the
+  maintainer's approval. With `auth: trusted`, crates.io's trusted publishing gives the job a token
+  that lives for the job only; set it up on crates.io for `publish.yml` and the `crates-io`
+  environment once both crates exist. The first release needs `auth: token`: a token with only the
+  `publish-new` and `publish-update` scopes for the two crates, stored as the environment's
+  `CARGO_REGISTRY_TOKEN` secret, with its expiry date as the environment's `CRATES_IO_TOKEN_EXPIRES`
+  variable. The job refuses a token that expires more than seven days ahead, or that can read
+  `/api/v1/me`, which only a token not limited by scopes can; afterwards it revokes the token, so each
+  token publishes once.
+- **Afterwards.** The job tags `v<version>` and makes a GitHub release with both packages and the
+  spec PDF. A run that failed between the two crates can be run again: a crate crates.io has is skipped.
+
 ## Layout
 
 | Directory | Package | Holds |
