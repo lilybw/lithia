@@ -1,6 +1,6 @@
 [package]
 name = "lithia"
-description = "Thread-safe, fine-grained reactive engine for Rust on tokio, after Solid 2.0's signal model."
+description = "Thread-safe, fine-grained reactive engine for Rust on tokio, roughly after Solid 2.0's signal model."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,7 @@ homepage.workspace = true
 documentation.workspace = true
 readme = "../../README.md"
 keywords = ["reactive", "signals", "tokio", "async", "frp"]
-categories = ["asynchronous", "concurrency"]
+categories = ["asynchronous", "concurrency", "parallel"]
 
 [features]
 # Lets `#[lithia::main]` and `#[lithia::test]` take `start_paused`, through tokio's clock control.
