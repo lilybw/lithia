@@ -185,7 +185,8 @@ sweeping, done on one core at a time.
    state count; check that undoing the ordering fails a property; then loom models of a rise racing
    a sweep without the lock, and of a parent's fall racing a child's skipped sweep; then kept
    mutations.
-3. Approach 2a: benchmark `parking_lot`, `std` and a spinning queue lock behind a `cfg`; keep the best.
+3. Approach 2a: `python3 .github/scripts/lock_bench.py` compares five locks, each chosen by
+   `--cfg lithia_sweep_lock` (docs/BENCHMARKS.md, Comparing sweep locks); keep the best.
 4. If `sweeps` or many creators rebuilding still degrade, approach 2b, modelled first.
 5. Approach 3 only if a profile asks for it; 4 and 5 are not planned.
 

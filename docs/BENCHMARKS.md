@@ -25,6 +25,16 @@ powers of two up to the machine's hardware threads and that count itself, or the
 A sweep-lock row that rises with threads while `clock` stays flat points at the sweep lock rather than at
 the machine. Record a run here with the machine's model and core count, as in the history below.
 
+### Comparing sweep locks
+
+`python3 .github/scripts/lock_bench.py` runs the rows the sweep lock decides (`last-handle`, `sweeps`
+and `rebuild`, or those after `--rows`) once per lock, each built with `--cfg lithia_sweep_lock="NAME"`
+in its own directory under `target/locks`, and prints a table per row with a lock on each line;
+`--locks` and `--threads` narrow it. The locks: `parking_lot`'s mutex as it is (the default), the same
+handing every unlock to the next waiter (`fair`), the standard library's (`std`), `parking_lot`'s
+tried for about ten microseconds before parking (`spin`), and a ticket lock that spins, then yields,
+and never parks (`ticket`). `check.py full` lints lithia built with each.
+
 ## Current figures
 
 Measured on v0.5.0 after the code review's tuning (2026-11-24), as medians of 14 runs alternated with a

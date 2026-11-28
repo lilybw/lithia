@@ -9,13 +9,15 @@ use std::sync::atomic::Ordering;
 use crate::graph::ids::NodeId;
 use crate::graph::node::{ChangeSender, Header, NodeRef, Parents, WeakNodeRef};
 use crate::lifetime::op::Operation;
-use crate::sync::{Mutex, MutexGuard};
+use crate::lifetime::sweep_lock::SweepGuard;
+use crate::sync::MutexGuard;
 
 #[cfg(not(lithia_loom))]
-static SWEEP: crate::sync::Padded<Mutex<()>> = crate::sync::Padded(Mutex::new(()));
+static SWEEP: crate::sync::Padded<crate::lifetime::sweep_lock::SweepLock> =
+    crate::sync::Padded(crate::lifetime::sweep_lock::SweepLock::new());
 #[cfg(lithia_loom)]
 loom::lazy_static! {
-    static ref SWEEP: Mutex<()> = Mutex::new(());
+    static ref SWEEP: crate::sync::Mutex<()> = crate::sync::Mutex::new(());
 }
 
 /// Nodes an exact check of a starting point visits before it leaves the question to the walk.
@@ -55,7 +57,7 @@ pub(crate) fn add_anchors(header: &Header, count: usize, node: impl FnOnce() -> 
     let mut keep: Vec<NodeRef> = Vec::new();
     let mut held: Vec<&'static crate::Site> = Vec::new();
     {
-        let _lock: MutexGuard<'_, ()> = SWEEP.lock();
+        let _lock: SweepGuard<'_> = SWEEP.lock();
         if header.lifetime.anchors.fetch_add(count, Ordering::SeqCst) == 0 && !header.is_ghost() && any_let_go() {
             rehold(node(), &mut keep, &mut held);
         }
@@ -69,7 +71,7 @@ pub(crate) fn add_writer(node: &NodeRef, targets: &[NodeRef]) {
     let mut keep: Vec<NodeRef> = Vec::new();
     let mut held: Vec<&'static crate::Site> = Vec::new();
     {
-        let _lock: MutexGuard<'_, ()> = SWEEP.lock();
+        let _lock: SweepGuard<'_> = SWEEP.lock();
         for target in targets {
             target.header().lifetime.writers.lock().push(std::sync::Arc::downgrade(node));
         }
@@ -162,7 +164,7 @@ fn needs_sweep(node: &NodeRef) -> bool {
 pub(crate) fn sweep(starts: Vec<NodeRef>) -> Vec<NodeRef> {
     let mut keep: Vec<NodeRef> = Vec::new();
     let raised: usize = starts.len();
-    let lock: MutexGuard<'_, ()> = SWEEP.lock();
+    let lock: SweepGuard<'_> = SWEEP.lock();
     // A starting point an anchor still reaches loses nothing downstream, since support flows
     // only forward. The check trusts nothing and gives up after a few nodes.
     let mut lost: Vec<NodeRef> = Vec::new();

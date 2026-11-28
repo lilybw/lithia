@@ -7,4 +7,5 @@ pub(crate) mod dispose;
 pub(crate) mod drops;
 pub(crate) mod op;
 pub(crate) mod support;
+pub(crate) mod sweep_lock;
 pub(crate) mod teardown;

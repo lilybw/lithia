@@ -8,9 +8,10 @@
 
 `quick` (the default): fmt, clippy, rustdoc, the workspace tests, the harness tools and the spec
 citations.
-`full`: also clippy under `--cfg lithia_loom` and the loom models with and without the fast path.
-Steps: fmt, clippy, clippy-scaling, clippy-loom, doc, test, loom, loom-slow, tools, spec-refs. Exits 1 if
-any fails.
+`full`: also clippy under `--cfg lithia_loom`, the loom models with and without the fast path, and
+clippy on lithia built with each sweep lock the lock benchmark compares.
+Steps: fmt, clippy, clippy-scaling, clippy-loom, clippy-locks, doc, test, loom, loom-slow, tools,
+spec-refs. Exits 1 if any fails.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ STEPS: list[Step] = [
                             "-D", "warnings"]),
     Step("clippy-loom", ["cargo", "clippy", "-p", "lithia", "-p", "lithia-test", "--all-targets", "--locked", "--",
                          "-D", "warnings"], LOOM),
+    Step("clippy-locks", [sys.executable, ".github/scripts/lock_bench.py", "--check"]),
     Step("doc", ["cargo", "doc", "--no-deps", "-p", "lithia", "-p", "lithia-macro", "--locked"],
          {"RUSTDOCFLAGS": "-D warnings"}),
     Step("test", ["cargo", "test", "--workspace", "--locked"]),
