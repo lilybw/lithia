@@ -159,9 +159,16 @@ MUTATIONS: list[Mutation] = [
     ),
     Mutation(
         "Q1", "No comparator by default for a value type with `PartialEq`", "crates/lithia/src/options.rs",
-        "        Some(Arc::new(|old: &K, new: &K| -> bool { old == new }))\n",
+        "        Some(Equals::plain(|old: &K, new: &K| -> bool { old == new }))\n",
         "        None\n",
         "edge", "equal_values_change_nothing_by_default",
+    ),
+    Mutation(
+        "Q3", "The default comparator a closure, so each node allocates it and each free defers its drop",
+        "crates/lithia/src/options.rs",
+        "        Some(Equals::plain(|old: &K, new: &K| -> bool { old == new }))\n",
+        "        Some(Equals::shared(|old: &K, new: &K| -> bool { old == new }))\n",
+        "lib", "the_default_comparator_is_a_plain_function",
     ),
     Mutation(
         "Q2", "`()` compared by default, so an effect's runs stop reaching its children", "crates/lithia/src/options.rs",
@@ -175,6 +182,7 @@ SUITES: dict[str, list[str]] = {
     "edge": ["-p", "lithia-test", "--test", "edge"],
     "deep_chain": ["-p", "lithia-test", "--test", "deep_chain"],
     "loom": ["-p", "lithia-test", "--test", "loom", "--release"],
+    "lib": ["-p", "lithate", "--lib"],
 }
 
 

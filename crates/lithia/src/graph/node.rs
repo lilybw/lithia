@@ -193,7 +193,7 @@ impl<K: NodeValue> Node<K> {
         let equal: bool = match self.comparator() {
             Some(equals) => {
                 let _guard: ClosureGuard = ClosureGuard::enter();
-                equals(current, &next)
+                equals.equal(current, &next)
             }
             None => false,
         };
@@ -262,9 +262,9 @@ impl<K: NodeValue> Drop for Node<K> {
         if let Some(body) = self.body.get_mut().take() {
             crate::lifetime::drops::drop_later(body, runtime.as_ref());
         }
-        // Comparator, key and kept inputs carry user drop glue, which teardown never runs inline.
-        if let Some(equals) = self.equals.take() {
-            crate::lifetime::drops::drop_later(equals, runtime.as_ref());
+        // Key, kept inputs and a closure comparator may carry user drop glue, which teardown never runs inline.
+        if let Some(mut equals) = self.equals.take() {
+            Equals::take(equals.get_mut()).release(runtime.as_ref());
         }
         if let Some(key) = self.header.keyed.key.take() {
             crate::lifetime::drops::drop_later(key, runtime.as_ref());

@@ -311,7 +311,7 @@ impl<K: NodeValue> Reclaimed<K> {
 
     fn adopt(&self, options: Options<K>) {
         if let Some(old) = self.0.adopt_equals(options.equals) {
-            crate::lifetime::drops::drop_later(old, self.0.header.runtime.as_ref());
+            old.release(self.0.header.runtime.as_ref());
         }
         decided(&self.0);
     }
