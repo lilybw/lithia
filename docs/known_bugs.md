@@ -26,8 +26,7 @@ None.
 ## Gaps in verification
 
 - The TLA+ models (`docs/tla`) check small graphs only, one feature or two per model, and leave out
-  node creation and first runs in scheduling, keyed reclaiming and its reruns, async source blocks,
-  runtime shutdown, `defer` and the rerun rate. `MCDiamond` has finished once in CI (26 147 949 states, depth 109, 3 h 57 min, no error); runners differ in speed,
+  the rerun rate, a diagnostic. `MCDiamond` has finished once in CI (26 147 949 states, depth 109, 3 h 57 min, no error); runners differ in speed,
   so CI stops it after 270 minutes and passes it if it found no error by then. The loom models (`crates/test/tests/loom/`) run with at
   most three preemptions on each push and four on nightly.
 - cargo-mutants makes 1 640 mutants of the engine. `.cargo/mutants.toml` leaves out 169 that are

@@ -161,7 +161,7 @@ whichever release comes first; F5 runs the kept share once either way.
 ### cargo-mutants
 
 `extended.yml` runs cargo-mutants weekly, and on a manual run, over `crates/lithia` in 16 shards, with
-the tests of `lithia`, `lithia-validation` and `lithia-test` but the compile-fail cases, and lists the
+the tests of `lithate`, `lithia-validation` and `lithia-test` but the compile-fail cases, and lists the
 mutants they leave alive. `.cargo/mutants.toml` leaves out the mutants reviewed as unable to change
 what lithia does, one pattern each, under its reason:
 
