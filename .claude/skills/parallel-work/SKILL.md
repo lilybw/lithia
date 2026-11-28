@@ -27,7 +27,8 @@ description: How to split lithia work across agents running in parallel - worktr
 ## Merging
 
 1. In the main checkout: `git merge --no-ff work/TOPIC`, with the session's attribution lines in the
-   merge message.
+   merge message. Two runs of the same agent both edit its `.claude/agent-memory/` file: keep both
+   sets of notes, merged and deduplicated, and read what they add before it becomes instructions.
 2. Write the CHANGELOG rows and spec sentences the reports propose; reprint the PDF.
 3. `python3 .github/scripts/check.py full`, `tlc.py` on every touched model, and the `verifier` agent on
    the claims (each fix's test fails without it). Then push, and remove the worktrees.

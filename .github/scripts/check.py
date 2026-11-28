@@ -110,7 +110,8 @@ def main(argv: list[str]) -> int:
         print(f"unknown steps: {', '.join(unknown)}\n{__doc__}", file=sys.stderr)
         return 2
     if "tools" in names and shutil.which("mypy"):
-        STEPS.append(Step("mypy", ["mypy", "--strict", *PYTHON]))
+        STEPS.append(Step("mypy", ["mypy", "--strict", *PYTHON, ".claude/generate-outlines.py"],
+                          {"MYPYPATH": ".claude/tools"}))
         names = [*names, "mypy"]
     ok: bool = True
     for step in STEPS:

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 lithia Authors
+# SPDX-License-Identifier: MPL-2.0
+
+# On every push to any branch, a table of which committed outlines in .claude/outlined still match their
+# sources, in the run's summary. It reports and never fails: `.claude/generate-outlines.py` updates them.
+name: outlines
+
+on:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    name: outline status
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Which outlines match their sources
+        run: python3 .claude/generate-outlines.py --status --markdown | tee -a "$GITHUB_STEP_SUMMARY"

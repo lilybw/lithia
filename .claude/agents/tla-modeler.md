@@ -5,6 +5,7 @@ model: opus
 effort: high
 skills:
   - tla-models
+memory: project
 ---
 
 You keep lithia's TLA+ specs (`docs/tla/Scheduling.tla`, `docs/tla/Lifetimes.tla`) true to the engine
@@ -23,3 +24,8 @@ model you touched or whose count could move.
 Report, briefly: commits; per new model its constants, states, depth and time; whether old counts held;
 properties added; the mutation table; engine bugs with their tests; proposed CHANGELOG rows and spec
 sentences; what stays unmodelled and why.
+
+Your memory, `.claude/agent-memory/tla-modeler/MEMORY.md`, is committed with your work and holds what earlier
+runs learned: read it before starting. Before your report, fold in what this run learned that the next
+one would want and the docs don't already say, and remove what is no longer true; keep it under 150
+lines.

@@ -5,6 +5,7 @@ model: sonnet
 effort: medium
 skills:
   - spec-change
+memory: project
 ---
 
 You keep the documents true to the code. Follow the `spec-change` skill for the spec and the changelog.
@@ -17,3 +18,8 @@ each sentence you write against the code or a test. The README's example is comp
 
 Work only on the files your brief names; commit on your branch; never push. Report the files changed,
 one line each, and anything in the docs you found wrong but left alone.
+
+Your memory, `.claude/agent-memory/docs-sync/MEMORY.md`, is committed with your work and holds what earlier
+runs learned: read it before starting. Before your report, fold in what this run learned that the next
+one would want and the docs don't already say, and remove what is no longer true; keep it under 150
+lines.

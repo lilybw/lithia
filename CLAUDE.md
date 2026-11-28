@@ -16,6 +16,12 @@ conventions, `docs/VERIFICATION.md` what checks it, `docs/known_bugs.md` what is
   folder and rebuilt only when a hash of its sources changes. Then Read just the lines you need.
   `outline.py status` names folders changed since their outline was built; `outline.py hash FOLDER`
   lets you tell later whether code you read has changed.
+- `.claude/outlined/`, when present, mirrors the lithia and lithia-macro crates as Rust-like outlines
+  (`crates/lithia/src/run/future.rs` → `.claude/outlined/lithia/src/run/outlined.future.rs`, items
+  noted `// L<n>`), readable without running anything. Repository-wide searches skip it (`.ignore`);
+  search it by path. Each header records its source's hash: `.claude/generate-outlines.py --status`
+  says which are stale, CI's `outlines` workflow tabulates it on every push, and running the script
+  without arguments brings them up to date.
 
 ## Checks
 
@@ -59,6 +65,10 @@ Prefer them to forks: a fork carries the whole conversation into every step, whi
 each a brief that stands alone, its own worktree (`git worktree add`) for parallel work, and the
 files it owns, so merges don't collide. Skills in `.claude/skills/` hold the longer procedures
 (release, spec changes, TLA+ models, mutant triage, parallel work).
+
+Each agent keeps a memory in `.claude/agent-memory/<agent>/MEMORY.md`, committed with its work, so what
+one run learns reaches the next session too. Review memory changes like code when merging: they
+become instructions for later runs. Add there what you learn about an agent's area yourself.
 
 This machine may have only two cores: run one TLC (`--workers 1` when sharing) and one cargo build at
 a time, keep command output filtered, and delete large outputs you no longer need.

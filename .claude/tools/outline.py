@@ -22,6 +22,7 @@ import ast
 import hashlib
 import json
 import re
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -169,6 +170,7 @@ class Rust:
     src_lines: list[str]
     toks: list[Token]
     public: bool
+    stub: bool = False  # Rust-like: `;` after signatures, braces around bodies, `// L<n>` for lines
     out: list[str] = field(default_factory=list)
 
     def group_end(self, i: int) -> int:
@@ -245,8 +247,12 @@ class Rust:
             text = text.replace("{ ", "{").replace(" }", "}")
         return text
 
-    def emit(self, depth: int, line: int, text: str) -> None:
-        self.out.append(f"{line:>5} {'  ' * depth}{text}" if line else f"{'':>5} {'  ' * depth}{text}")
+    def emit(self, depth: int, line: int, text: str, end: str = "", item: bool = True) -> None:
+        """Adds a line; in stub form `end` closes an item, and an item's line is noted after it."""
+        if self.stub:
+            self.out.append(f"{'    ' * depth}{text}{end}" + (f" // L{line}" if line and item else ""))
+        else:
+            self.out.append(f"{line:>5} {'  ' * depth}{text}" if line else f"{'':>5} {'  ' * depth}{text}")
 
     def items(self, i: int, end: int, depth: int, shown: bool) -> None:
         """Outlines the items in tokens `i..end`; `shown` shows all, as inside a public trait."""
@@ -266,7 +272,7 @@ class Rust:
                 continue
             if t.kind == "idoc":
                 for k, piece in enumerate(t.text.splitlines()):
-                    self.emit(depth, t.line + k, piece.strip())
+                    self.emit(depth, t.line + k, piece.strip(), item=False)
                 i += 1
                 continue
             if t.text == "#" and i + 1 < end:
@@ -275,7 +281,7 @@ class Rust:
                 text: str = self.flat(i, close)
                 body: str = text[3:-1] if inner else text[2:-1]
                 if inner:
-                    self.emit(depth, t.line, text)
+                    self.emit(depth, t.line, text, item=False)
                 elif body.startswith(KEPT_ATTRIBUTES):
                     attrs.append((t.line, text))
                 i = close
@@ -324,14 +330,17 @@ class Rust:
                 visible = True
             if not visible:
                 return after
+            self.gap(depth)
             mark: int = len(self.out)
             self.lead(depth, notes, attrs)
             if kw in ("trait", "impl", "mod") and opens:
-                self.emit(depth, line, head)
+                self.emit(depth, line, head, end=" {")
                 before: int = len(self.out)
                 self.items(h + 1, after - 1, depth + 1, kw == "trait" and public)
                 if self.public and kw != "trait" and len(self.out) == before and " for " not in head:
                     del self.out[mark:]
+                elif self.stub:
+                    self.emit(depth, 0, "}")
             elif kw in ("struct", "enum", "union") and opens:
                 first: int = self.toks[h].line
                 last: int = self.toks[after - 1].line
@@ -342,18 +351,19 @@ class Rust:
                     for n in range(first + 1, last):
                         member: str = self.src_lines[n - 1].strip()
                         if member:
-                            self.emit(depth + 1, n, member)
-                    self.emit(depth, last, "}")
+                            self.emit(depth + 1, n, member, item=False)
+                    self.emit(depth, last, "}", item=False)
             else:
-                self.emit(depth, line, head if len(head) <= 200 else head[:197] + "...")
+                self.emit(depth, line, head if len(head) <= 200 else head[:197] + "...", end=";")
             return after
         if kw == "macro_rules" and j + 3 < end:
             k: int = self.group_end(j + 3)
             if k < end and self.toks[k].text == ";":
                 k += 1
             if not self.public or notes:
+                self.gap(depth)
                 self.lead(depth, notes, attrs)
-                self.emit(depth, line, f"macro_rules! {self.toks[j + 2].text}")
+                self.emit(depth, line, f"macro_rules! {self.toks[j + 2].text}", end=" { … }")
             return k
         k = j
         while k + 1 < end and (self.toks[k].kind == "ident" or self.toks[k].text == ":"):
@@ -364,21 +374,28 @@ class Rust:
             if len(call) > 100:
                 call = self.flat(start, k + 2) + " … " + OPEN[self.toks[k + 1].text]
             if not self.public:
+                self.gap(depth)
                 self.lead(depth, notes, attrs)
-                self.emit(depth, line, call)
+                self.emit(depth, line, call, end="" if self.toks[k + 1].text == "{" else ";")
             return close + 1 if close < end and self.toks[close].text == ";" else close
         return i + 1
+
+    def gap(self, depth: int) -> None:
+        """In stub form, a blank line before each top-level item, as in the source."""
+        if self.stub and depth == 0 and self.out and self.out[-1]:
+            self.out.append("")
 
     def lead(self, depth: int, notes: list[Token], attrs: list[tuple[int, str]]) -> None:
         for note in notes:
             for k, text in enumerate(note.text.splitlines()):
-                self.emit(depth, note.line + k, text.strip())
+                self.emit(depth, note.line + k, text.strip(), item=False)
         if attrs:
-            self.emit(depth, attrs[0][0], " ".join(a for _, a in attrs))
+            self.emit(depth, attrs[0][0], " ".join(a for _, a in attrs), item=False)
 
 
-def outline_rust(src: str, public: bool) -> list[str]:
-    rust: Rust = Rust(src.splitlines(), lex_rust(src), public)
+def outline_rust(src: str, public: bool, stub: bool = False) -> list[str]:
+    """The outline of a Rust file: numbered lines, or with `stub` a Rust-like skeleton."""
+    rust: Rust = Rust(src.splitlines(), lex_rust(src), public, stub)
     rust.items(0, len(rust.toks), 0, False)
     return rust.out
 
@@ -485,7 +502,7 @@ def folders() -> dict[str, list[Path]]:
     found: dict[str, list[Path]] = {}
     for name in sorted(set(listed.splitlines())):
         path: Path = Path(name)
-        if path.suffix in EXTENSIONS and (ROOT / path).is_file():
+        if path.suffix in EXTENSIONS and (ROOT / path).is_file() and not name.startswith(".claude/outlined/"):
             found.setdefault(path.parent.as_posix(), []).append(path)
     return found
 
@@ -508,6 +525,7 @@ def outline_file(path: Path, public: bool) -> list[str]:
 
 # What folders without a module doc of their own are for.
 NOTES: dict[str, str] = {
+    ".claude": "The generator of the committed crate outlines in .claude/outlined/ (generate-outlines.py).",
     ".claude/tools": "Harness tools: these outlines and the session-start summary.",
     ".github/scripts": "Scripts for CI and development: checks, TLC, kept and cargo-mutants mutations, stress, site.",
     "crates/validation/tests/pass": "Programs `node!` must accept (trybuild).",
@@ -646,4 +664,6 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # `| head` ends the output quietly
     sys.exit(main(sys.argv[1:]))

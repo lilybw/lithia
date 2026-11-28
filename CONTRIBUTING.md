@@ -62,8 +62,10 @@ python3 .github/scripts/spec_pdf.py  # reprints the spec's PDF; needs pandoc and
 python3 .claude/tools/outline.py show crates/lithia/src --pub  # signatures and docs, no bodies
 ```
 
-`CLAUDE.md` and `.claude/` hold the setup for working on lithia with Claude: agents, skills, and
-the outline tool, which caches each folder's outline under `target/outline` with a hash of its sources.
+`CLAUDE.md` and `.claude/` hold the setup for working on lithia with Claude: agents and their
+memories, skills, and the outline tool, which caches each folder's outline under `target/outline` with
+a hash of its sources. `.claude/generate-outlines.py` writes committed outlines of the two crates to
+`.claude/outlined/`, and the `outlines` workflow reports on every push which of them are stale.
 
 Loom explores every thread interleaving up to a preemption bound: 3 by default, and
 `LOOM_MAX_PREEMPTIONS=4` goes deeper in minutes rather than seconds. `LITHIA_LOOM_FAST_PATH=off` gives
