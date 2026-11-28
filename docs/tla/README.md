@@ -265,6 +265,7 @@ tests cover those.
 | `MCLateChild` | Sources `a` and `b`, and effects `c` on `a` and `d` on both, created while `a`'s disposal is under way: linked after the walk, before `a` closed, `c` is disposed of and `d` survives; linked after `a` closed, a child disposes of itself. | 13 842 |
 | `MCFastRise` | A source `a` and an effect `e` on it that only support holds: `a`'s last handle drops while two threads clone `a` from `e`'s body, one rising from zero without the lock and one adding onto that rise. | 1 211 |
 | `MCSkip` | A source `a`, an effect `p` on it and an effect `m` on `p`: `a`'s and `m`'s last handles drop on two threads, so `m`'s fall may skip its sweep while `a`'s sweep lets go of `p`. | 2 840 |
+| `MC…Fast` | Each model above `MCFastRise` with `FastRise` and `SkipSupported` on: `MCReturnFast` 36 236, `MCWriterFast` 91 167, `MCGenerationFast` 101 780, `MCScopedFast` 117 418, `MCKeyedFast` 87 730, `MCDisposalFast` 93 074, `MCLateChildFast` 12 695. | 540 100 |
 
 ### Findings
 
