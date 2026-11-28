@@ -272,7 +272,7 @@ fn case_w_reflow_from_its_own_body() {
                 DerivedNode<()>,
             ) = scope.batch(|| {
                 let me: SourceNode<Option<DerivedNode<u32>>> = node!(None);
-                let tick: SourceNode<u32> = node!(0);
+                let tick: SourceNode<u32> = node!(0, no_equals); // the same value must still reach the node
                 let body_runs: SourceNode<u32> = node!(0);
                 let child_runs: SourceNode<u32> = node!(0);
                 let node: DerivedNode<u32> = node!(
