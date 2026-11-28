@@ -51,12 +51,12 @@ const BENCHES: &[Scaling] = &[
     },
     Scaling {
         name: "sweep-kept",
-        reads: "2 000 effects per hub, each also reading an anchored source: the sweep walks them all and lets go of none",
+        reads: "2 000 effects per hub, each also reading an anchored source, so the sweep lets go of none: per sweep",
         measure: sweep_kept,
     },
     Scaling {
         name: "sweep-turns",
-        reads: "2 000 effects per hub, the hubs dropped one at a time: one sweep's cost with that many graphs alive",
+        reads: "2 000 effects per hub, the hubs dropped one at a time, so with that many graphs alive: per sweep",
         measure: sweep_turns,
     },
     Scaling {
